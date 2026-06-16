@@ -1,0 +1,18 @@
+{
+  "name": "dns-api",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "workspaces": [
+    "app/headlamp-plugin",
+    "app/ui-mockup",
+    "pkg/ts/*"
+  ],
+  "devDependencies": {
+    "@appthrust/kest": "0.18.0",
+    "@aws-sdk/client-route-53": "^3.824.0",
+    "@tsconfig/bun": "^1.0.7",
+    "@types/bun": "^1.2.16",
+    "typescript": "^5.9.3"
+  }
+}

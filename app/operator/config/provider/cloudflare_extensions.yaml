@@ -1,0 +1,179 @@
+apiVersion: dns.appthrust.io/v1alpha1
+kind: Provider
+metadata:
+  name: cloudflare.dns.appthrust.io
+spec:
+  display:
+    name: Cloudflare DNS
+    description: Public DNS zones and record sets managed through Cloudflare DNS.
+    logo:
+      url: https://cdn.simpleicons.org/cloudflare
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      deprecated: false
+      identity:
+        resource:
+          group: cloudflare.dns.appthrust.io
+          kind: CloudflareIdentity
+          scope: Namespaced
+      zoneClass:
+        schemas:
+          parameters:
+            openAPIV3Schema:
+              type: object
+              additionalProperties: false
+              properties:
+                zoneCreationPolicy:
+                  type: string
+                  description: Controls whether dns-api may create a Cloudflare zone when a Zone does not adopt an existing zone.
+                  enum:
+                    - Create
+                    - Deny
+                zoneDeletionPolicy:
+                  type: string
+                  description: Controls whether dns-api deletes the Cloudflare zone when the Kubernetes Zone is deleted.
+                  enum:
+                    - Delete
+                    - Retain
+      zone:
+        schemas:
+          adoption:
+            openAPIV3Schema:
+              type: object
+              required:
+                - zoneID
+              additionalProperties: false
+              properties:
+                zoneID:
+                  type: string
+                  description: Cloudflare zone ID of the existing full zone to adopt. Must be a 32-character lowercase hexadecimal string.
+                  minLength: 32
+                  maxLength: 32
+                  pattern: '^[0-9a-f]{32}$'
+          statusProviderData:
+            openAPIV3Schema:
+              type: object
+              additionalProperties: false
+              properties:
+                zone:
+                  type: object
+                  description: Observed Cloudflare zone metadata exposed for adoption and troubleshooting workflows.
+                  required:
+                    - id
+                  additionalProperties: false
+                  properties:
+                    id:
+                      type: string
+                      description: Cloudflare zone ID used for zone and DNS record API calls. Must be a 32-character lowercase hexadecimal string.
+                      minLength: 32
+                      maxLength: 32
+                      pattern: '^[0-9a-f]{32}$'
+                    status:
+                      type: string
+                      description: Cloudflare zone status returned by the Cloudflare API.
+                    type:
+                      type: string
+                      description: Cloudflare zone type returned by the Cloudflare API. The v1alpha1 provider expects full zones.
+      recordSet:
+        supportedTypes:
+          - A
+          - AAAA
+          - TXT
+          - CNAME
+          - MX
+          - CAA
+          - NS
+        schemas:
+          options:
+            openAPIV3Schema:
+              type: object
+              additionalProperties: false
+              properties:
+                ttl:
+                  type: string
+                  description: Cloudflare TTL mode. Auto uses Cloudflare automatic TTL and omits the core spec.ttl value.
+                  enum:
+                    - Auto
+                proxied:
+                  type: boolean
+                  description: Whether Cloudflare proxying is enabled for this DNS record. Supported only for A, AAAA, and CNAME records.
+                  default: false
+                comment:
+                  type: string
+                  description: Optional Cloudflare DNS record comment copied to each provider record managed by this RecordSet.
+                  maxLength: 100
+                tags:
+                  type: array
+                  description: Optional Cloudflare DNS record tags in name:value form copied to each provider record managed by this RecordSet.
+                  maxItems: 20
+                  items:
+                    type: string
+                    description: One Cloudflare DNS record tag in name:value form.
+                    pattern: '^[A-Za-z0-9_-]{1,32}:[^\r\n]{0,100}$'
+          adoption:
+            openAPIV3Schema:
+              type: object
+              required:
+                - recordIDs
+              additionalProperties: false
+              properties:
+                recordIDs:
+                  type: array
+                  description: Cloudflare DNS record IDs to adopt for this RecordSet. Items are unique because the array is a complete unordered set.
+                  minItems: 1
+                  uniqueItems: true
+                  items:
+                    type: string
+                    description: One Cloudflare DNS record ID. Must be a 32-character lowercase hexadecimal string.
+                    minLength: 32
+                    maxLength: 32
+                    pattern: '^[0-9a-f]{32}$'
+          statusProviderData:
+            openAPIV3Schema:
+              type: object
+              additionalProperties: false
+              properties:
+                records:
+                  type: array
+                  description: Cloudflare DNS record IDs currently managed for this RecordSet. IDs are unique and unordered.
+                  uniqueItems: true
+                  items:
+                    type: object
+                    description: One Cloudflare DNS record managed for this RecordSet.
+                    required:
+                      - id
+                    additionalProperties: false
+                    properties:
+                      id:
+                        type: string
+                        description: Cloudflare DNS record ID used for adoption, update, and delete operations. Must be a 32-character lowercase hexadecimal string.
+                        minLength: 32
+                        maxLength: 32
+                        pattern: '^[0-9a-f]{32}$'
+        disableValidations:
+          - name: require-ttl
+            when: "has(self.spec.options) && has(self.spec.options.ttl) && self.spec.options.ttl == 'Auto'"
+          - name: forbid-cname-apex
+            when: "self.spec.type == 'CNAME' && self.spec.name == '@'"
+        validationRules:
+          - rule: "self.spec.type == 'A' || self.spec.type == 'AAAA' || self.spec.type == 'TXT' || self.spec.type == 'CNAME' || self.spec.type == 'MX' || self.spec.type == 'CAA' || self.spec.type == 'NS'"
+            message: "cloudflare supports A, AAAA, TXT, CNAME, MX, CAA, and delegated NS records"
+          - rule: "!(has(self.spec.options) && has(self.spec.options.ttl) && has(self.spec.ttl))"
+            message: "ttl must not be specified when cloudflare automatic ttl is used"
+          - rule: "(has(self.spec.options) && has(self.spec.options.ttl) && self.spec.options.ttl == 'Auto') || (has(self.spec.ttl) && self.spec.ttl >= 60 && self.spec.ttl <= 86400)"
+            message: "cloudflare fixed ttl must be between 60 and 86400 seconds"
+          - rule: "!(has(self.spec.options) && has(self.spec.options.proxied) && self.spec.options.proxied) || self.spec.type == 'A' || self.spec.type == 'AAAA' || self.spec.type == 'CNAME'"
+            message: "cloudflare proxied is supported only for A, AAAA, and CNAME records"
+          - rule: "!(has(self.spec.options) && has(self.spec.options.proxied) && self.spec.options.proxied) || (has(self.spec.options.ttl) && self.spec.options.ttl == 'Auto' && !has(self.spec.ttl))"
+            message: "cloudflare proxied records must use automatic ttl"
+          - rule: "!(self.spec.type == 'MX' && self.spec.mx.records.exists(r, r.exchange == '.'))"
+            message: "cloudflare provider does not support Null MX until Cloudflare API support is verified"
+      zoneUnit:
+        disableValidations:
+          - name: forbid-cname-coexistence
+            when: "(self.type == 'CNAME' && other.type in ['TXT', 'MX', 'CAA']) || (other.type == 'CNAME' && self.type in ['TXT', 'MX', 'CAA'])"
+        validationRules:
+          - rule: "self.name != other.name || !(self.type == 'NS' || other.type == 'NS')"
+            message: "cloudflare does not allow NS records to coexist with another record type at the same owner name"

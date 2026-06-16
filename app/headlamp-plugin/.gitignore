@@ -1,0 +1,5 @@
+/dist/
+/headlamp-plugin-dns-api-*.tar.gz
+/headlamp-plugin-dns-api-*.tar.gz.sha256
+node_modules/
+.eslintcache

@@ -1,0 +1,8 @@
+resources:
+  - ../namespace
+  - ../crd
+  - ../rbac
+  - ../provider
+  - ../manager
+  - ../webhook
+  - ../certmanager

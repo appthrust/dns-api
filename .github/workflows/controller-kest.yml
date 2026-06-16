@@ -1,0 +1,54 @@
+name: controller-kest
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      preserve_on_failure:
+        description: Preserve Kubernetes resources on kest failure.
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: controller-kest
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-1' }}
+  ROUTE53_ACCOUNT_ID: ${{ secrets.ROUTE53_ACCOUNT_ID }}
+  LOCAL_IRSA_BUCKET: ${{ secrets.LOCAL_IRSA_BUCKET }}
+  CONTROLLER_POLICY_ARN: ${{ secrets.CONTROLLER_POLICY_ARN }}
+
+jobs:
+  kest:
+    environment: route53-ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jetify-com/devbox-install-action@v0.13.0
+        with:
+          devbox-version: 0.17.2
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Run CI kest
+        env:
+          KEST_PRESERVE_ON_FAILURE: ${{ github.event.inputs.preserve_on_failure == 'true' && '1' || '' }}
+        run: devbox run -- task ci:kest
+      - name: Show controller diagnostics on failure
+        if: failure()
+        run: |
+          devbox run -- kubectl -n dns-api-system get pods
+          devbox run -- kubectl -n dns-api-system describe deployment dns-api-controller-manager
+          devbox run -- kubectl -n dns-api-system logs deployment/dns-api-controller-manager --tail=200 || true

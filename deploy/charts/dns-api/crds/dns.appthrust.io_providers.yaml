@@ -1,0 +1,624 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: providers.dns.appthrust.io
+spec:
+  group: dns.appthrust.io
+  names:
+    kind: Provider
+    listKind: ProviderList
+    plural: providers
+    singular: provider
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Provider defines provider-specific capability, schemas, and versions.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              display:
+                description: Display contains UI-facing provider metadata.
+                properties:
+                  description:
+                    description: Description is an optional short provider description.
+                    type: string
+                  logo:
+                    description: Logo optionally points to provider logo metadata.
+                    properties:
+                      url:
+                        description: URL is an optional provider logo URL.
+                        type: string
+                    type: object
+                  name:
+                    description: Name is the provider name shown in UI.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              versions:
+                description: Versions contains provider schema versions.
+                items:
+                  properties:
+                    deprecated:
+                      description: Deprecated marks this version as deprecated for
+                        UI and validation messages.
+                      type: boolean
+                    identity:
+                      description: Identity declares the provider identity resource
+                        selected by ZoneClass.spec.identityRef.
+                      properties:
+                        resource:
+                          description: Resource declares the provider identity resource.
+                          properties:
+                            group:
+                              description: Group is the provider identity API group.
+                              minLength: 1
+                              type: string
+                            kind:
+                              description: Kind is the provider identity resource
+                                kind.
+                              minLength: 1
+                              type: string
+                            scope:
+                              description: Scope is the provider identity resource
+                                scope.
+                              enum:
+                              - Namespaced
+                              type: string
+                          required:
+                          - group
+                          - kind
+                          - scope
+                          type: object
+                      required:
+                      - resource
+                      type: object
+                    name:
+                      description: Name is the version segment used in spec.provider.
+                      minLength: 1
+                      pattern: ^[^/]+$
+                      type: string
+                    recordSet:
+                      description: RecordSet defines supported types, schemas, and
+                        validation for RecordSet resources.
+                      properties:
+                        additionalConditionReasons:
+                          description: AdditionalConditionReasons declares provider-specific
+                            RecordSet status condition reasons.
+                          items:
+                            properties:
+                              conditionType:
+                                description: ConditionType is the status condition
+                                  type this reason applies to.
+                                enum:
+                                - Accepted
+                                - Programmed
+                                type: string
+                              description:
+                                description: Description explains when the provider-specific
+                                  reason is used.
+                                minLength: 1
+                                type: string
+                              reason:
+                                description: Reason is the provider-specific condition
+                                  reason stored in metav1.Condition.reason.
+                                minLength: 1
+                                pattern: ^[A-Z][A-Za-z0-9]*$
+                                type: string
+                              status:
+                                description: Status is the condition status this reason
+                                  applies to.
+                                enum:
+                                - "True"
+                                - "False"
+                                - Unknown
+                                type: string
+                            required:
+                            - conditionType
+                            - description
+                            - reason
+                            - status
+                            type: object
+                          type: array
+                        conversion:
+                          description: Conversion defines conversion from this version
+                            to the Provider storage version.
+                          properties:
+                            toStorage:
+                              description: ToStorage converts payloads from this version
+                                to the Provider storage version.
+                              properties:
+                                cel:
+                                  description: CEL is a KRO-compatible object-in/object-out
+                                    expression.
+                                  type: string
+                                webhook:
+                                  description: Webhook describes a provider conversion
+                                    webhook for conversions that are not declarative.
+                                  properties:
+                                    clientConfig:
+                                      description: ClientConfig describes how core
+                                        reaches the conversion webhook.
+                                      properties:
+                                        caBundle:
+                                          description: CABundle is the PEM CA bundle
+                                            used to verify the Service certificate.
+                                          format: byte
+                                          type: string
+                                        service:
+                                          description: Service points to the in-cluster
+                                            Service that receives conversion reviews.
+                                          properties:
+                                            name:
+                                              description: Name is the Service name.
+                                              minLength: 1
+                                              type: string
+                                            namespace:
+                                              description: Namespace is the Service
+                                                namespace.
+                                              minLength: 1
+                                              type: string
+                                            path:
+                                              default: /convert
+                                              description: Path is the HTTPS path
+                                                on the Service.
+                                              type: string
+                                            port:
+                                              default: 443
+                                              description: Port is the Service port.
+                                              format: int32
+                                              maximum: 65535
+                                              minimum: 1
+                                              type: integer
+                                          required:
+                                          - name
+                                          - namespace
+                                          type: object
+                                      required:
+                                      - service
+                                      type: object
+                                    timeoutSeconds:
+                                      description: TimeoutSeconds is the conversion
+                                        request timeout.
+                                      format: int32
+                                      maximum: 30
+                                      minimum: 1
+                                      type: integer
+                                  required:
+                                  - clientConfig
+                                  type: object
+                              type: object
+                          type: object
+                        disableValidations:
+                          description: DisableValidations declares named core validations
+                            disabled by a CEL condition.
+                          items:
+                            properties:
+                              name:
+                                description: Name is a core validation name.
+                                enum:
+                                - require-ttl
+                                - require-a-addresses
+                                - require-aaaa-addresses
+                                - require-txt-values
+                                - forbid-cname-apex
+                                - forbid-txt-non-printable-ascii
+                                type: string
+                              when:
+                                description: When is a CEL expression that disables
+                                  this validation when true.
+                                minLength: 1
+                                type: string
+                            required:
+                            - name
+                            - when
+                            type: object
+                          type: array
+                        schemas:
+                          description: Schemas defines OpenAPI v3 schemas for provider-specific
+                            RecordSet inline objects.
+                          properties:
+                            adoption:
+                              description: Adoption validates RecordSet.spec.adoption.
+                              properties:
+                                openAPIV3Schema:
+                                  description: OpenAPIV3Schema is the schema for the
+                                    corresponding inline object.
+                                  type: object
+                                  x-kubernetes-preserve-unknown-fields: true
+                              type: object
+                            options:
+                              description: Options validates RecordSet.spec.options.
+                              properties:
+                                openAPIV3Schema:
+                                  description: OpenAPIV3Schema is the schema for the
+                                    corresponding inline object.
+                                  type: object
+                                  x-kubernetes-preserve-unknown-fields: true
+                              type: object
+                            statusProviderData:
+                              description: StatusProviderData validates RecordSet.status.provider.data.
+                              properties:
+                                openAPIV3Schema:
+                                  description: OpenAPIV3Schema is the schema for the
+                                    corresponding inline object.
+                                  type: object
+                                  x-kubernetes-preserve-unknown-fields: true
+                              type: object
+                          type: object
+                        supportedTypes:
+                          description: SupportedTypes lists DNS record types handled
+                            by this schema.
+                          items:
+                            enum:
+                            - A
+                            - AAAA
+                            - CNAME
+                            - NS
+                            - TXT
+                            - MX
+                            - CAA
+                            type: string
+                          type: array
+                        validationRules:
+                          description: ValidationRules contains CEL rules evaluated
+                            against RecordSet objects.
+                          items:
+                            properties:
+                              message:
+                                description: Message is shown when the rule fails.
+                                type: string
+                              rule:
+                                description: Rule is a CEL expression.
+                                minLength: 1
+                                type: string
+                            required:
+                            - rule
+                            type: object
+                          type: array
+                      type: object
+                    served:
+                      description: Served controls whether new or updated specs may
+                        reference this version.
+                      type: boolean
+                    storage:
+                      description: Storage marks the provider version used inside
+                        ZoneUnit.
+                      type: boolean
+                    zone:
+                      description: Zone defines schemas and validation for Zone resources.
+                      properties:
+                        additionalConditionReasons:
+                          description: AdditionalConditionReasons declares provider-specific
+                            Zone status condition reasons.
+                          items:
+                            properties:
+                              conditionType:
+                                description: ConditionType is the status condition
+                                  type this reason applies to.
+                                enum:
+                                - Accepted
+                                - Programmed
+                                type: string
+                              description:
+                                description: Description explains when the provider-specific
+                                  reason is used.
+                                minLength: 1
+                                type: string
+                              reason:
+                                description: Reason is the provider-specific condition
+                                  reason stored in metav1.Condition.reason.
+                                minLength: 1
+                                pattern: ^[A-Z][A-Za-z0-9]*$
+                                type: string
+                              status:
+                                description: Status is the condition status this reason
+                                  applies to.
+                                enum:
+                                - "True"
+                                - "False"
+                                - Unknown
+                                type: string
+                            required:
+                            - conditionType
+                            - description
+                            - reason
+                            - status
+                            type: object
+                          type: array
+                        conversion:
+                          description: Conversion defines conversion from this version
+                            to the Provider storage version.
+                          properties:
+                            toStorage:
+                              description: ToStorage converts payloads from this version
+                                to the Provider storage version.
+                              properties:
+                                cel:
+                                  description: CEL is a KRO-compatible object-in/object-out
+                                    expression.
+                                  type: string
+                                webhook:
+                                  description: Webhook describes a provider conversion
+                                    webhook for conversions that are not declarative.
+                                  properties:
+                                    clientConfig:
+                                      description: ClientConfig describes how core
+                                        reaches the conversion webhook.
+                                      properties:
+                                        caBundle:
+                                          description: CABundle is the PEM CA bundle
+                                            used to verify the Service certificate.
+                                          format: byte
+                                          type: string
+                                        service:
+                                          description: Service points to the in-cluster
+                                            Service that receives conversion reviews.
+                                          properties:
+                                            name:
+                                              description: Name is the Service name.
+                                              minLength: 1
+                                              type: string
+                                            namespace:
+                                              description: Namespace is the Service
+                                                namespace.
+                                              minLength: 1
+                                              type: string
+                                            path:
+                                              default: /convert
+                                              description: Path is the HTTPS path
+                                                on the Service.
+                                              type: string
+                                            port:
+                                              default: 443
+                                              description: Port is the Service port.
+                                              format: int32
+                                              maximum: 65535
+                                              minimum: 1
+                                              type: integer
+                                          required:
+                                          - name
+                                          - namespace
+                                          type: object
+                                      required:
+                                      - service
+                                      type: object
+                                    timeoutSeconds:
+                                      description: TimeoutSeconds is the conversion
+                                        request timeout.
+                                      format: int32
+                                      maximum: 30
+                                      minimum: 1
+                                      type: integer
+                                  required:
+                                  - clientConfig
+                                  type: object
+                              type: object
+                          type: object
+                        schemas:
+                          description: Schemas defines OpenAPI v3 schemas for provider-specific
+                            Zone inline objects.
+                          properties:
+                            adoption:
+                              description: Adoption validates Zone.spec.adoption.
+                              properties:
+                                openAPIV3Schema:
+                                  description: OpenAPIV3Schema is the schema for the
+                                    corresponding inline object.
+                                  type: object
+                                  x-kubernetes-preserve-unknown-fields: true
+                              type: object
+                            statusProviderData:
+                              description: StatusProviderData validates Zone.status.provider.data.
+                              properties:
+                                openAPIV3Schema:
+                                  description: OpenAPIV3Schema is the schema for the
+                                    corresponding inline object.
+                                  type: object
+                                  x-kubernetes-preserve-unknown-fields: true
+                              type: object
+                          type: object
+                        validationRules:
+                          description: ValidationRules contains CEL rules evaluated
+                            against Zone objects.
+                          items:
+                            properties:
+                              message:
+                                description: Message is shown when the rule fails.
+                                type: string
+                              rule:
+                                description: Rule is a CEL expression.
+                                minLength: 1
+                                type: string
+                            required:
+                            - rule
+                            type: object
+                          type: array
+                      type: object
+                    zoneClass:
+                      description: ZoneClass defines schemas and validation for ZoneClass
+                        resources.
+                      properties:
+                        conversion:
+                          description: Conversion defines conversion from this version
+                            to the Provider storage version.
+                          properties:
+                            toStorage:
+                              description: ToStorage converts payloads from this version
+                                to the Provider storage version.
+                              properties:
+                                cel:
+                                  description: CEL is a KRO-compatible object-in/object-out
+                                    expression.
+                                  type: string
+                                webhook:
+                                  description: Webhook describes a provider conversion
+                                    webhook for conversions that are not declarative.
+                                  properties:
+                                    clientConfig:
+                                      description: ClientConfig describes how core
+                                        reaches the conversion webhook.
+                                      properties:
+                                        caBundle:
+                                          description: CABundle is the PEM CA bundle
+                                            used to verify the Service certificate.
+                                          format: byte
+                                          type: string
+                                        service:
+                                          description: Service points to the in-cluster
+                                            Service that receives conversion reviews.
+                                          properties:
+                                            name:
+                                              description: Name is the Service name.
+                                              minLength: 1
+                                              type: string
+                                            namespace:
+                                              description: Namespace is the Service
+                                                namespace.
+                                              minLength: 1
+                                              type: string
+                                            path:
+                                              default: /convert
+                                              description: Path is the HTTPS path
+                                                on the Service.
+                                              type: string
+                                            port:
+                                              default: 443
+                                              description: Port is the Service port.
+                                              format: int32
+                                              maximum: 65535
+                                              minimum: 1
+                                              type: integer
+                                          required:
+                                          - name
+                                          - namespace
+                                          type: object
+                                      required:
+                                      - service
+                                      type: object
+                                    timeoutSeconds:
+                                      description: TimeoutSeconds is the conversion
+                                        request timeout.
+                                      format: int32
+                                      maximum: 30
+                                      minimum: 1
+                                      type: integer
+                                  required:
+                                  - clientConfig
+                                  type: object
+                              type: object
+                          type: object
+                        schemas:
+                          description: Schemas defines OpenAPI v3 schemas for provider-specific
+                            ZoneClass inline objects.
+                          properties:
+                            parameters:
+                              description: Parameters validates ZoneClass.spec.parameters.
+                              properties:
+                                openAPIV3Schema:
+                                  description: OpenAPIV3Schema is the schema for the
+                                    corresponding inline object.
+                                  type: object
+                                  x-kubernetes-preserve-unknown-fields: true
+                              type: object
+                          type: object
+                        validationRules:
+                          description: ValidationRules contains CEL rules evaluated
+                            against ZoneClass objects.
+                          items:
+                            properties:
+                              message:
+                                description: Message is shown when the rule fails.
+                                type: string
+                              rule:
+                                description: Rule is a CEL expression.
+                                minLength: 1
+                                type: string
+                            required:
+                            - rule
+                            type: object
+                          type: array
+                      type: object
+                    zoneUnit:
+                      description: ZoneUnit defines provider-specific composition
+                        validations evaluated when core builds ZoneUnit.
+                      properties:
+                        disableValidations:
+                          description: DisableValidations declares named core ZoneUnit
+                            composition validations disabled by a CEL condition.
+                          items:
+                            properties:
+                              name:
+                                description: Name is a core ZoneUnit composition validation
+                                  name.
+                                enum:
+                                - forbid-cname-coexistence
+                                type: string
+                              when:
+                                description: When is a CEL expression evaluated with
+                                  self and other ZoneUnit record set items.
+                                minLength: 1
+                                type: string
+                            required:
+                            - name
+                            - when
+                            type: object
+                          type: array
+                        validationRules:
+                          description: ValidationRules contains CEL rules evaluated
+                            against pairs of ZoneUnit record set items.
+                          items:
+                            properties:
+                              message:
+                                description: Message is shown when the rule fails.
+                                type: string
+                              rule:
+                                description: Rule is a CEL expression.
+                                minLength: 1
+                                type: string
+                            required:
+                            - rule
+                            type: object
+                          type: array
+                      type: object
+                  required:
+                  - name
+                  - served
+                  type: object
+                minItems: 1
+                type: array
+            required:
+            - display
+            - versions
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}

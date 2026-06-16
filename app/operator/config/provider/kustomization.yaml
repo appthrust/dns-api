@@ -1,0 +1,3 @@
+resources:
+  - cloudflare_extensions.yaml
+  - route53_extensions.yaml

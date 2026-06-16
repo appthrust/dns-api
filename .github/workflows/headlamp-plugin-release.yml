@@ -1,0 +1,40 @@
+name: headlamp-plugin-release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jetify-com/devbox-install-action@v0.13.0
+        with:
+          devbox-version: 0.17.2
+      - run: devbox run -- task ui:install
+      - run: devbox run -- task headlamp-plugin:check
+      - name: Package plugin
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          devbox run -- task headlamp-plugin:package VERSION="$version"
+      - name: Verify package and metadata
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          package_version="$(node -p "require('./app/headlamp-plugin/package.json').version")"
+          test "$package_version" = "$version"
+          VERSION="$version" node scripts/headlamp-plugin-update-artifacthub-metadata.mjs
+          devbox run -- task headlamp-plugin:artifacthub-metadata VERSION="$version" STRICT=true
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          archive="app/headlamp-plugin/headlamp-plugin-dns-api-v${version}.tar.gz"
+          checksum="${archive}.sha256"
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes ""
+          gh release upload "$GITHUB_REF_NAME" "$archive" "$checksum" --clobber

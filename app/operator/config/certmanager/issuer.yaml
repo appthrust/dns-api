@@ -1,0 +1,7 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: dns-api-selfsigned-issuer
+  namespace: dns-api-system
+spec:
+  selfSigned: {}

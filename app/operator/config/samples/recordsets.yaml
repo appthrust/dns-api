@@ -1,0 +1,137 @@
+apiVersion: dns.appthrust.io/v1alpha1
+kind: RecordSet
+metadata:
+  namespace: tenant-a-app
+  name: www
+spec:
+  zoneRef:
+    name: apps-example-com
+  provider:
+    name: route53.dns.appthrust.io
+    version: v1alpha1
+  type: A
+  name: www
+  ttl: 300
+  a:
+    addresses:
+      - 192.0.2.10
+---
+apiVersion: dns.appthrust.io/v1alpha1
+kind: RecordSet
+metadata:
+  namespace: tenant-a-app
+  name: www-v6
+spec:
+  zoneRef:
+    name: apps-example-com
+  provider:
+    name: route53.dns.appthrust.io
+    version: v1alpha1
+  type: AAAA
+  name: www
+  ttl: 300
+  aaaa:
+    addresses:
+      - 2001:db8::10
+---
+apiVersion: dns.appthrust.io/v1alpha1
+kind: RecordSet
+metadata:
+  namespace: tenant-a-app
+  name: acme-challenge
+spec:
+  zoneRef:
+    name: apps-example-com
+  provider:
+    name: route53.dns.appthrust.io
+    version: v1alpha1
+  type: TXT
+  name: _acme-challenge
+  ttl: 300
+  txt:
+    values:
+      - challenge-token
+      - v=spf1 include:_spf.example.net ~all
+---
+apiVersion: dns.appthrust.io/v1alpha1
+kind: RecordSet
+metadata:
+  namespace: tenant-a-app
+  name: www-cname
+spec:
+  zoneRef:
+    name: apps-example-com
+  provider:
+    name: route53.dns.appthrust.io
+    version: v1alpha1
+  type: CNAME
+  name: www
+  ttl: 300
+  cname:
+    target: target.example.net
+---
+apiVersion: dns.appthrust.io/v1alpha1
+kind: RecordSet
+metadata:
+  namespace: tenant-a-app
+  name: mail
+spec:
+  zoneRef:
+    name: apps-example-com
+  provider:
+    name: route53.dns.appthrust.io
+    version: v1alpha1
+  type: MX
+  name: "@"
+  ttl: 300
+  mx:
+    records:
+      - preference: 10
+        exchange: mail1.example.net
+      - preference: 20
+        exchange: mail2.example.net
+---
+apiVersion: dns.appthrust.io/v1alpha1
+kind: RecordSet
+metadata:
+  namespace: tenant-a-app
+  name: ca-policy
+spec:
+  zoneRef:
+    name: apps-example-com
+  provider:
+    name: route53.dns.appthrust.io
+    version: v1alpha1
+  type: CAA
+  name: "@"
+  ttl: 300
+  caa:
+    records:
+      - flags: 0
+        tag: issue
+        value: letsencrypt.org
+      - flags: 0
+        tag: issuewild
+        value: ";"
+      - flags: 0
+        tag: iodef
+        value: mailto:security@example.com
+---
+apiVersion: dns.appthrust.io/v1alpha1
+kind: RecordSet
+metadata:
+  namespace: tenant-a-app
+  name: team-a-delegation
+spec:
+  zoneRef:
+    name: apps-example-com
+  provider:
+    name: route53.dns.appthrust.io
+    version: v1alpha1
+  type: NS
+  name: team-a
+  ttl: 300
+  ns:
+    nameServers:
+      - ns-111.example-dns.net
+      - ns-222.example-dns.net

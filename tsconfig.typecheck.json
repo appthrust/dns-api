@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@appthrust/kest": ["app/operator/tests/types/appthrust-kest.d.ts"]
+    }
+  }
+}

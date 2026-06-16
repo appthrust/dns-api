@@ -1,0 +1,12 @@
+{
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "moduleResolution": "Bundler",
+    "noImplicitAny": false,
+    "noEmit": true,
+    "verbatimModuleSyntax": false
+  },
+  "include": ["src/**/*"]
+}

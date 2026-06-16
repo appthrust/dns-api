@@ -1,0 +1,48 @@
+name: controller-cloudflare-kest
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      preserve_on_failure:
+        description: Preserve Kubernetes resources on kest failure.
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: controller-cloudflare-kest
+  cancel-in-progress: false
+
+env:
+  CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+  CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+
+jobs:
+  kest:
+    environment: cloudflare-ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jetify-com/devbox-install-action@v0.13.0
+        with:
+          devbox-version: 0.17.2
+      - name: Run Cloudflare CI kest
+        env:
+          KEST_PRESERVE_ON_FAILURE: ${{ github.event.inputs.preserve_on_failure == 'true' && '1' || '' }}
+        run: devbox run -- task ci:cloudflare:kest
+      - name: Show controller diagnostics on failure
+        if: failure()
+        run: |
+          devbox run -- kubectl -n dns-api-system get pods
+          devbox run -- kubectl -n dns-api-system describe deployment dns-api-controller-manager
+          devbox run -- kubectl -n dns-api-system logs deployment/dns-api-controller-manager --tail=200 || true
+          echo "Run task cloudflare:cleanup-kest-zones with CI credentials if Cloudflare test zones remain."

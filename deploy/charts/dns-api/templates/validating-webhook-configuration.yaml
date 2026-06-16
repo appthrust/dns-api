@@ -1,0 +1,118 @@
+{{- if .Values.webhook.enabled }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "dns-api.fullname" . }}-validating-webhook-configuration
+  labels:
+    {{- include "dns-api.labels" . | nindent 4 }}
+  {{- if .Values.certManager.enabled }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "dns-api.webhookCertificateName" . }}
+  {{- end }}
+webhooks:
+  - name: providers.dns.appthrust.io
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    clientConfig:
+      service:
+        namespace: {{ .Release.Namespace }}
+        name: {{ include "dns-api.webhookServiceName" . }}
+        path: /validate-dns-appthrust-io-v1alpha1-provider
+    rules:
+      - apiGroups:
+          - dns.appthrust.io
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - providers
+  - name: zoneclasses.dns.appthrust.io
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    clientConfig:
+      service:
+        namespace: {{ .Release.Namespace }}
+        name: {{ include "dns-api.webhookServiceName" . }}
+        path: /validate-dns-appthrust-io-v1alpha1-zoneclass
+    rules:
+      - apiGroups:
+          - dns.appthrust.io
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - zoneclasses
+  - name: zones.dns.appthrust.io
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    clientConfig:
+      service:
+        namespace: {{ .Release.Namespace }}
+        name: {{ include "dns-api.webhookServiceName" . }}
+        path: /validate-dns-appthrust-io-v1alpha1-zone
+    rules:
+      - apiGroups:
+          - dns.appthrust.io
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - zones
+          - zones/status
+  - name: recordsets.dns.appthrust.io
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    clientConfig:
+      service:
+        namespace: {{ .Release.Namespace }}
+        name: {{ include "dns-api.webhookServiceName" . }}
+        path: /validate-dns-appthrust-io-v1alpha1-recordset
+    rules:
+      - apiGroups:
+          - dns.appthrust.io
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - recordsets
+          - recordsets/status
+  - name: zoneunits.dns.appthrust.io
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    clientConfig:
+      service:
+        namespace: {{ .Release.Namespace }}
+        name: {{ include "dns-api.webhookServiceName" . }}
+        path: /validate-dns-appthrust-io-v1alpha1-zoneunit
+    rules:
+      - apiGroups:
+          - dns.appthrust.io
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+          - DELETE
+        resources:
+          - zoneunits
+          - zoneunits/status
+{{- end }}
+

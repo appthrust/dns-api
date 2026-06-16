@@ -1,0 +1,136 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "dns-api.fullname" . }}-controller-manager-role
+  labels:
+    {{- include "dns-api.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+  - apiGroups:
+      - ""
+    resources:
+      - namespaces
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - cloudflare.dns.appthrust.io
+    resources:
+      - cloudflareidentities
+    verbs:
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - cloudflare.dns.appthrust.io
+    resources:
+      - cloudflareidentities/status
+    verbs:
+      - get
+      - patch
+      - update
+  - apiGroups:
+      - dns.appthrust.io
+    resources:
+      - providers
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - dns.appthrust.io
+    resources:
+      - recordsets
+      - zoneclasses
+      - zones
+    verbs:
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - dns.appthrust.io
+    resources:
+      - recordsets/finalizers
+      - zones/finalizers
+      - zoneunits/finalizers
+    verbs:
+      - update
+  - apiGroups:
+      - dns.appthrust.io
+    resources:
+      - recordsets/status
+      - zoneclasses/status
+      - zones/status
+    verbs:
+      - get
+      - patch
+      - update
+  - apiGroups:
+      - dns.appthrust.io
+    resources:
+      - zoneunits
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - dns.appthrust.io
+    resources:
+      - zoneunits/status
+    verbs:
+      - get
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - route53.dns.appthrust.io
+    resources:
+      - route53identities
+    verbs:
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - route53.dns.appthrust.io
+    resources:
+      - route53identities/status
+    verbs:
+      - get
+      - patch
+      - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "dns-api.fullname" . }}-controller-manager-rolebinding
+  labels:
+    {{- include "dns-api.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "dns-api.fullname" . }}-controller-manager-role
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "dns-api.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+

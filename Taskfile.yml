@@ -1,0 +1,865 @@
+version: '3'
+
+vars:
+  AWS_PROFILE: '{{.AWS_PROFILE | default ""}}'
+  AWS_REGION: '{{.AWS_REGION | default "ap-northeast-1"}}'
+  CONTROLLER_GEN: sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.2
+  KIND_CLUSTER: '{{.KIND_CLUSTER | default "dns-api"}}'
+  KIND_CONFIG: '{{.KIND_CONFIG | default "kind.yaml"}}'
+  LOCAL_IRSA_NAME: '{{.LOCAL_IRSA_NAME | default .KIND_CLUSTER}}'
+  ROUTE53_ACCOUNT_ID: '{{.ROUTE53_ACCOUNT_ID | default ""}}'
+  LOCAL_IRSA_BUCKET: '{{.LOCAL_IRSA_BUCKET | default ""}}'
+  LOCAL_IRSA_STATE_ROOT: '{{.LOCAL_IRSA_STATE_ROOT | default ""}}'
+  CONTROLLER_ROLE_NAME: '{{.CONTROLLER_ROLE_NAME | default ""}}'
+  CONTROLLER_POLICY_ARN: '{{.CONTROLLER_POLICY_ARN | default ""}}'
+  CF_ACCOUNT_ID: '{{.CF_ACCOUNT_ID | default ""}}'
+  CF_API_TOKEN: '{{.CF_API_TOKEN | default ""}}'
+
+tasks:
+  default:
+    deps:
+      - test
+
+  generate:
+    desc: Generate deepcopy code and CRD manifests.
+    cmds:
+      - go run {{.CONTROLLER_GEN}} object:headerFile="" paths="./..."
+      - go run {{.CONTROLLER_GEN}} crd paths="./pkg/go/api/..." output:crd:artifacts:config=app/operator/config/crd/bases
+      - go run {{.CONTROLLER_GEN}} rbac:roleName=dns-api-controller-manager-role paths="./..." output:rbac:artifacts:config=app/operator/config/rbac
+
+  manifests:
+    desc: Generate Kubernetes manifests.
+    cmds:
+      - go run {{.CONTROLLER_GEN}} crd paths="./pkg/go/api/..." output:crd:artifacts:config=app/operator/config/crd/bases
+      - go run {{.CONTROLLER_GEN}} rbac:roleName=dns-api-controller-manager-role paths="./..." output:rbac:artifacts:config=app/operator/config/rbac
+
+  test:
+    desc: Run Go tests.
+    deps:
+      - generate
+    cmds:
+      - go list ./... | grep -v '/node_modules/' | xargs go test
+
+  test:kest:
+    desc: Run Route 53 Kubernetes E2E tests with kest.
+    deps:
+      - deps:install
+    env:
+      AWS_PROFILE: '{{.AWS_PROFILE | default "appthrust-dns-api-dev"}}'
+      AWS_REGION: '{{.AWS_REGION}}'
+    cmds:
+      - bun test app/operator/tests/e2e/recordset-api
+
+  test:kest:ci:
+    desc: Run Route 53 Kubernetes E2E tests with kest using the ambient AWS credential chain.
+    deps:
+      - deps:install
+    env:
+      AWS_REGION: '{{.AWS_REGION}}'
+      ROUTE53_ACCOUNT_ID: '{{.ROUTE53_ACCOUNT_ID}}'
+    cmds:
+      - bun test app/operator/tests/e2e/recordset-api
+
+  test:kest:cloudflare:
+    desc: Run Cloudflare Kubernetes E2E tests with kest.
+    deps:
+      - deps:install
+    env:
+      CF_ACCOUNT_ID: '{{.CF_ACCOUNT_ID}}'
+      CF_API_TOKEN: '{{.CF_API_TOKEN}}'
+    cmds:
+      - bun test app/operator/tests/e2e/cloudflare
+
+  ci:kest:
+    desc: Set up the CI kind cluster and run Route 53 kest tests.
+    cmds:
+      - task: deps:install
+      - task: ci:kind:up
+      - task: test:kest:ci
+
+  ci:cloudflare:kest:
+    desc: Set up the CI kind cluster and run Cloudflare kest tests.
+    cmds:
+      - task: deps:install
+      - task: cloudflare:smoke-check
+      - task: ci:cloudflare:kind:up
+      - task: test:kest:cloudflare
+
+  cloudflare:smoke-check:
+    desc: Verify Cloudflare credentials can list zones in the selected account.
+    env:
+      CF_ACCOUNT_ID: '{{.CF_ACCOUNT_ID}}'
+      CF_API_TOKEN: '{{.CF_API_TOKEN}}'
+    cmds:
+      - flarectl --json zone list
+
+  github:secrets:set:
+    desc: Set GitHub repository secrets from the current environment.
+    vars:
+      GITHUB_REPOSITORY: '{{.GITHUB_REPOSITORY | default "appthrust/dns-api"}}'
+    cmds:
+      - |
+        set -eu
+        required="
+        AWS_ROLE_TO_ASSUME
+        ROUTE53_ACCOUNT_ID
+        LOCAL_IRSA_BUCKET
+        CONTROLLER_POLICY_ARN
+        CF_ACCOUNT_ID
+        CF_API_TOKEN
+        "
+        for name in $required; do
+          eval "value=\${$name:-}"
+          if [ -z "$value" ]; then
+            echo "$name is required" >&2
+            exit 1
+          fi
+        done
+        set_secret() {
+          name="$1"
+          eval "value=\${$name}"
+          printf '%s' "$value" | gh secret set "$name" --repo "{{.GITHUB_REPOSITORY}}" >/dev/null
+          echo "set $name"
+        }
+        for name in $required; do
+          set_secret "$name"
+        done
+
+  cloudflare:sync-token-secret:
+    desc: Create or update the Kubernetes Secret used by CloudflareIdentity.
+    vars:
+      NAMESPACE: '{{.NAMESPACE | default "dns-api-cloudflare-platform"}}'
+      SECRET: '{{.SECRET | default "cloudflare-api-token"}}'
+      KEY: '{{.KEY | default "api-token"}}'
+    env:
+      CF_API_TOKEN: '{{.CF_API_TOKEN}}'
+    cmds:
+      - kubectl create namespace {{.NAMESPACE}} --dry-run=client -o yaml | kubectl apply -f -
+      - |
+        set -eu
+        if [ -z "${CF_API_TOKEN:-}" ]; then
+          echo "CF_API_TOKEN is required" >&2
+          exit 1
+        fi
+        token_b64="$(printf '%s' "$CF_API_TOKEN" | base64 | tr -d '\n')"
+        cat <<EOF | kubectl apply -f -
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          namespace: {{.NAMESPACE}}
+          name: {{.SECRET}}
+        type: Opaque
+        data:
+          {{.KEY}}: ${token_b64}
+        EOF
+
+  cloudflare:dev:apply-platform:
+    desc: Apply a local Cloudflare platform namespace, identity, and ZoneClass.
+    vars:
+      PLATFORM_NAMESPACE: '{{.PLATFORM_NAMESPACE | default "dns-api-cloudflare-platform"}}'
+      APP_NAMESPACE: '{{.APP_NAMESPACE | default "dns-api-cloudflare-app"}}'
+      SECRET: '{{.SECRET | default "cloudflare-api-token"}}'
+      SECRET_KEY: '{{.SECRET_KEY | default "api-token"}}'
+      IDENTITY: '{{.IDENTITY | default "cloudflare-local"}}'
+      ZONECLASS: '{{.ZONECLASS | default "cloudflare-public"}}'
+      APP_LABEL_KEY: '{{.APP_LABEL_KEY | default "appthrust.io/cloudflare-dns-api"}}'
+      APP_LABEL_VALUE: '{{.APP_LABEL_VALUE | default "local"}}'
+    cmds:
+      - task: cloudflare:sync-token-secret
+        vars:
+          NAMESPACE: '{{.PLATFORM_NAMESPACE}}'
+          SECRET: '{{.SECRET}}'
+          KEY: '{{.SECRET_KEY}}'
+      - kubectl create namespace {{.APP_NAMESPACE}} --dry-run=client -o yaml | kubectl apply -f -
+      - kubectl label namespace {{.APP_NAMESPACE}} {{.APP_LABEL_KEY}}={{.APP_LABEL_VALUE}} --overwrite
+      - |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: cloudflare.dns.appthrust.io/v1alpha1
+        kind: CloudflareIdentity
+        metadata:
+          namespace: {{.PLATFORM_NAMESPACE}}
+          name: {{.IDENTITY}}
+        spec:
+          accessToken:
+            secretRef:
+              name: {{.SECRET}}
+              key: {{.SECRET_KEY}}
+        ---
+        apiVersion: dns.appthrust.io/v1alpha1
+        kind: ZoneClass
+        metadata:
+          namespace: {{.PLATFORM_NAMESPACE}}
+          name: {{.ZONECLASS}}
+        spec:
+          provider:
+            name: cloudflare.dns.appthrust.io
+            version: v1alpha1
+          controllerName: cloudflare.dns.appthrust.io/controller
+          identityRef:
+            name: {{.IDENTITY}}
+          allowedZones:
+            namespaces:
+              from: Selector
+              selector:
+                matchLabels:
+                  {{.APP_LABEL_KEY}}: {{.APP_LABEL_VALUE}}
+          parameters:
+            zoneCreationPolicy: Create
+            zoneDeletionPolicy: Delete
+        EOF
+
+  cloudflare:dev:zone-lifecycle:
+    desc: Run the local Cloudflare Zone lifecycle kest check.
+    cmds:
+      - task: test:kest:cloudflare
+
+  cloudflare:kind:up:
+    desc: Create a local kind cluster and install dns-api for Cloudflare checks without AWS.
+    cmds:
+      - task: kind:create
+      - task: kind:context
+      - task: controller-image:build
+      - task: controller-image:load-kind
+      - task: cert-manager:install
+      - task: manifests:apply
+      - task: controller:rollout-status
+
+  deps:install:
+    desc: Install Bun workspace dependencies from the lockfile.
+    run: once
+    cmds:
+      - bun install --frozen-lockfile
+
+  up:
+    desc: Create the local kind cluster, select its context, and start Tilt.
+    cmds:
+      - task: kind:create
+      - task: kind:context
+      - task: tilt
+
+  cert-manager:install:
+    desc: Install cert-manager into the current Kubernetes context.
+    cmds:
+      - helm repo add jetstack https://charts.jetstack.io --force-update
+      - helm repo update
+      - |
+        helm upgrade --install cert-manager jetstack/cert-manager \
+          --namespace cert-manager \
+          --create-namespace \
+          --set crds.enabled=true \
+          --wait
+
+  manifests:apply:
+    desc: Generate and apply dns-api manifests to the current Kubernetes context.
+    cmds:
+      - task: manifests
+      - kustomize build app/operator/config/crd | kubectl apply -f -
+      - kubectl wait --for=condition=Established crd/providers.dns.appthrust.io crd/zoneclasses.dns.appthrust.io crd/zones.dns.appthrust.io crd/recordsets.dns.appthrust.io crd/zoneunits.dns.appthrust.io crd/cloudflareidentities.cloudflare.dns.appthrust.io crd/route53identities.route53.dns.appthrust.io --timeout=120s
+      - kustomize build app/operator/config/default | kubectl apply -f -
+
+  controller-image:build:
+    desc: Build the dns-api controller image.
+    vars:
+      IMAGE: '{{.IMAGE | default "dns-api-controller:latest"}}'
+    cmds:
+      - docker build -t {{.IMAGE}} .
+
+  controller-image:load-kind:
+    desc: Load the dns-api controller image into a kind cluster.
+    vars:
+      IMAGE: '{{.IMAGE | default "dns-api-controller:latest"}}'
+    cmds:
+      - kind load docker-image {{.IMAGE}} --name {{.KIND_CLUSTER}}
+
+  controller-chart:sync-crds:
+    desc: Sync generated CRD manifests into the Helm chart.
+    cmds:
+      - mkdir -p deploy/charts/dns-api/crds
+      - cp app/operator/config/crd/bases/*.yaml deploy/charts/dns-api/crds/
+
+  controller-chart:lint:
+    desc: Lint the dns-api controller Helm chart.
+    cmds:
+      - helm lint deploy/charts/dns-api
+
+  controller-chart:template:
+    desc: Render the dns-api controller Helm chart.
+    vars:
+      RELEASE_NAME: '{{.RELEASE_NAME | default "dns-api"}}'
+      NAMESPACE: '{{.NAMESPACE | default "dns-api-system"}}'
+    cmds:
+      - helm template {{.RELEASE_NAME}} deploy/charts/dns-api --namespace {{.NAMESPACE}} --include-crds >/tmp/dns-api-controller-chart.yaml
+
+  controller-chart:package:
+    desc: Package the dns-api controller Helm chart.
+    vars:
+      CHART_VERSION: '{{.CHART_VERSION | default "0.0.0-edge"}}'
+      APP_VERSION: '{{.APP_VERSION | default "edge"}}'
+      DESTINATION: '{{.DESTINATION | default ".task/helm"}}'
+    cmds:
+      - mkdir -p {{.DESTINATION}}
+      - helm package --app-version {{.APP_VERSION}} --version {{.CHART_VERSION}} --destination {{.DESTINATION}} deploy/charts/dns-api
+
+  controller-chart:check:
+    desc: Verify the dns-api controller Helm chart renders and packages.
+    cmds:
+      - task: controller-chart:lint
+      - task: controller-chart:template
+      - task: controller-chart:package
+
+  controller:rollout-status:
+    desc: Wait for the dns-api controller Deployment rollout.
+    vars:
+      NAMESPACE: '{{.NAMESPACE | default "dns-api-system"}}'
+      DEPLOYMENT: '{{.DEPLOYMENT | default "dns-api-controller-manager"}}'
+      TIMEOUT: '{{.TIMEOUT | default "180s"}}'
+    cmds:
+      - kubectl -n {{.NAMESPACE}} rollout status deployment/{{.DEPLOYMENT}} --timeout={{.TIMEOUT}}
+
+  controller:webhook-ready:
+    desc: Wait until the dns-api validating webhook accepts server-side dry-run requests.
+    vars:
+      NAMESPACE: '{{.NAMESPACE | default "dns-api-system"}}'
+      ACCOUNT_ID: '{{.ACCOUNT_ID | default .ROUTE53_ACCOUNT_ID | default "000000000000"}}'
+      REGION: '{{.REGION | default .AWS_REGION}}'
+      TIMEOUT_SECONDS: '{{.TIMEOUT_SECONDS | default "120"}}'
+    cmds:
+      - |
+        set -eu
+        deadline=$(( $(date +%s) + {{.TIMEOUT_SECONDS}} ))
+        last_error=""
+        while [ "$(date +%s)" -le "$deadline" ]; do
+          if last_error="$(kubectl -n {{.NAMESPACE}} apply --dry-run=server -f - 2>&1 >/dev/null <<'EOF'
+        apiVersion: route53.dns.appthrust.io/v1alpha1
+        kind: Route53Identity
+        metadata:
+          name: webhook-ready-check
+        spec:
+          accountID: "{{.ACCOUNT_ID}}"
+          region: {{.REGION}}
+          credentials:
+            runtime: {}
+        EOF
+        )"; then
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "dns-api validating webhook did not become ready before timeout" >&2
+        echo "$last_error" >&2
+        exit 1
+
+  aws:sso-login:
+    desc: Login to the AWS shared config profile used by Route 53 development.
+    cmds:
+      - aws sso login --profile {{.AWS_PROFILE | default "appthrust-dns-api-dev"}}
+
+  aws:sync-runtime-credentials:
+    desc: Dangerous fallback only. Sync short-lived AWS credentials to a dev Secret.
+    vars:
+      NAMESPACE: '{{.NAMESPACE | default "dns-api-system"}}'
+      DEPLOYMENT: '{{.DEPLOYMENT | default "dns-api-controller-manager"}}'
+      SECRET: '{{.SECRET | default "aws-runtime-credentials"}}'
+      ALLOW_RUNTIME_CREDENTIAL_SECRET: '{{.ALLOW_RUNTIME_CREDENTIAL_SECRET | default ""}}'
+    cmds:
+      - |
+        set -eu
+        required="I_UNDERSTAND_THIS_STORES_AWS_CREDENTIALS_IN_A_KUBERNETES_SECRET"
+        if [ "{{.ALLOW_RUNTIME_CREDENTIAL_SECRET}}" != "$required" ]; then
+          echo "Refusing to sync AWS credentials into a Kubernetes Secret." >&2
+          echo "Use local-irsa for local Route 53 development." >&2
+          echo "If this fallback is absolutely required, rerun with:" >&2
+          echo "  ALLOW_RUNTIME_CREDENTIAL_SECRET=$required" >&2
+          exit 2
+        fi
+      - kubectl create namespace {{.NAMESPACE}} --dry-run=client -o yaml | kubectl apply -f -
+      - |
+        tmpfile="$(mktemp)"
+        trap 'rm -f "$tmpfile"' EXIT
+        aws configure export-credentials --profile {{.AWS_PROFILE | default "appthrust-dns-api-dev"}} --format env-no-export > "$tmpfile"
+        printf 'AWS_REGION=%s\n' '{{.AWS_REGION}}' >> "$tmpfile"
+        kubectl -n {{.NAMESPACE}} create secret generic {{.SECRET}} \
+          --from-env-file="$tmpfile" \
+          --dry-run=client -o yaml \
+          | kubectl apply -f -
+      - |
+        kubectl -n {{.NAMESPACE}} patch deployment {{.DEPLOYMENT}} \
+          --type strategic \
+          -p '{"spec":{"template":{"spec":{"containers":[{"name":"manager","envFrom":[{"secretRef":{"name":"{{.SECRET}}","optional":true}}]}]}}}}'
+      - kubectl -n {{.NAMESPACE}} rollout restart deployment/{{.DEPLOYMENT}} || true
+
+  aws:ensure-route53-controller-policy:
+    desc: Create or update the Route 53 controller IAM policy.
+    silent: true
+    vars:
+      POLICY_NAME: '{{.POLICY_NAME | default "dns-api-route53-controller"}}'
+      POLICY_FILE: '{{.POLICY_FILE | default "app/operator/config/aws/route53-controller-policy.json"}}'
+    cmds:
+      - |
+        set -eu
+        profile="{{.AWS_PROFILE}}"
+        profile_args=""
+        if [ -n "$profile" ]; then
+          profile_args="--profile $profile"
+        fi
+        policy_name="{{.POLICY_NAME}}"
+        policy_file="{{.POLICY_FILE}}"
+        if [ ! -f "$policy_file" ]; then
+          echo "policy file not found: $policy_file" >&2
+          exit 1
+        fi
+
+        account_id="$(aws sts get-caller-identity $profile_args --query Account --output text)"
+        policy_arn="arn:aws:iam::${account_id}:policy/${policy_name}"
+
+        if ! aws iam get-policy $profile_args --policy-arn "$policy_arn" >/dev/null 2>&1; then
+          aws iam create-policy \
+            $profile_args \
+            --policy-name "$policy_name" \
+            --policy-document "file://${policy_file}" \
+            --query Policy.Arn \
+            --output text
+          exit 0
+        fi
+
+        version_count="$(aws iam list-policy-versions \
+          $profile_args \
+          --policy-arn "$policy_arn" \
+          --query 'length(Versions)' \
+          --output text)"
+        if [ "$version_count" -ge 5 ]; then
+          old_version="$(aws iam list-policy-versions \
+            $profile_args \
+            --policy-arn "$policy_arn" \
+            --query 'sort_by(Versions[?IsDefaultVersion==`false`], &CreateDate)[0].VersionId' \
+            --output text)"
+          if [ -n "$old_version" ] && [ "$old_version" != "None" ]; then
+            aws iam delete-policy-version \
+              $profile_args \
+              --policy-arn "$policy_arn" \
+              --version-id "$old_version"
+          fi
+        fi
+
+        aws iam create-policy-version \
+          $profile_args \
+          --policy-arn "$policy_arn" \
+          --policy-document "file://${policy_file}" \
+          --set-as-default >/dev/null
+        echo "$policy_arn"
+
+  local-irsa:init:
+    desc: Create local-irsa state and print a kind OIDC snippet.
+    vars:
+      BUCKET: '{{.BUCKET | default ""}}'
+    env:
+      LOCAL_IRSA_STATE_ROOT: '{{.LOCAL_IRSA_STATE_ROOT | default ""}}'
+    cmds:
+      - |
+        set -eu
+        profile_args=""
+        if [ -n "{{.AWS_PROFILE}}" ]; then
+          profile_args="--profile {{.AWS_PROFILE}}"
+        fi
+        args=""
+        if [ -n "{{.BUCKET}}" ]; then
+          args="$args --bucket {{.BUCKET}}"
+        fi
+        go tool local-irsa init --name {{.LOCAL_IRSA_NAME}} --region {{.AWS_REGION}} $profile_args $args
+
+  local-irsa:install:
+    desc: Install local-irsa issuer, IAM OIDC Provider, and Pod Identity Webhook.
+    env:
+      LOCAL_IRSA_STATE_ROOT: '{{.LOCAL_IRSA_STATE_ROOT | default ""}}'
+    cmds:
+      - |
+        set -eu
+        profile_args=""
+        if [ -n "{{.AWS_PROFILE}}" ]; then
+          profile_args="--profile {{.AWS_PROFILE}}"
+        fi
+        go tool local-irsa install --name {{.LOCAL_IRSA_NAME}} --context kind-{{.KIND_CLUSTER}} $profile_args
+
+  local-irsa:bind-controller:
+    desc: Bind the controller ServiceAccount to a local-irsa IAM Role.
+    vars:
+      NAMESPACE: '{{.NAMESPACE | default "dns-api-system"}}'
+      SERVICE_ACCOUNT: '{{.SERVICE_ACCOUNT | default "dns-api-controller-manager"}}'
+      DEPLOYMENT: '{{.DEPLOYMENT | default "dns-api-controller-manager"}}'
+      LOCAL_IRSA_ROLE_NAME: '{{.LOCAL_IRSA_ROLE_NAME | default ""}}'
+      POLICY_ARN: '{{.POLICY_ARN | default ""}}'
+      POLICY_NAME: '{{.POLICY_NAME | default "dns-api-route53-controller"}}'
+      POLICY_FILE: '{{.POLICY_FILE | default "app/operator/config/aws/route53-controller-policy.json"}}'
+    env:
+      LOCAL_IRSA_STATE_ROOT: '{{.LOCAL_IRSA_STATE_ROOT | default ""}}'
+    cmds:
+      - |
+        set -eu
+        profile_args=""
+        if [ -n "{{.AWS_PROFILE}}" ]; then
+          profile_args="--profile {{.AWS_PROFILE}}"
+        fi
+        role_name="{{.LOCAL_IRSA_ROLE_NAME}}"
+        if [ -z "$role_name" ]; then
+          role_name="local-irsa-{{.LOCAL_IRSA_NAME}}-dns-api-controller"
+        fi
+        policy_arn="{{.POLICY_ARN}}"
+        if [ -z "$policy_arn" ]; then
+          if [ -n "{{.AWS_PROFILE}}" ]; then
+            policy_arn="$(task --silent aws:ensure-route53-controller-policy AWS_PROFILE={{.AWS_PROFILE}} POLICY_NAME={{.POLICY_NAME}} POLICY_FILE={{.POLICY_FILE}})"
+          else
+            policy_arn="$(task --silent aws:ensure-route53-controller-policy POLICY_NAME={{.POLICY_NAME}} POLICY_FILE={{.POLICY_FILE}})"
+          fi
+        fi
+        go tool local-irsa bind \
+          --name {{.LOCAL_IRSA_NAME}} \
+          --namespace {{.NAMESPACE}} \
+          --service-account {{.SERVICE_ACCOUNT}} \
+          --role-name "$role_name" \
+          --policy-arn "$policy_arn" \
+          --context kind-{{.KIND_CLUSTER}} \
+          $profile_args
+        kubectl -n {{.NAMESPACE}} rollout restart deployment/{{.DEPLOYMENT}} || true
+
+  local-irsa:doctor:
+    desc: Check local-irsa issuer, AWS resources, webhook mutation, and controller binding.
+    vars:
+      NAMESPACE: '{{.NAMESPACE | default "dns-api-system"}}'
+      SERVICE_ACCOUNT: '{{.SERVICE_ACCOUNT | default "dns-api-controller-manager"}}'
+    cmds:
+      - go tool local-irsa doctor --name {{.LOCAL_IRSA_NAME}} --namespace {{.NAMESPACE}} --service-account {{.SERVICE_ACCOUNT}} --context kind-{{.KIND_CLUSTER}} --profile {{.AWS_PROFILE | default "appthrust-dns-api-dev"}}
+
+  local-irsa:unbind-controller:
+    desc: Remove the controller ServiceAccount local-irsa binding and IAM Role.
+    vars:
+      NAMESPACE: '{{.NAMESPACE | default "dns-api-system"}}'
+      SERVICE_ACCOUNT: '{{.SERVICE_ACCOUNT | default "dns-api-controller-manager"}}'
+    cmds:
+      - go tool local-irsa unbind --name {{.LOCAL_IRSA_NAME}} --namespace {{.NAMESPACE}} --service-account {{.SERVICE_ACCOUNT}} --context kind-{{.KIND_CLUSTER}} --profile {{.AWS_PROFILE | default "appthrust-dns-api-dev"}}
+
+  local-irsa:down:
+    desc: Remove local-irsa managed cluster-level AWS resources.
+    vars:
+      DELETE_BUCKET: '{{.DELETE_BUCKET | default "false"}}'
+      YES: '{{.YES | default "false"}}'
+    cmds:
+      - |
+        set -eu
+        args=""
+        if [ "{{.DELETE_BUCKET}}" = "true" ] || [ "{{.DELETE_BUCKET}}" = "1" ]; then
+          args="$args --delete-bucket"
+        fi
+        if [ "{{.YES}}" = "true" ] || [ "{{.YES}}" = "1" ]; then
+          args="$args --yes"
+        fi
+        go tool local-irsa down --name {{.LOCAL_IRSA_NAME}} --context kind-{{.KIND_CLUSTER}} --profile {{.AWS_PROFILE | default "appthrust-dns-api-dev"}} $args
+
+  ci:kind:up:
+    desc: Create the CI kind cluster, install dns-api, and bind the controller with local-irsa.
+    vars:
+      KIND_CLUSTER: dns-api-ci
+      LOCAL_IRSA_NAME: dns-api-ci
+      LOCAL_IRSA_STATE_ROOT: .task/local-irsa-ci
+      CONTROLLER_ROLE_NAME: local-irsa-dns-api-ci-controller
+    cmds:
+      - task: ci:local-irsa:init
+      - task: kind:create
+        vars:
+          KIND_CLUSTER: '{{.KIND_CLUSTER}}'
+      - task: kind:context
+        vars:
+          KIND_CLUSTER: '{{.KIND_CLUSTER}}'
+      - task: controller-image:build
+      - task: controller-image:load-kind
+        vars:
+          KIND_CLUSTER: '{{.KIND_CLUSTER}}'
+      - task: cert-manager:install
+      - task: local-irsa:install
+        vars:
+          LOCAL_IRSA_NAME: '{{.LOCAL_IRSA_NAME}}'
+          KIND_CLUSTER: '{{.KIND_CLUSTER}}'
+          AWS_PROFILE: '{{.AWS_PROFILE}}'
+          LOCAL_IRSA_STATE_ROOT: '{{.LOCAL_IRSA_STATE_ROOT}}'
+      - task: manifests:apply
+      - task: local-irsa:bind-controller
+        vars:
+          LOCAL_IRSA_NAME: '{{.LOCAL_IRSA_NAME}}'
+          KIND_CLUSTER: '{{.KIND_CLUSTER}}'
+          AWS_PROFILE: '{{.AWS_PROFILE}}'
+          LOCAL_IRSA_ROLE_NAME: '{{.CONTROLLER_ROLE_NAME}}'
+          POLICY_ARN: '{{.CONTROLLER_POLICY_ARN}}'
+          LOCAL_IRSA_STATE_ROOT: '{{.LOCAL_IRSA_STATE_ROOT}}'
+      - task: controller:rollout-status
+      - task: controller:webhook-ready
+
+  ci:kind:down:
+    desc: Delete the CI kind cluster. It does not remove local-irsa AWS issuer resources.
+    cmds:
+      - kind delete cluster --name dns-api-ci
+
+  ci:cloudflare:kind:up:
+    desc: Create the CI kind cluster and install dns-api for Cloudflare checks without AWS.
+    vars:
+      KIND_CLUSTER: dns-api-ci
+    cmds:
+      - task: kind:create
+        vars:
+          KIND_CLUSTER: '{{.KIND_CLUSTER}}'
+          KIND_CONFIG: 'app/operator/config/kind/ci-cloudflare.yaml'
+      - task: kind:context
+        vars:
+          KIND_CLUSTER: '{{.KIND_CLUSTER}}'
+      - task: controller-image:build
+      - task: controller-image:load-kind
+        vars:
+          KIND_CLUSTER: '{{.KIND_CLUSTER}}'
+      - task: cert-manager:install
+      - task: manifests:apply
+      - task: controller:rollout-status
+      - task: controller:webhook-ready
+
+  ci:local-irsa:init:
+    desc: Create CI local-irsa state with a fixed issuer bucket.
+    vars:
+      KIND_CLUSTER: dns-api-ci
+      LOCAL_IRSA_NAME: dns-api-ci
+      LOCAL_IRSA_STATE_ROOT: .task/local-irsa-ci
+    cmds:
+      - |
+        set -eu
+        if [ -z "{{.LOCAL_IRSA_BUCKET}}" ]; then
+          echo "LOCAL_IRSA_BUCKET is required" >&2
+          exit 1
+        fi
+      - task: local-irsa:init
+        vars:
+          LOCAL_IRSA_NAME: '{{.LOCAL_IRSA_NAME}}'
+          AWS_PROFILE: '{{.AWS_PROFILE}}'
+          AWS_REGION: '{{.AWS_REGION}}'
+          BUCKET: '{{.LOCAL_IRSA_BUCKET}}'
+          LOCAL_IRSA_STATE_ROOT: '{{.LOCAL_IRSA_STATE_ROOT}}'
+      - |
+        set -eu
+        snippet="{{.LOCAL_IRSA_STATE_ROOT}}/clusters/{{.LOCAL_IRSA_NAME}}/kind-irsa-snippet.yaml"
+        if [ ! -f "$snippet" ]; then
+          echo "local-irsa kind snippet not found: $snippet" >&2
+          exit 1
+        fi
+        {
+          printf '%s\n' 'kind: Cluster'
+          printf '%s\n' 'apiVersion: kind.x-k8s.io/v1alpha4'
+          printf 'name: %s\n' '{{.KIND_CLUSTER}}'
+          cat "$snippet"
+        } > kind.yaml
+
+  route53:cleanup-kest-zones:
+    desc: List Route 53 hosted zones tagged appthrust.io/test-scope=kest. Set DELETE=true to delete them.
+    vars:
+      DELETE: '{{.DELETE | default "false"}}'
+    env:
+      AWS_PROFILE: '{{.AWS_PROFILE | default "appthrust-dns-api-dev"}}'
+    cmds:
+      - |
+        set -eu
+        found=0
+        for zone_id in $(aws route53 list-hosted-zones --query 'HostedZones[].Id' --output text); do
+          id="${zone_id##*/}"
+          scope="$(aws route53 list-tags-for-resource --resource-type hostedzone --resource-id "$id" --query 'ResourceTagSet.Tags[?Key==`appthrust.io/test-scope`].Value | [0]' --output text)"
+          if [ "$scope" != "kest" ]; then
+            continue
+          fi
+          found=1
+          name="$(aws route53 get-hosted-zone --id "$id" --query 'HostedZone.Name' --output text)"
+          test_id="$(aws route53 list-tags-for-resource --resource-type hostedzone --resource-id "$id" --query 'ResourceTagSet.Tags[?Key==`appthrust.io/test-id`].Value | [0]' --output text)"
+          echo "$id $name test-id=$test_id"
+          if [ "{{.DELETE}}" = "true" ] || [ "{{.DELETE}}" = "1" ]; then
+            aws route53 delete-hosted-zone --id "$id" >/dev/null
+            echo "deleted $id"
+          fi
+        done
+        if [ "$found" = "0" ]; then
+          echo "no kest hosted zones found"
+        fi
+
+  cloudflare:cleanup-kest-zones:
+    desc: List Cloudflare kest zones. Set DELETE=true to delete matching test zones.
+    vars:
+      PREFIX: '{{.PREFIX | default ""}}'
+      DELETE: '{{.DELETE | default "false"}}'
+      CONFIRM_PREFIX: '{{.CONFIRM_PREFIX | default ""}}'
+      ALLOW_UNKNOWN_ACCOUNT: '{{.ALLOW_UNKNOWN_ACCOUNT | default "false"}}'
+    env:
+      CF_ACCOUNT_ID: '{{.CF_ACCOUNT_ID}}'
+      CF_API_TOKEN: '{{.CF_API_TOKEN}}'
+      PREFIX: '{{.PREFIX}}'
+      DELETE: '{{.DELETE}}'
+      CONFIRM_PREFIX: '{{.CONFIRM_PREFIX}}'
+      ALLOW_UNKNOWN_ACCOUNT: '{{.ALLOW_UNKNOWN_ACCOUNT}}'
+    cmds:
+      - bun scripts/cloudflare-cleanup-kest-zones.mjs
+
+  kind:create:
+    desc: Create the local kind cluster.
+    cmds:
+      - |
+        if [ -f "{{.KIND_CONFIG}}" ]; then
+          kind create cluster --name {{.KIND_CLUSTER}} --config {{.KIND_CONFIG}}
+        else
+          kind create cluster --name {{.KIND_CLUSTER}}
+        fi
+    status:
+      - kind get clusters | grep -qx {{.KIND_CLUSTER}}
+
+  kind:context:
+    desc: Select the local kind cluster kubectl context.
+    cmds:
+      - kubectl config use-context kind-{{.KIND_CLUSTER}}
+
+  tilt:
+    desc: Start Tilt for cluster-based development.
+    deps:
+      - manifests
+    cmds:
+      - tilt up
+
+  ui:install:
+    desc: Install UI workspace dependencies.
+    cmds:
+      - bun install
+
+  dns-api-ui:mockup:
+    desc: Start the DNS API UI mockup Vite dev server.
+    dir: app/ui-mockup
+    vars:
+      PORT: '{{.PORT | default "5173"}}'
+    cmds:
+      - bunx vite --host 127.0.0.1 --port {{.PORT}}
+
+  headlamp-plugin:install:
+    desc: Install UI workspace dependencies.
+    cmds:
+      - task: ui:install
+
+  headlamp-plugin:start:
+    desc: Start the Headlamp Desktop plugin in development mode.
+    dir: app/headlamp-plugin
+    cmds:
+      - bun run start
+
+  headlamp-plugin:build:
+    desc: Build the Headlamp Desktop plugin.
+    dir: app/headlamp-plugin
+    cmds:
+      - bun run build
+
+  headlamp-plugin:package:
+    desc: Package the Headlamp Desktop plugin for Catalog release and manual Desktop installation.
+    vars:
+      VERSION: '{{.VERSION | default ""}}'
+    cmds:
+      - task: headlamp-plugin:build
+      - rm -f app/headlamp-plugin/headlamp-plugin-dns-api-*.tar.gz app/headlamp-plugin/headlamp-plugin-dns-api-*.tar.gz.sha256
+      - VERSION="{{.VERSION}}" node scripts/headlamp-plugin-package.mjs
+      - VERSION="{{.VERSION}}" node scripts/headlamp-plugin-verify.mjs
+
+  headlamp-plugin:check:
+    desc: Run Headlamp Desktop plugin format, lint, type check, and tests.
+    cmds:
+      - bunx tsc -p pkg/ts/ui/tsconfig.json --noEmit
+      - task: headlamp-plugin:format
+      - task: headlamp-plugin:lint
+      - task: headlamp-plugin:tsc
+      - task: headlamp-plugin:test
+
+  headlamp-plugin:format:
+    desc: Format the Headlamp Desktop plugin package.
+    dir: app/headlamp-plugin
+    cmds:
+      - bun run format
+
+  headlamp-plugin:lint:
+    desc: Lint the Headlamp Desktop plugin package.
+    dir: app/headlamp-plugin
+    cmds:
+      - bun run lint
+
+  headlamp-plugin:tsc:
+    desc: Type check the Headlamp Desktop plugin package.
+    dir: app/headlamp-plugin
+    cmds:
+      - bun run tsc
+
+  headlamp-plugin:test:
+    desc: Run Headlamp Desktop plugin tests.
+    dir: app/headlamp-plugin
+    cmds:
+      - bun run test
+
+  headlamp-plugin:artifacthub-metadata:
+    desc: Verify Headlamp plugin Artifact Hub metadata against the packaged archive.
+    vars:
+      VERSION: '{{.VERSION | default ""}}'
+      STRICT: '{{.STRICT | default "false"}}'
+    cmds:
+      - |
+        set -eu
+        args=""
+        if [ "{{.STRICT}}" = "true" ] || [ "{{.STRICT}}" = "1" ]; then
+          args="--strict-metadata"
+        fi
+        VERSION="{{.VERSION}}" node scripts/headlamp-plugin-verify.mjs $args
+
+  headlamp-plugin:install-desktop:
+    desc: Install the packaged Headlamp Desktop plugin into the local Desktop plugin directory.
+    vars:
+      PLUGINS_DIR:
+        sh: echo "${HEADLAMP_PLUGINS_DIR:-$HOME/.config/Headlamp/plugins}"
+      PACKAGE_NAME: headlamp-plugin-dns-api
+    cmds:
+      - task: headlamp-plugin:package
+      - |
+        set -eu
+        plugins_dir="{{.PLUGINS_DIR}}"
+        package_name="{{.PACKAGE_NAME}}"
+        package_root="app/headlamp-plugin"
+        dist_dir="app/headlamp-plugin/dist"
+        install_dir="$plugins_dir/$package_name"
+
+        mkdir -p "$plugins_dir"
+        rm -rf "$install_dir"
+
+        if [ -d "$dist_dir/$package_name" ]; then
+          cp -R "$dist_dir/$package_name" "$install_dir"
+          exit 0
+        fi
+
+        archive="$(find "$package_root" "$dist_dir" -maxdepth 1 -type f \( -name "$package_name-v*.tar.gz" -o -name "$package_name-v*.tgz" -o -name "$package_name-v*.zip" \) | head -n 1)"
+        if [ -z "$archive" ]; then
+          echo "no packaged Headlamp plugin found under $package_root" >&2
+          exit 1
+        fi
+
+        tmpdir="$(mktemp -d)"
+        trap 'rm -rf "$tmpdir"' EXIT
+        case "$archive" in
+          *.zip) unzip -q "$archive" -d "$tmpdir" ;;
+          *) tar -xzf "$archive" -C "$tmpdir" ;;
+        esac
+
+        if [ -d "$tmpdir/headlamp-plugin" ]; then
+          mv "$tmpdir/headlamp-plugin" "$install_dir"
+        elif [ -d "$tmpdir/$package_name" ]; then
+          mv "$tmpdir/$package_name" "$install_dir"
+        else
+          mkdir -p "$install_dir"
+          cp -R "$tmpdir"/. "$install_dir"
+        fi
+
+  headlamp-plugin:clean-desktop:
+    desc: Remove the Headlamp Desktop plugin from the local Desktop plugin directory.
+    vars:
+      PLUGINS_DIR:
+        sh: echo "${HEADLAMP_PLUGINS_DIR:-$HOME/.config/Headlamp/plugins}"
+      PACKAGE_NAME: headlamp-plugin-dns-api
+    cmds:
+      - rm -rf "{{.PLUGINS_DIR}}/{{.PACKAGE_NAME}}"

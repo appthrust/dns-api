@@ -1,0 +1,29 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.14.2/.schema/devbox.schema.json",
+  "packages": [
+    "go@1.26.2",
+    "go-task@latest",
+    "kind@latest",
+    "kubectl@latest",
+    "kustomize@latest",
+    "awscli2@latest",
+    "kubernetes-helm@latest",
+    "tilt@latest",
+    "bun@latest",
+    "nodejs@latest",
+    "flarectl@latest"
+  ],
+  "shell": {
+    "scripts": {
+      "test": [
+        "task test"
+      ],
+      "test:kest": [
+        "task test:kest"
+      ],
+      "up": [
+        "task up"
+      ]
+    }
+  }
+}

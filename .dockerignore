@@ -1,0 +1,12 @@
+**
+
+!Dockerfile
+!go.mod
+!go.sum
+
+!app/
+!app/**
+!pkg/
+!pkg/**
+!internal/
+!internal/**

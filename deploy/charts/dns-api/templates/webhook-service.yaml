@@ -1,0 +1,18 @@
+{{- if .Values.webhook.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "dns-api.webhookServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dns-api.labels" . | nindent 4 }}
+    app.kubernetes.io/component: webhook
+spec:
+  selector:
+    {{- include "dns-api.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: https
+      port: {{ .Values.webhook.service.port }}
+      targetPort: {{ .Values.webhook.port }}
+{{- end }}
+

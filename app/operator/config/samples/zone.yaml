@@ -1,0 +1,24 @@
+apiVersion: dns.appthrust.io/v1alpha1
+kind: Zone
+metadata:
+  namespace: tenant-a-app
+  name: apps-example-com
+spec:
+  domainName: apps.example.com
+  provider:
+    name: route53.dns.appthrust.io
+    version: v1alpha1
+  zoneClassRef:
+    namespace: tenant-a-platform
+    name: route53-public
+  allowedRecordSets:
+    - namespaces:
+        selector:
+          matchLabels:
+            appthrust.io/dns-access: apps-example-com
+      records:
+        - name:
+            pattern: 'app-a'
+          types:
+            - A
+            - AAAA

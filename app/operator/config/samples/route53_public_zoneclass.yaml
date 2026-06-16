@@ -1,0 +1,64 @@
+apiVersion: dns.appthrust.io/v1alpha1
+kind: Provider
+metadata:
+  name: route53.dns.appthrust.io
+spec:
+  display:
+    name: Amazon Route 53
+    logo:
+      url: https://cdn.jsdelivr.net/gh/glincker/thesvg@main/public/icons/aws-amazon-route-53/default.svg
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      identity:
+        resource:
+          group: route53.dns.appthrust.io
+          kind: Route53Identity
+          scope: Namespaced
+      recordSet:
+        supportedTypes:
+          - A
+          - AAAA
+          - TXT
+          - CNAME
+          - MX
+          - CAA
+          - NS
+---
+apiVersion: route53.dns.appthrust.io/v1alpha1
+kind: Route53Identity
+metadata:
+  namespace: tenant-a-platform
+  name: route53-dev
+spec:
+  accountID: "123456789012"
+  region: ap-northeast-1
+  credentials:
+    runtime: {}
+---
+apiVersion: dns.appthrust.io/v1alpha1
+kind: ZoneClass
+metadata:
+  namespace: tenant-a-platform
+  name: route53-public
+spec:
+  allowedZones:
+    namespaces:
+      from: Selector
+      selector:
+        matchLabels:
+          appthrust.io/tenant: tenant-a
+  provider:
+    name: route53.dns.appthrust.io
+    version: v1alpha1
+  controllerName: route53.dns.appthrust.io/controller
+  identityRef:
+    name: route53-dev
+  parameters:
+    zoneCreationPolicy: Create
+    zoneDeletionPolicy: Retain
+    sameNameZonePolicy: Deny
+    tags:
+      appthrust.io/project: dns-api
+      appthrust.io/environment: development

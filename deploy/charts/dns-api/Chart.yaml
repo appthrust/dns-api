@@ -1,0 +1,8 @@
+apiVersion: v2
+name: dns-api
+description: Kubernetes DNS API controller for Route 53 and Cloudflare
+type: application
+version: 0.1.0
+appVersion: "v0.0.0"
+kubeVersion: ">=1.22.0-0"
+

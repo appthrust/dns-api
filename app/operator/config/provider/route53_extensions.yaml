@@ -1,0 +1,151 @@
+apiVersion: dns.appthrust.io/v1alpha1
+kind: Provider
+metadata:
+  name: route53.dns.appthrust.io
+spec:
+  display:
+    name: Amazon Route 53
+    description: Public DNS zones and record sets managed through Route 53.
+    logo:
+      url: https://cdn.jsdelivr.net/gh/glincker/thesvg@main/public/icons/aws-amazon-route-53/default.svg
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      deprecated: false
+      identity:
+        resource:
+          group: route53.dns.appthrust.io
+          kind: Route53Identity
+          scope: Namespaced
+      zoneClass:
+        schemas:
+          parameters:
+            openAPIV3Schema:
+              type: object
+              additionalProperties: false
+              properties:
+                zoneCreationPolicy:
+                  type: string
+                  description: Controls whether dns-api may create a Route 53 public hosted zone when a Zone does not adopt an existing hosted zone.
+                  enum:
+                    - Create
+                    - Deny
+                zoneDeletionPolicy:
+                  type: string
+                  description: Controls whether dns-api deletes the Route 53 hosted zone when the Kubernetes Zone is deleted.
+                  enum:
+                    - Delete
+                    - Retain
+                sameNameZonePolicy:
+                  type: string
+                  description: Controls whether dns-api may create a new Route 53 hosted zone when another same-name hosted zone already exists.
+                  enum:
+                    - Allow
+                    - Deny
+                tags:
+                  type: object
+                  description: Additional Route 53 tags applied to hosted zones created by this ZoneClass.
+                  additionalProperties:
+                    type: string
+                    description: One Route 53 tag value applied to hosted zones created by this ZoneClass.
+      zone:
+        schemas:
+          adoption:
+            openAPIV3Schema:
+              type: object
+              required:
+                - hostedZoneId
+              additionalProperties: false
+              properties:
+                hostedZoneId:
+                  type: string
+                  description: Route 53 public hosted zone ID of the existing hosted zone to adopt.
+                  pattern: '^Z[A-Z0-9]+$'
+          statusProviderData:
+            openAPIV3Schema:
+              type: object
+              additionalProperties: false
+              properties:
+                hostedZoneID:
+                  type: string
+                  description: Route 53 hosted zone ID managed for this Zone.
+                  pattern: '^Z[A-Z0-9]+$'
+      recordSet:
+        supportedTypes:
+          - A
+          - AAAA
+          - TXT
+          - CNAME
+          - MX
+          - CAA
+          - NS
+        schemas:
+          options:
+            openAPIV3Schema:
+              type: object
+              additionalProperties: false
+              properties:
+                alias:
+                  type: object
+                  description: Route 53 alias target for an A or AAAA RecordSet. Alias records omit TTL and standard record values.
+                  required:
+                    - dnsName
+                    - hostedZoneID
+                    - evaluateTargetHealth
+                  additionalProperties: false
+                  properties:
+                    dnsName:
+                      type: string
+                      description: DNS name of the Route 53 alias target. Use a trailing root dot.
+                      pattern: '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?))*\.$'
+                    hostedZoneID:
+                      type: string
+                      description: Hosted zone ID of the alias target resource, such as an Elastic Load Balancer CanonicalHostedZoneId.
+                      pattern: '^Z[A-Z0-9]+$'
+                    evaluateTargetHealth:
+                      type: boolean
+                      description: Whether Route 53 evaluates target health for this alias record.
+          adoption:
+            openAPIV3Schema:
+              type: object
+              required:
+                - enabled
+              additionalProperties: false
+              properties:
+                enabled:
+                  type: boolean
+                  description: Whether dns-api may adopt an existing Route 53 record set matching the accepted Zone and RecordSet desired state.
+          statusProviderData:
+            openAPIV3Schema:
+              type: object
+              additionalProperties: false
+              properties: {}
+        disableValidations:
+          - name: require-ttl
+            when: "has(self.spec.options) && has(self.spec.options.alias)"
+          - name: require-a-addresses
+            when: "has(self.spec.options) && has(self.spec.options.alias)"
+          - name: require-aaaa-addresses
+            when: "has(self.spec.options) && has(self.spec.options.alias)"
+        validationRules:
+          - rule: "self.spec.type == 'A' || self.spec.type == 'AAAA' || self.spec.type == 'TXT' || self.spec.type == 'CNAME' || self.spec.type == 'MX' || self.spec.type == 'CAA' || self.spec.type == 'NS'"
+            message: "route53 supports A, AAAA, TXT, CNAME, MX, CAA, and delegated NS records"
+          - rule: "!(has(self.spec.options) && has(self.spec.options.alias)) || self.spec.type == 'A' || self.spec.type == 'AAAA'"
+            message: "route53 alias is supported only for A and AAAA records"
+          - rule: "!(has(self.spec.options) && has(self.spec.options.alias) && has(self.spec.ttl))"
+            message: "ttl must not be specified when route53 alias is used"
+          - rule: "!(has(self.spec.options) && has(self.spec.options.alias) && has(self.spec.a) && has(self.spec.a.addresses))"
+            message: "a.addresses must not be specified when route53 alias is used"
+          - rule: "!(has(self.spec.options) && has(self.spec.options.alias) && has(self.spec.aaaa) && has(self.spec.aaaa.addresses))"
+            message: "aaaa.addresses must not be specified when route53 alias is used"
+          - rule: "!(has(self.spec.options) && has(self.spec.options.alias) && has(self.spec.txt) && has(self.spec.txt.values))"
+            message: "txt.values must not be specified when route53 alias is used"
+          - rule: "!(has(self.spec.options) && has(self.spec.options.alias) && has(self.spec.cname) && has(self.spec.cname.target))"
+            message: "cname.target must not be specified when route53 alias is used"
+          - rule: "!(has(self.spec.options) && has(self.spec.options.alias) && has(self.spec.mx) && has(self.spec.mx.records))"
+            message: "mx.records must not be specified when route53 alias is used"
+          - rule: "!(has(self.spec.options) && has(self.spec.options.alias) && has(self.spec.caa) && has(self.spec.caa.records))"
+            message: "caa.records must not be specified when route53 alias is used"
+          - rule: "!(has(self.spec.options) && has(self.spec.options.alias) && has(self.spec.ns) && has(self.spec.ns.nameServers))"
+            message: "ns.nameServers must not be specified when route53 alias is used"

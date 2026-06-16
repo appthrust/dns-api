@@ -1,0 +1,18 @@
+apiVersion: dns.appthrust.io/v1alpha1
+kind: RecordSet
+metadata:
+  namespace: tenant-a-app
+  name: root-alias
+spec:
+  zoneRef:
+    name: apps-example-com
+  provider:
+    name: route53.dns.appthrust.io
+    version: v1alpha1
+  type: A
+  name: "@"
+  options:
+    alias:
+      dnsName: dualstack.example-alb.ap-northeast-1.elb.amazonaws.com.
+      hostedZoneID: Z14GRHDCWA56QT
+      evaluateTargetHealth: true

@@ -1,0 +1,60 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/appthrust/dns-api
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+namespace:
+  create: true
+  annotations: {}
+  labels: {}
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+rbac:
+  create: true
+
+podAnnotations: {}
+podLabels: {}
+podSecurityContext: {}
+securityContext: {}
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+leaderElection:
+  enabled: false
+
+metrics:
+  port: 8080
+
+health:
+  port: 8081
+
+webhook:
+  enabled: true
+  failurePolicy: Fail
+  port: 9443
+  service:
+    port: 443
+
+certManager:
+  enabled: true
+
+providers:
+  route53:
+    enabled: true
+  cloudflare:
+    enabled: true
+
+extraArgs: []
+extraEnv: []

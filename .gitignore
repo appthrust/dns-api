@@ -1,0 +1,8 @@
+/bin/
+/dist/
+/tmp/
+/.task/
+node_modules/
+.eslintcache
+.env
+kind.yaml

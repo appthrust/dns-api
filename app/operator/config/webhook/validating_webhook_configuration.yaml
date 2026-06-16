@@ -1,0 +1,154 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: dns-api-validating-webhook-configuration
+  annotations:
+    cert-manager.io/inject-ca-from: dns-api-system/dns-api-webhook-serving-cert
+webhooks:
+  - name: providers.dns.appthrust.io
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: Fail
+    clientConfig:
+      service:
+        namespace: dns-api-system
+        name: dns-api-webhook-service
+        path: /validate-dns-appthrust-io-v1alpha1-provider
+    rules:
+      - apiGroups:
+          - dns.appthrust.io
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - providers
+  - name: zoneclasses.dns.appthrust.io
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: Fail
+    clientConfig:
+      service:
+        namespace: dns-api-system
+        name: dns-api-webhook-service
+        path: /validate-dns-appthrust-io-v1alpha1-zoneclass
+    rules:
+      - apiGroups:
+          - dns.appthrust.io
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - zoneclasses
+          - zoneclasses/status
+  - name: route53identities.route53.dns.appthrust.io
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: Fail
+    clientConfig:
+      service:
+        namespace: dns-api-system
+        name: dns-api-webhook-service
+        path: /validate-route53-dns-appthrust-io-v1alpha1-route53identity
+    rules:
+      - apiGroups:
+          - route53.dns.appthrust.io
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - route53identities
+          - route53identities/status
+  - name: cloudflareidentities.cloudflare.dns.appthrust.io
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: Fail
+    clientConfig:
+      service:
+        namespace: dns-api-system
+        name: dns-api-webhook-service
+        path: /validate-cloudflare-dns-appthrust-io-v1alpha1-cloudflareidentity
+    rules:
+      - apiGroups:
+          - cloudflare.dns.appthrust.io
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - cloudflareidentities
+          - cloudflareidentities/status
+  - name: zones.dns.appthrust.io
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: Fail
+    clientConfig:
+      service:
+        namespace: dns-api-system
+        name: dns-api-webhook-service
+        path: /validate-dns-appthrust-io-v1alpha1-zone
+    rules:
+      - apiGroups:
+          - dns.appthrust.io
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - zones
+          - zones/status
+  - name: recordsets.dns.appthrust.io
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: Fail
+    clientConfig:
+      service:
+        namespace: dns-api-system
+        name: dns-api-webhook-service
+        path: /validate-dns-appthrust-io-v1alpha1-recordset
+    rules:
+      - apiGroups:
+          - dns.appthrust.io
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - recordsets
+          - recordsets/status
+  - name: zoneunits.dns.appthrust.io
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: Fail
+    clientConfig:
+      service:
+        namespace: dns-api-system
+        name: dns-api-webhook-service
+        path: /validate-dns-appthrust-io-v1alpha1-zoneunit
+    rules:
+      - apiGroups:
+          - dns.appthrust.io
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+          - DELETE
+        resources:
+          - zoneunits
+          - zoneunits/status

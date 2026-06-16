@@ -1,0 +1,37 @@
+name: controller-ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jetify-com/devbox-install-action@v0.13.0
+        with:
+          devbox-version: 0.17.2
+      - name: Generate API and manifests
+        run: devbox run -- task generate
+      - name: Check generated files are current
+        run: git diff --exit-code -- pkg/go/api app/operator/config
+      - name: Run Go tests
+        run: devbox run -- task test
+      - name: Run go vet
+        run: devbox run -- go vet ./...
+      - name: Build default manifests
+        run: devbox run -- kustomize build app/operator/config/default >/tmp/dns-api-controller.yaml
+      - name: Sync Helm chart CRDs
+        run: devbox run -- task controller-chart:sync-crds
+      - name: Check Helm chart CRDs are current
+        run: git diff --exit-code -- deploy/charts/dns-api/crds
+      - name: Check Helm chart
+        run: devbox run -- task controller-chart:check
+      - name: Build controller image
+        run: docker build -t dns-api-controller:ci .
