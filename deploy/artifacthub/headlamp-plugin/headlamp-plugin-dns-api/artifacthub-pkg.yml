@@ -1,4 +1,4 @@
-version: 0.1.0
+version: 0.1.1
 name: headlamp-plugin-dns-api
 displayName: DNS API
 createdAt: "2026-06-01T00:00:00Z"
@@ -7,7 +7,7 @@ description: Manage dns-api Zone, ZoneClass, RecordSet, and Route 53 resources f
 license: Apache-2.0
 homeURL: https://github.com/appthrust/dns-api
 annotations:
-  headlamp/plugin/archive-url: https://github.com/appthrust/dns-api/releases/download/v0.1.0/headlamp-plugin-dns-api-v0.1.0.tar.gz
+  headlamp/plugin/archive-url: https://github.com/appthrust/dns-api/releases/download/v0.1.1/headlamp-plugin-dns-api-v0.1.1.tar.gz
   headlamp/plugin/archive-checksum: sha256:<checksum>
   headlamp/plugin/version-compat: ">=0.42.0 <0.43.0"
   headlamp/plugin/distro-compat: "app,mac,linux"
