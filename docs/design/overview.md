@@ -6,6 +6,17 @@ The API follows the same broad model as Gateway API: provider differences are ex
 
 ExternalDNS is a controller that creates DNS records from existing Kubernetes resources. dns-api manages DNS zones and DNS record sets themselves as Kubernetes resources.
 
+## Architecture Vocabulary
+
+dns-api uses these layer names to keep responsibilities clear:
+
+- **Core**: the first-floor DNS API primitives and contracts. Core owns `ZoneClass`, `Provider`, `Zone`, `RecordSet`, `ZoneUnit`, core admission, and the controllers that compose accepted `Zone` and `RecordSet` claims into `ZoneUnit`. Core does not know Gateway API, Ingress, Service, UI preview workflows, or provider-specific endpoint record set shaping.
+- **Core Provider**: a provider implementation for Core resources. A Core Provider reconciles `ZoneUnit` desired state to a DNS provider and implements provider-specific identity, options, validation, status, and external API calls for `Zone` and `RecordSet`. Route 53 and Cloudflare Core Provider controllers are examples.
+- **App**: a DNS API application built on top of Core. An App derives or manages Core resources from another workflow or API. Gateway API DNS support is an App. Future Ingress DNS support, Service DNS support, and UI-generated manifest flows are also Apps.
+- **App Provider**: a provider-specific extension used by an App. An App Provider capability adapts an App's provider-neutral intent to provider-specific Core resource shape without expanding Core controller responsibility. `endpoint.dns.appthrust.io/EndpointProviderCapability` and the Endpoint RecordSet Refine API are App Provider capabilities.
+
+The `Provider` resource is the Core Provider discovery contract. Core reads Core Provider capabilities such as schemas, validation rules, conversions, supported record types, and condition reasons. App Provider capabilities live in App-specific API groups, such as `endpoint.dns.appthrust.io`, so Core controllers do not depend on Gateway, Ingress, Service, UI, or endpoint record set workflows.
+
 ## Initial Scope
 
 The initial implementation targets Route 53 public hosted zones. dns-api handles Public DNS only. Private DNS, VPC association, split-horizon DNS, and DNS propagation checks are out of scope initially. The API is not Route 53-specific and must allow future providers such as Google Cloud DNS, Cloudflare, and Azure DNS.
