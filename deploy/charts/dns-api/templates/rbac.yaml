@@ -17,11 +17,24 @@ rules:
       - ""
     resources:
       - namespaces
+      - services
       - secrets
     verbs:
       - get
       - list
       - watch
+  - apiGroups:
+      - ""
+    resources:
+      - services
+    verbs:
+      - update
+  - apiGroups:
+      - ""
+    resources:
+      - services/finalizers
+    verbs:
+      - update
   - apiGroups:
       - cloudflare.dns.appthrust.io
     resources:

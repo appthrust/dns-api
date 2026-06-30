@@ -22,7 +22,15 @@ spec:
       value: k8s-public-123.ap-northeast-1.elb.amazonaws.com
 ```
 
-The source App owns source-specific interpretation. For example, the Gateway App reads `HTTPRoute` and `Gateway`, then creates one `EndpointRecordSet` for each accepted route/listener binding. The source App should use labels or owner references for source tracking. `EndpointRecordSet.spec` does not include `sourceRef` because the endpoint controller does not use it to reconcile DNS.
+The source App owns source-specific interpretation. For example, the Gateway App reads `HTTPRoute` and `Gateway`, then creates one `EndpointRecordSet` for each Gateway that has accepted routes with usable hostnames and targets. The source App should use labels or owner references for source tracking. `EndpointRecordSet.spec` does not include `sourceRef` because the endpoint controller does not use it to reconcile DNS.
+
+The Service source App reads annotated `LoadBalancer` Services and creates one
+`EndpointRecordSet` from the requested hostnames and `status.loadBalancer.ingress`
+targets. New Service DNS intent should use
+`endpoint.dns.appthrust.io/hostnames`; the legacy
+`external-dns.alpha.kubernetes.io/hostname` annotation is accepted only as a
+migration source so clusters can remove external-dns before every Service
+manifest has been rewritten.
 
 `EndpointRecordSet.spec` contains:
 
@@ -50,7 +58,7 @@ The endpoint controller reconciles `EndpointRecordSet` resources:
 3. Find the matching `EndpointProviderCapability`.
 4. Create a provider-specific `EndpointRecordSetConversion` through the Kubernetes API server.
 5. Receive `RecordSetSpecFragment` output from the Provider.
-6. Attach `zoneRef` and `provider`, then apply Core `RecordSet` resources.
+6. Attach `zoneRef`, `provider`, and any Zone-enabled adoption policy, then apply Core `RecordSet` resources.
 
 The endpoint controller does not decide provider-specific record shape. It does not hard-code Route 53 alias hosted zone IDs or Cloudflare TTL behavior.
 
@@ -133,7 +141,7 @@ status:
 
 `spec.input` is an `EndpointRecordSetConversionInput`: one hostname from an `EndpointRecordSet`, the selected zone-relative record name, the selected Zone domain name, and endpoint targets. `status.output.fragments[]` is a non-empty list of `RecordSetSpecFragment`: Provider-converted fragments of `RecordSet.spec` before `zoneRef` and `provider` are attached.
 
-`RecordSetSpecFragment` contains `type`, `name`, `ttl`, `a`, `aaaa`, `cname`, and `options`. It does not contain `zoneRef`, `provider`, or `adoption`; the endpoint controller adds `zoneRef` and `provider` after selecting the Zone. The conversion API may choose record type, TTL, record body fields, and options. It must not change `name`.
+`RecordSetSpecFragment` contains `type`, `name`, `ttl`, `a`, `aaaa`, `cname`, and `options`. It does not contain `zoneRef`, `provider`, or `adoption`; the endpoint controller adds `zoneRef`, `provider`, and Zone-enabled adoption policy after selecting the Zone. The conversion API may choose record type, TTL, record body fields, and options. It must not change `name`.
 
 `status.uid` must equal `spec.uid`. `status.result.status` is `Success` or `Failure`. On `Success`, `status.output.fragments` is required and must have at least one item. On `Failure`, `status.output` is ignored.
 
@@ -148,7 +156,9 @@ Failure mapping:
 
 ## ZoneUnit and Adoption
 
-`ZoneUnit` is the Core ownership registry. The endpoint APIs do not define adoption behavior in this design. `EndpointRecordSet.spec` and `RecordSetSpecFragment` do not contain adoption, and the endpoint controller does not write provider-specific adoption input into generated `RecordSet` resources.
+`ZoneUnit` is the Core ownership registry. `EndpointRecordSet.spec` and `RecordSetSpecFragment` do not contain adoption.
+
+The endpoint controller may attach provider-specific adoption only when the selected `Zone` explicitly opts in. For Route 53, setting the Zone annotation `endpoint.dns.appthrust.io/route53-recordset-adoption=enabled` makes generated `RecordSet.spec.adoption` equal `{"enabled":true}`. This is a migration control for hosted zones that already contain matching records created by another controller such as external-dns. New zones should omit the annotation so generated records are created normally.
 
 ## API Groups
 

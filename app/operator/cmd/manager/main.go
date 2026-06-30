@@ -6,6 +6,7 @@ import (
 
 	endpointrecordsetcontroller "github.com/appthrust/dns-api/internal/go/apps/endpoint/controllers/endpointrecordset"
 	gatewayendpointcontroller "github.com/appthrust/dns-api/internal/go/apps/gatewayendpoint/controllers/gateway"
+	serviceendpointcontroller "github.com/appthrust/dns-api/internal/go/apps/serviceendpoint/controllers/service"
 	zoneunitcontroller "github.com/appthrust/dns-api/internal/go/core/controllers/zoneunit"
 	corewebhook "github.com/appthrust/dns-api/internal/go/core/webhook"
 	cloudflareidentity "github.com/appthrust/dns-api/internal/go/providers/cloudflare/controllers/identity"
@@ -54,6 +55,8 @@ import (
 // +kubebuilder:rbac:groups=endpoint.dns.appthrust.io,resources=endpointrecordsets,verbs=create;delete;get;list;watch;patch;update
 // +kubebuilder:rbac:groups=endpoint.dns.appthrust.io,resources=endpointrecordsets/status,verbs=get;patch;update
 // +kubebuilder:rbac:groups=endpoint.route53.dns.appthrust.io,resources=endpointrecordsetconversions,verbs=create
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups="",resources=services/finalizers,verbs=update
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/finalizers,verbs=update
@@ -202,6 +205,15 @@ func main() {
 		EndpointRecordSetNamespace: endpointRecordSetNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to set up Gateway Endpoint controller")
+		os.Exit(1)
+	}
+
+	if err := (&serviceendpointcontroller.Reconciler{
+		Client:                     mgr.GetClient(),
+		Scheme:                     mgr.GetScheme(),
+		EndpointRecordSetNamespace: endpointRecordSetNamespace,
+	}).SetupWithManager(mgr); err != nil {
+		ctrl.Log.Error(err, "unable to set up Service Endpoint controller")
 		os.Exit(1)
 	}
 

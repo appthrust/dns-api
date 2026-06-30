@@ -27,8 +27,8 @@ The Gateway controller:
 - waits until all `HTTPRoute.spec.parentRefs` are accepted;
 - resolves hostnames from the route/listener relationship;
 - reads targets from `Gateway.status.addresses`;
-- creates one `EndpointRecordSet` for each accepted route/listener binding with usable hostnames and targets;
-- deletes generated `EndpointRecordSet` resources when the route no longer produces them.
+- creates one `EndpointRecordSet` for each Gateway with the union of hostnames from accepted routes and targets from `Gateway.status.addresses`;
+- updates or deletes generated `EndpointRecordSet` resources when routes or Gateways no longer produce them.
 
 The Gateway controller does not:
 
@@ -54,7 +54,7 @@ Provider controllers still make final provider-side acceptance and programming d
 
 ## EndpointRecordSet Creation
 
-The Gateway controller creates one `EndpointRecordSet` per `HTTPRoute` parent/listener binding.
+The Gateway controller creates one `EndpointRecordSet` per Gateway. Multiple routes and listeners on the same Gateway are deduplicated into a single endpoint intent so HTTP and HTTPS routes for the same hostname do not create competing Core `RecordSet` owners.
 
 For a route:
 
@@ -99,14 +99,11 @@ apiVersion: endpoint.dns.appthrust.io/v1alpha1
 kind: EndpointRecordSet
 metadata:
   namespace: dns-api-system
-  name: web-public-https-6b96e4d5f0
+  name: platform-public-4f93a40876
   labels:
     app.kubernetes.io/managed-by: dns-api-gateway-endpoint
-    gateway.endpoint.dns.appthrust.io/route-namespace: app
-    gateway.endpoint.dns.appthrust.io/route-name: web
     gateway.endpoint.dns.appthrust.io/gateway-namespace: platform
     gateway.endpoint.dns.appthrust.io/gateway-name: public
-    gateway.endpoint.dns.appthrust.io/listener-name: https
 spec:
   hostnames:
     - api.example.com
@@ -118,16 +115,14 @@ spec:
 The generated name is deterministic from:
 
 ```text
-HTTPRoute namespace/name
 Gateway namespace/name
-listener name
 ```
 
 Hostnames are not part of the object name, because changing route hostnames should update the same endpoint intent object rather than break ownership continuity.
 
 ## Hostname Resolution
 
-For each accepted route/listener binding:
+For each accepted route/listener binding, the Gateway controller adds hostnames to the Gateway-owned `EndpointRecordSet`:
 
 - If both `HTTPRoute.spec.hostnames` and listener `hostname` are set, use their intersection.
 - If the route omits `spec.hostnames` and listener `hostname` is set, use the listener hostname.
@@ -170,7 +165,9 @@ Users inspect:
 
 The Gateway controller does not write adoption. `EndpointRecordSet.spec` does not contain adoption.
 
-Endpoint-based adoption and GitOps restore are not part of this design yet. Direct Core `RecordSet.spec.adoption` remains the supported adoption path.
+Endpoint-based adoption is controlled by the endpoint controller after Zone selection. For Route 53 migration, a Zone may opt generated records into `RecordSet.spec.adoption: {"enabled":true}` with `endpoint.dns.appthrust.io/route53-recordset-adoption=enabled`. This is intended for zones that already contain matching records from external-dns. New zones should leave the annotation unset so generated records are created normally.
+
+Direct Core `RecordSet.spec.adoption` remains the supported path for hand-authored Core records.
 
 ## Provider Conversion
 

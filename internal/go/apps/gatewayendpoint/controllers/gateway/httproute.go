@@ -19,15 +19,7 @@ type parentInfo struct {
 }
 
 func (r *Reconciler) acceptedParents(ctx context.Context, route *gatewayv1.HTTPRoute) ([]parentInfo, error) {
-	acceptedKeys := map[string]struct{}{}
-	for _, parent := range route.Status.Parents {
-		for _, condition := range parent.Conditions {
-			if condition.Type == string(gatewayv1.RouteConditionAccepted) && condition.Status == "True" {
-				acceptedKeys[parentRefKey(route.Namespace, parent.ParentRef)] = struct{}{}
-			}
-		}
-	}
-
+	acceptedKeys := acceptedParentRefKeys(route)
 	parents := make([]parentInfo, 0, len(route.Spec.ParentRefs))
 	for _, ref := range route.Spec.ParentRefs {
 		if _, ok := acceptedKeys[parentRefKey(route.Namespace, ref)]; !ok {
@@ -54,6 +46,31 @@ func (r *Reconciler) acceptedParents(ctx context.Context, route *gatewayv1.HTTPR
 		}
 	}
 	return parents, nil
+}
+
+func allRouteParentRefsAccepted(route *gatewayv1.HTTPRoute) bool {
+	if len(route.Spec.ParentRefs) == 0 {
+		return false
+	}
+	acceptedKeys := acceptedParentRefKeys(route)
+	for _, ref := range route.Spec.ParentRefs {
+		if _, ok := acceptedKeys[parentRefKey(route.Namespace, ref)]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func acceptedParentRefKeys(route *gatewayv1.HTTPRoute) map[string]struct{} {
+	acceptedKeys := map[string]struct{}{}
+	for _, parent := range route.Status.Parents {
+		for _, condition := range parent.Conditions {
+			if condition.Type == string(gatewayv1.RouteConditionAccepted) && condition.Status == "True" {
+				acceptedKeys[parentRefKey(route.Namespace, parent.ParentRef)] = struct{}{}
+			}
+		}
+	}
+	return acceptedKeys
 }
 
 func parentRefKey(routeNamespace string, ref gatewayv1.ParentReference) string {

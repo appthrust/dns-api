@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	dnsv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/dns/v1alpha1"
 	endpointconversionv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/endpoint/conversion/v1alpha1"
 	endpointv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/endpoint/v1alpha1"
+	route53v1alpha1 "github.com/appthrust/dns-api/pkg/go/api/route53/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,6 +36,7 @@ const (
 	managedByValue                           = "dns-api-endpoint"
 	generatedLabelEndpointRecordSetNamespace = "endpoint.dns.appthrust.io/endpointrecordset-namespace"
 	generatedLabelEndpointRecordSetName      = "endpoint.dns.appthrust.io/endpointrecordset-name"
+	route53RecordSetAdoptionAnnotation       = "endpoint.dns.appthrust.io/route53-recordset-adoption"
 )
 
 type Reconciler struct {
@@ -373,9 +376,23 @@ func (r *Reconciler) recordSetFromFragment(ctx context.Context, endpointRecordSe
 			AAAA:     fragment.AAAA,
 			CNAME:    fragment.CNAME,
 			Options:  fragment.Options,
+			Adoption: recordSetAdoptionForZone(zone),
 		},
 	}
 	return recordSet
+}
+
+func recordSetAdoptionForZone(zone *dnsv1alpha1.Zone) runtime.RawExtension {
+	if zone.Spec.Provider != route53v1alpha1.ProviderRef {
+		return runtime.RawExtension{}
+	}
+	switch strings.ToLower(zone.Annotations[route53RecordSetAdoptionAnnotation]) {
+	case "enabled", "true":
+		raw, _ := json.Marshal(map[string]bool{"enabled": true})
+		return runtime.RawExtension{Raw: raw}
+	default:
+		return runtime.RawExtension{}
+	}
 }
 
 func generatedRecordSetName(endpointRecordSetNamespace, endpointRecordSetName, zoneNamespace, zoneName, recordName string, recordType endpointv1alpha1.EndpointRecordSetType) string {

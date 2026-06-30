@@ -420,8 +420,8 @@ test(
         do: async ({ $ }) => {
           const selector = [
             "app.kubernetes.io/managed-by=dns-api-gateway-endpoint",
-            `gateway.endpoint.dns.appthrust.io/route-namespace=${app.name}`,
-            "gateway.endpoint.dns.appthrust.io/route-name=web",
+            `gateway.endpoint.dns.appthrust.io/gateway-namespace=${app.name}`,
+            "gateway.endpoint.dns.appthrust.io/gateway-name=public",
           ].join(",");
           const output =
             await $`kubectl -n dns-api-system get endpointrecordsets.endpoint.dns.appthrust.io -l ${selector} -o json`.text();
