@@ -67,7 +67,7 @@ func TestHandlerConvertsELBHostnameToAliasAAndAAAA(t *testing.T) {
 	if options.Alias == nil ||
 		options.Alias.DNSName != "dualstack.k8s-public-123456.ap-northeast-1.elb.amazonaws.com." ||
 		options.Alias.HostedZoneID != "Z14GRHDCWA56QT" ||
-		options.Alias.EvaluateTargetHealth {
+		!options.Alias.EvaluateTargetHealth {
 		t.Fatalf("alias = %#v", options.Alias)
 	}
 }

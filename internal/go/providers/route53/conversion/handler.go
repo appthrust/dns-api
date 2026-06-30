@@ -150,7 +150,7 @@ func route53AliasFragments(name, targetValue string) ([]endpointv1alpha1.RecordS
 		Alias: &route53v1alpha1.Route53AliasTarget{
 			DNSName:              target,
 			HostedZoneID:         hostedZoneID,
-			EvaluateTargetHealth: false,
+			EvaluateTargetHealth: true,
 		},
 	})
 	if err != nil {

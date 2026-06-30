@@ -459,7 +459,7 @@ test(
             expect(recordSet.fragment?.options?.alias).toMatchObject({
               dnsName: aliasDNSName,
               hostedZoneID: aliasHostedZoneID,
-              evaluateTargetHealth: false,
+              evaluateTargetHealth: true,
             });
           }
         },
@@ -588,7 +588,7 @@ async function assertAliasRecordSetExists(input: {
   expect(record?.AliasTarget).toMatchObject({
     DNSName: input.aliasDNSName,
     HostedZoneId: input.aliasHostedZoneID,
-    EvaluateTargetHealth: false,
+    EvaluateTargetHealth: true,
   });
 }
 

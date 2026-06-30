@@ -129,14 +129,14 @@ status:
           alias:
             dnsName: dualstack.k8s-public-123.ap-northeast-1.elb.amazonaws.com.
             hostedZoneID: Z14GRHDCWA56QT
-            evaluateTargetHealth: false
+            evaluateTargetHealth: true
       - type: AAAA
         name: api
         options:
           alias:
             dnsName: dualstack.k8s-public-123.ap-northeast-1.elb.amazonaws.com.
             hostedZoneID: Z14GRHDCWA56QT
-            evaluateTargetHealth: false
+            evaluateTargetHealth: true
 ```
 
 `spec.input` is an `EndpointRecordSetConversionInput`: one hostname from an `EndpointRecordSet`, the selected zone-relative record name, the selected Zone domain name, and endpoint targets. `status.output.fragments[]` is a non-empty list of `RecordSetSpecFragment`: Provider-converted fragments of `RecordSet.spec` before `zoneRef` and `provider` are attached.
