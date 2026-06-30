@@ -686,8 +686,12 @@ func route53RecordSetEqual(a, b RecordSetResource) bool {
 	if (a.Alias == nil) != (b.Alias == nil) {
 		return false
 	}
-	if a.Alias != nil && b.Alias != nil && *a.Alias != *b.Alias {
-		return false
+	if a.Alias != nil && b.Alias != nil {
+		if normalizeRoute53RecordName(a.Alias.DNSName) != normalizeRoute53RecordName(b.Alias.DNSName) ||
+			normalizeHostedZoneID(a.Alias.HostedZoneID) != normalizeHostedZoneID(b.Alias.HostedZoneID) ||
+			a.Alias.EvaluateTargetHealth != b.Alias.EvaluateTargetHealth {
+			return false
+		}
 	}
 	aValues, ok := canonicalRecordSetValues(a.Type, a.Values)
 	if !ok {

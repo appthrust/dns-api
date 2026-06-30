@@ -96,6 +96,9 @@ func route53CanonicalHostedZone(hostname string) string {
 }
 
 func normalizeRoute53AliasDNSName(hostname string) string {
-	trimmed := strings.TrimSuffix(hostname, ".")
+	trimmed := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(hostname)), ".")
+	if route53CanonicalHostedZone(trimmed) != "" && !strings.HasPrefix(trimmed, "dualstack.") {
+		trimmed = "dualstack." + trimmed
+	}
 	return trimmed + "."
 }

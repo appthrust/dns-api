@@ -1745,6 +1745,60 @@ func TestZoneReconcilerUpsertsRoute53AliasRecordSet(t *testing.T) {
 	}
 }
 
+func TestZoneReconcilerAdoptsMatchingRoute53AliasRecordSet(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme(t)
+	provider := newFakeProvider()
+	provider.zones["Z000001"] = HostedZone{
+		ID:              "Z000001",
+		Name:            "apps.example.com",
+		CallerReference: "dns-api:11111111-2222-3333-4444-555555555555",
+		NameServers:     []string{"ns-1.awsdns.example", "ns-2.awsdns.example"},
+	}
+	provider.records[recordKey("Z000001", "alias.apps.example.com.", dnsv1alpha1.RecordTypeA)] = RecordSetResource{
+		HostedZoneID: "Z000001",
+		Name:         "alias.apps.example.com.",
+		Type:         dnsv1alpha1.RecordTypeA,
+		Alias: &route53v1alpha1.Route53AliasTarget{
+			DNSName:              "target.apps.example.com",
+			HostedZoneID:         "/hostedzone/Z000001",
+			EvaluateTargetHealth: false,
+		},
+	}
+	recordSet := route53AliasARecordSet("app", "alias")
+	recordSet.Spec.Adoption = runtime.RawExtension{Raw: []byte(`{"enabled":true}`)}
+	objects := route53RecordSetObjects(t, recordSet)
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(objects...).
+		WithStatusSubresource(&dnsv1alpha1.Zone{}, &dnsv1alpha1.RecordSet{}, &dnsv1alpha1.ZoneClass{}, &route53v1alpha1.Route53Identity{}, &dnsv1alpha1.ZoneUnit{}).
+		Build()
+	reconciler := &ZoneReconciler{Client: k8sClient, Provider: provider}
+
+	result, err := reconcileRoute53AndProject(t, ctx, k8sClient, reconciler, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "app", Name: "apps-example-com"}})
+	if err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if result.Requeue {
+		t.Fatalf("Reconcile result = %#v, want no immediate requeue", result)
+	}
+	if len(provider.upserted) != 0 {
+		t.Fatalf("upserted record sets = %d, want 0", len(provider.upserted))
+	}
+
+	var unit dnsv1alpha1.ZoneUnit
+	if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: "app", Name: "apps-example-com"}, &unit); err != nil {
+		t.Fatalf("ZoneUnit was not found: %v", err)
+	}
+	index := slices.IndexFunc(unit.Status.RecordSets, func(status dnsv1alpha1.ZoneUnitRecordSetStatus) bool {
+		return status.RecordSetNamespace == recordSet.Namespace && status.RecordSetName == recordSet.Name
+	})
+	if index < 0 {
+		t.Fatalf("ZoneUnit status.recordSets has no entry for %s/%s: %#v", recordSet.Namespace, recordSet.Name, unit.Status.RecordSets)
+	}
+	assertCondition(t, unit.Status.RecordSets[index].Conditions, string(dnsv1alpha1.ConditionProgrammed), metav1.ConditionTrue, "Programmed")
+}
+
 func TestZoneReconcilerRejectsRecordSetWhenCNAMEZoneUnitItemOwnsSameName(t *testing.T) {
 	ctx := context.Background()
 	scheme := testScheme(t)

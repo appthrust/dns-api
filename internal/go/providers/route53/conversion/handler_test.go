@@ -65,9 +65,53 @@ func TestHandlerConvertsELBHostnameToAliasAAndAAAA(t *testing.T) {
 		t.Fatalf("decode options: %v", err)
 	}
 	if options.Alias == nil ||
-		options.Alias.DNSName != "k8s-public-123456.ap-northeast-1.elb.amazonaws.com." ||
+		options.Alias.DNSName != "dualstack.k8s-public-123456.ap-northeast-1.elb.amazonaws.com." ||
 		options.Alias.HostedZoneID != "Z14GRHDCWA56QT" ||
 		options.Alias.EvaluateTargetHealth {
+		t.Fatalf("alias = %#v", options.Alias)
+	}
+}
+
+func TestHandlerPreservesExistingELBDualstackAliasPrefix(t *testing.T) {
+	review := endpointconversionv1alpha1.EndpointRecordSetConversion{
+		TypeMeta: metav1.TypeMeta{APIVersion: GroupName + "/" + Version, Kind: "EndpointRecordSetConversion"},
+		Spec: endpointconversionv1alpha1.EndpointRecordSetConversionSpec{
+			UID: "request-1",
+			Input: endpointv1alpha1.EndpointRecordSetConversionInput{
+				Hostname: "api.example.com",
+				Name:     "api",
+				Zone:     endpointv1alpha1.EndpointRecordSetConversionZone{DomainName: "example.com"},
+				Targets: []endpointv1alpha1.EndpointTarget{{
+					Type:  endpointv1alpha1.EndpointTargetTypeHostname,
+					Value: "dualstack.k8s-public-123456.ap-northeast-1.elb.amazonaws.com.",
+				}},
+			},
+		},
+	}
+	body, err := json.Marshal(review)
+	if err != nil {
+		t.Fatalf("marshal review: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/apis/"+GroupName+"/"+Version+"/"+Resource, bytes.NewReader(body))
+	response := httptest.NewRecorder()
+
+	NewHandler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var got endpointconversionv1alpha1.EndpointRecordSetConversion
+	if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.Status.Output == nil || len(got.Status.Output.Fragments) == 0 {
+		t.Fatalf("fragments = %#v, want output", got.Status.Output)
+	}
+	var options route53v1alpha1.Route53RecordSetOptions
+	if err := json.Unmarshal(got.Status.Output.Fragments[0].Options.Raw, &options); err != nil {
+		t.Fatalf("decode options: %v", err)
+	}
+	if options.Alias == nil || options.Alias.DNSName != "dualstack.k8s-public-123456.ap-northeast-1.elb.amazonaws.com." {
 		t.Fatalf("alias = %#v", options.Alias)
 	}
 }
