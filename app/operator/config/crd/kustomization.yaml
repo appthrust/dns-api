@@ -4,5 +4,7 @@ resources:
   - bases/dns.appthrust.io_zones.yaml
   - bases/dns.appthrust.io_recordsets.yaml
   - bases/dns.appthrust.io_zoneunits.yaml
+  - bases/endpoint.dns.appthrust.io_endpointprovidercapabilities.yaml
+  - bases/endpoint.dns.appthrust.io_endpointrecordsets.yaml
   - bases/cloudflare.dns.appthrust.io_cloudflareidentities.yaml
   - bases/route53.dns.appthrust.io_route53identities.yaml

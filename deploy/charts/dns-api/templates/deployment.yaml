@@ -38,6 +38,7 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --leader-elect={{ .Values.leaderElection.enabled }}
+            - --endpoint-recordset-namespace={{ .Values.endpoint.recordSetNamespace }}
             {{- range .Values.extraArgs }}
             - {{ . | quote }}
             {{- end }}
@@ -94,4 +95,3 @@ spec:
           secret:
             secretName: {{ include "dns-api.webhookSecretName" . }}
       {{- end }}
-

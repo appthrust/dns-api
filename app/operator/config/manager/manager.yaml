@@ -24,7 +24,8 @@ spec:
           image: dns-api-controller
           imagePullPolicy: IfNotPresent
           args:
-            - --leader-elect=false
+            - --leader-elect=true
+            - --endpoint-recordset-namespace=dns-api-system
           ports:
             - name: metrics
               containerPort: 8080

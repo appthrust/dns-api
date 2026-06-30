@@ -1,0 +1,2 @@
+resources:
+  - route53_endpoint_conversion_apiservice.yaml

@@ -532,6 +532,7 @@ func (r *ZoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&dnsv1alpha1.ZoneClass{}, handler.EnqueueRequestsFromMapFunc(r.mapZoneClassToZoneUnits)).
 		Watches(&dnsv1alpha1.Provider{}, handler.EnqueueRequestsFromMapFunc(r.mapProviderToZoneUnits)).
 		Watches(&route53v1alpha1.Route53Identity{}, handler.EnqueueRequestsFromMapFunc(r.mapIdentityToZoneUnits)).
+		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.mapNamespaceToZoneUnits)).
 		Complete(r)
 }
 
@@ -541,6 +542,31 @@ func (r *ZoneReconciler) mapZoneClassToZoneUnits(ctx context.Context, obj client
 		return nil
 	}
 	return r.zoneUnitRequestsForZoneClass(ctx, zoneClass.Namespace, zoneClass.Name)
+}
+
+func (r *ZoneReconciler) mapNamespaceToZoneUnits(ctx context.Context, obj client.Object) []reconcile.Request {
+	namespace, ok := obj.(*corev1.Namespace)
+	if !ok {
+		return nil
+	}
+	var units dnsv1alpha1.ZoneUnitList
+	if err := r.List(ctx, &units); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0)
+	for _, unit := range units.Items {
+		if unit.Namespace == namespace.Name {
+			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&unit)})
+			continue
+		}
+		for _, recordSet := range unit.Spec.RecordSets {
+			if recordSet.RecordSetNamespace == namespace.Name {
+				requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&unit)})
+				break
+			}
+		}
+	}
+	return requests
 }
 
 func (r *ZoneReconciler) mapProviderToZoneUnits(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -729,13 +755,13 @@ func (r *ZoneReconciler) reconcileFinalizer(ctx context.Context, unit *dnsv1alph
 	case shouldHaveFinalizer && !hasFinalizer:
 		base := unit.DeepCopy()
 		unit.Finalizers = append(unit.Finalizers, ZoneFinalizer)
-		return true, r.Patch(ctx, unit, client.MergeFrom(base))
+		return true, client.IgnoreNotFound(r.Patch(ctx, unit, client.MergeFrom(base)))
 	case !shouldHaveFinalizer && hasFinalizer:
 		base := unit.DeepCopy()
 		unit.Finalizers = slices.DeleteFunc(unit.Finalizers, func(finalizer string) bool {
 			return finalizer == ZoneFinalizer
 		})
-		return true, r.Patch(ctx, unit, client.MergeFrom(base))
+		return true, client.IgnoreNotFound(r.Patch(ctx, unit, client.MergeFrom(base)))
 	default:
 		return false, nil
 	}
@@ -1165,7 +1191,7 @@ func (r *ZoneReconciler) patchZoneStatus(ctx context.Context, zone *dnsv1alpha1.
 	if equality.Semantic.DeepEqual(unitBase.Status, unit.Status) {
 		return nil
 	}
-	return r.Status().Patch(ctx, &unit, client.MergeFrom(unitBase))
+	return client.IgnoreNotFound(r.Status().Patch(ctx, &unit, client.MergeFrom(unitBase)))
 }
 
 func (r *ZoneReconciler) hydrateRoute53ZoneStatusFromZoneUnit(ctx context.Context, zone *dnsv1alpha1.Zone) error {
@@ -1301,7 +1327,7 @@ func (r *ZoneReconciler) removeFinalizer(ctx context.Context, unit *dnsv1alpha1.
 	unit.Finalizers = slices.DeleteFunc(unit.Finalizers, func(finalizer string) bool {
 		return finalizer == ZoneFinalizer
 	})
-	return r.Patch(ctx, unit, client.MergeFrom(base))
+	return client.IgnoreNotFound(r.Patch(ctx, unit, client.MergeFrom(base)))
 }
 
 func (r *ZoneReconciler) controllerName() string {
