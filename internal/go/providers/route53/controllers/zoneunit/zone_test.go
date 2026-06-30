@@ -1760,13 +1760,14 @@ func TestZoneReconcilerAdoptsMatchingRoute53AliasRecordSet(t *testing.T) {
 		Name:         "alias.apps.example.com.",
 		Type:         dnsv1alpha1.RecordTypeA,
 		Alias: &route53v1alpha1.Route53AliasTarget{
-			DNSName:              "target.apps.example.com",
-			HostedZoneID:         "/hostedzone/Z000001",
+			DNSName:              "k8s-public-123456.ap-northeast-1.elb.amazonaws.com.",
+			HostedZoneID:         "/hostedzone/Z14GRHDCWA56QT",
 			EvaluateTargetHealth: false,
 		},
 	}
 	recordSet := route53AliasARecordSet("app", "alias")
 	recordSet.Spec.Adoption = runtime.RawExtension{Raw: []byte(`{"enabled":true}`)}
+	recordSet.Spec.Options = runtime.RawExtension{Raw: []byte(`{"alias":{"dnsName":"dualstack.k8s-public-123456.ap-northeast-1.elb.amazonaws.com.","hostedZoneID":"Z14GRHDCWA56QT","evaluateTargetHealth":false}}`)}
 	objects := route53RecordSetObjects(t, recordSet)
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(scheme).

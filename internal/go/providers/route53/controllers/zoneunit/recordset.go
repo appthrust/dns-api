@@ -687,7 +687,7 @@ func route53RecordSetEqual(a, b RecordSetResource) bool {
 		return false
 	}
 	if a.Alias != nil && b.Alias != nil {
-		if normalizeRoute53RecordName(a.Alias.DNSName) != normalizeRoute53RecordName(b.Alias.DNSName) ||
+		if normalizeRoute53AliasDNSNameForCompare(a.Alias.DNSName) != normalizeRoute53AliasDNSNameForCompare(b.Alias.DNSName) ||
 			normalizeHostedZoneID(a.Alias.HostedZoneID) != normalizeHostedZoneID(b.Alias.HostedZoneID) ||
 			a.Alias.EvaluateTargetHealth != b.Alias.EvaluateTargetHealth {
 			return false
@@ -704,6 +704,23 @@ func route53RecordSetEqual(a, b RecordSetResource) bool {
 	slices.Sort(aValues)
 	slices.Sort(bValues)
 	return slices.Equal(aValues, bValues)
+}
+
+func normalizeRoute53AliasDNSNameForCompare(name string) string {
+	normalized := normalizeRoute53RecordName(name)
+	withoutDualstack := strings.TrimPrefix(normalized, "dualstack.")
+	if withoutDualstack != normalized && isRoute53ELBAliasDNSName(withoutDualstack) {
+		return withoutDualstack
+	}
+	return normalized
+}
+
+func isRoute53ELBAliasDNSName(name string) bool {
+	trimmed := strings.TrimSuffix(name, ".")
+	return strings.HasSuffix(trimmed, ".elb.amazonaws.com") ||
+		strings.Contains(trimmed, ".elb.") && strings.HasSuffix(trimmed, ".amazonaws.com") ||
+		strings.HasSuffix(trimmed, ".elb.amazonaws.com.cn") ||
+		strings.Contains(trimmed, ".elb.") && strings.HasSuffix(trimmed, ".amazonaws.com.cn")
 }
 
 func route53RecordSetOptions(recordSet *dnsv1alpha1.RecordSet) (route53v1alpha1.Route53RecordSetOptions, error) {
