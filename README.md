@@ -29,7 +29,7 @@ The controller watches those resources and reconciles the real DNS provider stat
 The controller is distributed as a container image and a Helm chart on GitHub Container Registry. Choose the released version you want to run:
 
 ```sh
-VERSION=0.1.1
+VERSION=0.2.0
 
 helm install dns-api oci://ghcr.io/appthrust/charts/dns-api \
   --namespace dns-api-system \
