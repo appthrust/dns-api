@@ -1977,6 +1977,20 @@ func TestZoneReconcilerRecordsRoute53RecordSetEventsOnRecordSets(t *testing.T) {
 	if pending == nil || pending.ID == "" {
 		t.Fatalf("pendingRecordSetChange = %#v, want pending record set change", pending)
 	}
+	var unit dnsv1alpha1.ZoneUnit
+	if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: zone.Namespace, Name: zone.Name}, &unit); err != nil {
+		t.Fatalf("ZoneUnit was not found: %v", err)
+	}
+	statusIndex := slices.IndexFunc(unit.Status.RecordSets, func(status dnsv1alpha1.ZoneUnitRecordSetStatus) bool {
+		return status.RecordSetNamespace == recordSet.Namespace && status.RecordSetName == recordSet.Name
+	})
+	if statusIndex < 0 {
+		t.Fatalf("ZoneUnit status.recordSets has no entry for %s/%s: %#v", recordSet.Namespace, recordSet.Name, unit.Status.RecordSets)
+	}
+	unit.Status.RecordSets[statusIndex].Provider = nil
+	if err := k8sClient.Status().Update(ctx, &unit); err != nil {
+		t.Fatalf("clear RecordSet provider status fixture: %v", err)
+	}
 	provider.changes[pending.ID].Status = route53v1alpha1.Route53ChangeStatusInSync
 
 	if _, err := reconcileRoute53AndProject(t, ctx, k8sClient, reconciler, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "app", Name: "apps-example-com"}}); err != nil {
@@ -1988,6 +2002,21 @@ func TestZoneReconcilerRecordsRoute53RecordSetEventsOnRecordSets(t *testing.T) {
 	if recorder.has("Zone", "Route53RecordSetChangeInSync") {
 		t.Fatalf("Route53RecordSetChangeInSync was recorded on a Zone: %#v", recorder.events)
 	}
+	statusData := mustZoneUnitRecordSetStatusState(t, ctx, k8sClient, zone.Namespace, zone.Name, recordSet.Namespace, recordSet.Name)
+	if statusData.HostedZoneID != "Z000001" || statusData.RecordName != "www.apps.example.com." || statusData.RecordType != string(dnsv1alpha1.RecordTypeA) {
+		t.Fatalf("ZoneUnit recordSet provider state = %#v, want Route 53 record identity after INSYNC", statusData)
+	}
+	var gotUnit dnsv1alpha1.ZoneUnit
+	if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: zone.Namespace, Name: zone.Name}, &gotUnit); err != nil {
+		t.Fatalf("ZoneUnit was not found after INSYNC: %v", err)
+	}
+	statusIndex = slices.IndexFunc(gotUnit.Status.RecordSets, func(status dnsv1alpha1.ZoneUnitRecordSetStatus) bool {
+		return status.RecordSetNamespace == recordSet.Namespace && status.RecordSetName == recordSet.Name
+	})
+	if statusIndex < 0 {
+		t.Fatalf("ZoneUnit status.recordSets has no entry after INSYNC for %s/%s: %#v", recordSet.Namespace, recordSet.Name, gotUnit.Status.RecordSets)
+	}
+	assertCondition(t, gotUnit.Status.RecordSets[statusIndex].Conditions, string(dnsv1alpha1.ConditionProgrammed), metav1.ConditionTrue, "Programmed")
 }
 
 func TestZoneReconcilerDeletesRecordSetFromSpecIdentity(t *testing.T) {

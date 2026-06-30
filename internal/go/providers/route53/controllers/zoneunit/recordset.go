@@ -356,6 +356,17 @@ func (r *ZoneReconciler) refreshPendingRecordSetChange(ctx context.Context, prov
 	for index := range recordSets {
 		if affectedRecordSetIncludes(pending.AffectedRecordSets, &recordSets[index]) {
 			r.recordEvent(&recordSets[index], corev1.EventTypeNormal, "Route53RecordSetChangeInSync", fmt.Sprintf("Route 53 record set change %s is INSYNC for type=%s name=%s", pending.ID, recordSets[index].Spec.Type, recordSets[index].Spec.Name))
+			if pending.Operation != "DELETE_BATCH" {
+				options, optionsErr := route53RecordSetOptions(&recordSets[index])
+				if optionsErr != nil {
+					return ctrl.Result{}, true, optionsErr
+				}
+				identity := recordSetIdentity(recordSets[index].Spec.Type, canonicalRecordName(recordSets[index].Spec.Name, zone.Spec.DomainName))
+				desired := desiredRoute53RecordSet(&recordSets[index], statusData.HostedZoneID, identity.recordName, options)
+				if statusErr := r.setRecordSetReady(ctx, &recordSets[index], desired); statusErr != nil {
+					return ctrl.Result{}, true, statusErr
+				}
+			}
 		}
 	}
 	if err := r.patchRoute53ZoneStatus(ctx, zone, func(data *route53v1alpha1.Route53ZoneStatusData) {
