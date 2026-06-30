@@ -27,7 +27,10 @@ tolerations: []
 affinity: {}
 
 leaderElection:
-  enabled: false
+  enabled: true
+
+endpoint:
+  recordSetNamespace: dns-api-system
 
 metrics:
   port: 8080
@@ -48,6 +51,9 @@ certManager:
 providers:
   route53:
     enabled: true
+    endpoint:
+      conversionAPI:
+        enabled: true
   cloudflare:
     enabled: true
 

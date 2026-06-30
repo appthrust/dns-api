@@ -39,6 +39,16 @@ rules:
   - patch
   - update
 - apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
   - dns.appthrust.io
   resources:
   - providers
@@ -50,9 +60,10 @@ rules:
   - dns.appthrust.io
   resources:
   - recordsets
-  - zoneclasses
-  - zones
+  - zoneunits
   verbs:
+  - create
+  - delete
   - get
   - list
   - patch
@@ -79,10 +90,9 @@ rules:
 - apiGroups:
   - dns.appthrust.io
   resources:
-  - zoneunits
+  - zoneclasses
+  - zones
   verbs:
-  - create
-  - delete
   - get
   - list
   - patch
@@ -97,6 +107,63 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - endpoint.dns.appthrust.io
+  resources:
+  - endpointprovidercapabilities
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - endpoint.dns.appthrust.io
+  resources:
+  - endpointrecordsets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - endpoint.dns.appthrust.io
+  resources:
+  - endpointrecordsets/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - endpoint.route53.dns.appthrust.io
+  resources:
+  - endpointrecordsetconversions
+  verbs:
+  - create
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - gateways
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - httproutes
+  verbs:
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - httproutes/finalizers
+  verbs:
+  - update
 - apiGroups:
   - route53.dns.appthrust.io
   resources:

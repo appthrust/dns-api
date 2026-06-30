@@ -1,0 +1,24 @@
+{{- if and .Values.webhook.enabled .Values.providers.route53.enabled .Values.providers.route53.endpoint.conversionAPI.enabled }}
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1alpha1.endpoint.route53.dns.appthrust.io
+  labels:
+    {{- include "dns-api.labels" . | nindent 4 }}
+  {{- if .Values.certManager.enabled }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "dns-api.webhookCertificateName" . }}
+  {{- end }}
+spec:
+  group: endpoint.route53.dns.appthrust.io
+  version: v1alpha1
+  groupPriorityMinimum: 1000
+  versionPriority: 15
+  service:
+    name: {{ include "dns-api.webhookServiceName" . }}
+    namespace: {{ .Release.Namespace }}
+    port: {{ .Values.webhook.service.port }}
+  {{- if not .Values.certManager.enabled }}
+  insecureSkipTLSVerify: true
+  {{- end }}
+{{- end }}

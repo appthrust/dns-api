@@ -1,0 +1,454 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: endpointrecordsets.endpoint.dns.appthrust.io
+spec:
+  group: endpoint.dns.appthrust.io
+  names:
+    kind: EndpointRecordSet
+    listKind: EndpointRecordSetList
+    plural: endpointrecordsets
+    singular: endpointrecordset
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.hostnameCount
+      name: Hostnames
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: EndpointRecordSet is a provider-neutral endpoint publishing intent.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              hostnames:
+                description: Hostnames are fully qualified DNS hostnames to publish.
+                items:
+                  type: string
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+              targets:
+                description: Targets are endpoint addresses that the hostnames should
+                  publish.
+                items:
+                  description: EndpointTarget is one provider-neutral endpoint address.
+                  properties:
+                    type:
+                      description: Type is the target address type.
+                      enum:
+                      - Hostname
+                      - IPAddress
+                      type: string
+                    value:
+                      description: Value is the target address value.
+                      minLength: 1
+                      type: string
+                  required:
+                  - type
+                  - value
+                  type: object
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: atomic
+            required:
+            - hostnames
+            - targets
+            type: object
+          status:
+            properties:
+              conditions:
+                description: Conditions summarizes endpoint record set reconciliation.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              hostnameCount:
+                description: HostnameCount is the number of hostname status entries.
+                format: int32
+                type: integer
+              hostnames:
+                description: Hostnames contains per-hostname resolution and generated
+                  RecordSet status.
+                items:
+                  properties:
+                    conditions:
+                      description: Conditions describes per-hostname reconciliation.
+                      items:
+                        description: Condition contains details for one aspect of
+                          the current state of this API Resource.
+                        properties:
+                          lastTransitionTime:
+                            description: |-
+                              lastTransitionTime is the last time the condition transitioned from one status to another.
+                              This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                            format: date-time
+                            type: string
+                          message:
+                            description: |-
+                              message is a human readable message indicating details about the transition.
+                              This may be an empty string.
+                            maxLength: 32768
+                            type: string
+                          observedGeneration:
+                            description: |-
+                              observedGeneration represents the .metadata.generation that the condition was set based upon.
+                              For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                              with respect to the current state of the instance.
+                            format: int64
+                            minimum: 0
+                            type: integer
+                          reason:
+                            description: |-
+                              reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                              Producers of specific condition types may define expected values and meanings for this field,
+                              and whether the values are considered a guaranteed API.
+                              The value should be a CamelCase string.
+                              This field may not be empty.
+                            maxLength: 1024
+                            minLength: 1
+                            pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                            type: string
+                          status:
+                            description: status of the condition, one of True, False,
+                              Unknown.
+                            enum:
+                            - "True"
+                            - "False"
+                            - Unknown
+                            type: string
+                          type:
+                            description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                            maxLength: 316
+                            pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                            type: string
+                        required:
+                        - lastTransitionTime
+                        - message
+                        - reason
+                        - status
+                        - type
+                        type: object
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - type
+                      x-kubernetes-list-type: map
+                    hostname:
+                      description: Hostname is the DNS hostname from spec.hostnames.
+                      minLength: 1
+                      type: string
+                    recordSets:
+                      description: RecordSets contains generated RecordSet outputs
+                        for this hostname.
+                      items:
+                        properties:
+                          conditions:
+                            description: Conditions mirrors generated RecordSet conditions.
+                            items:
+                              description: Condition contains details for one aspect
+                                of the current state of this API Resource.
+                              properties:
+                                lastTransitionTime:
+                                  description: |-
+                                    lastTransitionTime is the last time the condition transitioned from one status to another.
+                                    This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                                  format: date-time
+                                  type: string
+                                message:
+                                  description: |-
+                                    message is a human readable message indicating details about the transition.
+                                    This may be an empty string.
+                                  maxLength: 32768
+                                  type: string
+                                observedGeneration:
+                                  description: |-
+                                    observedGeneration represents the .metadata.generation that the condition was set based upon.
+                                    For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                                    with respect to the current state of the instance.
+                                  format: int64
+                                  minimum: 0
+                                  type: integer
+                                reason:
+                                  description: |-
+                                    reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                                    Producers of specific condition types may define expected values and meanings for this field,
+                                    and whether the values are considered a guaranteed API.
+                                    The value should be a CamelCase string.
+                                    This field may not be empty.
+                                  maxLength: 1024
+                                  minLength: 1
+                                  pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                                  type: string
+                                status:
+                                  description: status of the condition, one of True,
+                                    False, Unknown.
+                                  enum:
+                                  - "True"
+                                  - "False"
+                                  - Unknown
+                                  type: string
+                                type:
+                                  description: type of condition in CamelCase or in
+                                    foo.example.com/CamelCase.
+                                  maxLength: 316
+                                  pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                                  type: string
+                              required:
+                              - lastTransitionTime
+                              - message
+                              - reason
+                              - status
+                              - type
+                              type: object
+                            type: array
+                            x-kubernetes-list-map-keys:
+                            - type
+                            x-kubernetes-list-type: map
+                          fragment:
+                            description: Fragment is the Provider-converted RecordSet.spec
+                              fragment.
+                            properties:
+                              a:
+                                description: A defines a standard A record body.
+                                properties:
+                                  addresses:
+                                    description: Addresses contains IPv4 addresses.
+                                    items:
+                                      pattern: ^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$
+                                      type: string
+                                    minItems: 1
+                                    type: array
+                                required:
+                                - addresses
+                                type: object
+                              aaaa:
+                                description: AAAA defines a standard AAAA record body.
+                                properties:
+                                  addresses:
+                                    description: Addresses contains IPv6 addresses.
+                                    items:
+                                      type: string
+                                    minItems: 1
+                                    type: array
+                                required:
+                                - addresses
+                                type: object
+                              cname:
+                                description: CNAME defines a standard CNAME record
+                                  body.
+                                properties:
+                                  target:
+                                    description: Target contains the canonical target
+                                      DNS name without a trailing root dot.
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - target
+                                type: object
+                              name:
+                                description: Name is the relative DNS owner name in
+                                  the Zone.
+                                minLength: 1
+                                type: string
+                              options:
+                                description: Options contains provider-specific record
+                                  options.
+                                type: object
+                                x-kubernetes-preserve-unknown-fields: true
+                              ttl:
+                                description: TTL is the record TTL in seconds.
+                                format: int32
+                                maximum: 2147483647
+                                minimum: 1
+                                type: integer
+                              type:
+                                description: Type is the DNS record type.
+                                enum:
+                                - A
+                                - AAAA
+                                - CNAME
+                                type: string
+                            required:
+                            - name
+                            - type
+                            type: object
+                            x-kubernetes-validations:
+                            - message: a or options is required when type is A
+                              rule: self.type != 'A' || has(self.a) || has(self.options)
+                            - message: aaaa or options is required when type is AAAA
+                              rule: self.type != 'AAAA' || has(self.aaaa) || has(self.options)
+                            - message: cname is required when type is CNAME
+                              rule: self.type != 'CNAME' || has(self.cname)
+                          name:
+                            description: Name is the zone-relative DNS owner name.
+                            type: string
+                          ref:
+                            description: Ref points to the generated Core RecordSet.
+                            properties:
+                              name:
+                                description: Name is the object name.
+                                minLength: 1
+                                type: string
+                              namespace:
+                                description: Namespace is the object namespace.
+                                minLength: 1
+                                type: string
+                            required:
+                            - name
+                            - namespace
+                            type: object
+                          type:
+                            description: Type is the DNS record type.
+                            enum:
+                            - A
+                            - AAAA
+                            - CNAME
+                            type: string
+                        required:
+                        - name
+                        - ref
+                        - type
+                        type: object
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - name
+                      - type
+                      x-kubernetes-list-type: map
+                    zone:
+                      description: Zone is the selected Zone for this hostname.
+                      properties:
+                        domainName:
+                          description: DomainName is the selected Zone domain name.
+                          type: string
+                        provider:
+                          description: Provider is the selected Zone provider.
+                          properties:
+                            name:
+                              description: Name is the cluster-scoped Provider resource
+                                name.
+                              minLength: 1
+                              type: string
+                            version:
+                              description: Version is the Provider version name.
+                              minLength: 1
+                              type: string
+                          required:
+                          - name
+                          - version
+                          type: object
+                        ref:
+                          description: Ref points to the selected Zone.
+                          properties:
+                            name:
+                              description: Name is the object name.
+                              minLength: 1
+                              type: string
+                            namespace:
+                              description: Namespace is the object namespace.
+                              minLength: 1
+                              type: string
+                          required:
+                          - name
+                          - namespace
+                          type: object
+                      required:
+                      - domainName
+                      - provider
+                      - ref
+                      type: object
+                  required:
+                  - hostname
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - hostname
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: ObservedGeneration is the generation observed by the
+                  endpoint controller.
+                format: int64
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

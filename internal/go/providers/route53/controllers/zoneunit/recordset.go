@@ -277,9 +277,6 @@ func (r *ZoneReconciler) planRecordSetDelete(ctx context.Context, recordSet *dns
 }
 
 func (r *ZoneReconciler) acceptRecordSetForZone(ctx context.Context, zone *dnsv1alpha1.Zone, zoneClass *dnsv1alpha1.ZoneClass, recordSet *dnsv1alpha1.RecordSet) (bool, error) {
-	if allowed, message := r.recordSetAllowedByZoneMessage(ctx, recordSet, zone); !allowed {
-		return false, r.setRecordSetAccepted(ctx, recordSet, metav1.ConditionFalse, "NotAllowedByZone", message)
-	}
 	if recordSet.Status.Zone != nil && recordSet.Status.Zone.Ref != (dnsv1alpha1.ObjectReference{Namespace: zone.Namespace, Name: zone.Name}) {
 		return false, r.setRecordSetAccepted(ctx, recordSet, metav1.ConditionFalse, "InvalidZoneRef", "RecordSet status points to another Zone")
 	}

@@ -1,0 +1,15 @@
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1alpha1.endpoint.route53.dns.appthrust.io
+  annotations:
+    cert-manager.io/inject-ca-from: dns-api-system/dns-api-webhook-serving-cert
+spec:
+  group: endpoint.route53.dns.appthrust.io
+  version: v1alpha1
+  groupPriorityMinimum: 1000
+  versionPriority: 15
+  service:
+    name: dns-api-webhook-service
+    namespace: dns-api-system
+    port: 443

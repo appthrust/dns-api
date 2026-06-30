@@ -6,3 +6,4 @@ resources:
   - ../manager
   - ../webhook
   - ../certmanager
+  - ../apiservice

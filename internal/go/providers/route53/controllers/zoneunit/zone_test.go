@@ -935,7 +935,7 @@ func TestZoneReconcilerCreatesARecordFromZoneReconcile(t *testing.T) {
 	}
 }
 
-func TestZoneReconcilerDoesNotUpsertRecordSetRejectedByZone(t *testing.T) {
+func TestZoneReconcilerUpsertsRecordSetSelectedByZoneUnitAcrossNamespaces(t *testing.T) {
 	ctx := context.Background()
 	scheme := testScheme(t)
 	provider := newFakeProvider()
@@ -958,8 +958,8 @@ func TestZoneReconcilerDoesNotUpsertRecordSetRejectedByZone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile returned error: %v", err)
 	}
-	if len(provider.upserted) != 0 {
-		t.Fatalf("upserted record sets = %d, want 0", len(provider.upserted))
+	if len(provider.upserted) != 1 {
+		t.Fatalf("upserted record sets = %d, want 1", len(provider.upserted))
 	}
 
 	var unit dnsv1alpha1.ZoneUnit
@@ -972,15 +972,8 @@ func TestZoneReconcilerDoesNotUpsertRecordSetRejectedByZone(t *testing.T) {
 	if index < 0 {
 		t.Fatalf("ZoneUnit status.recordSets has no entry for %s/%s: %#v", recordSet.Namespace, recordSet.Name, unit.Status.RecordSets)
 	}
-	assertCondition(t, unit.Status.RecordSets[index].Conditions, string(dnsv1alpha1.ConditionAccepted), metav1.ConditionFalse, "NotAllowedByZone")
+	assertCondition(t, unit.Status.RecordSets[index].Conditions, string(dnsv1alpha1.ConditionAccepted), metav1.ConditionTrue, "Accepted")
 
-	var gotRecordSet dnsv1alpha1.RecordSet
-	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(recordSet), &gotRecordSet); err != nil {
-		t.Fatalf("RecordSet was not found: %v", err)
-	}
-	if slices.Contains(gotRecordSet.Finalizers, RecordSetFinalizer) {
-		t.Fatalf("finalizers = %#v, want no Route 53 RecordSet finalizer", gotRecordSet.Finalizers)
-	}
 }
 
 func TestZoneReconcilerAcceptsRecordSetAdoptionFromDerivedIdentity(t *testing.T) {

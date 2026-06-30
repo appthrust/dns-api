@@ -221,6 +221,7 @@ tasks:
       - task: controller-image:build
       - task: controller-image:load-kind
       - task: cert-manager:install
+      - task: gateway-api:install
       - task: manifests:apply
       - task: controller:rollout-status
 
@@ -249,12 +250,18 @@ tasks:
           --set crds.enabled=true \
           --wait
 
+  gateway-api:install:
+    desc: Install Gateway API CRDs into the current Kubernetes context.
+    cmds:
+      - kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/standard-install.yaml
+      - kubectl wait --for=condition=Established crd/gatewayclasses.gateway.networking.k8s.io crd/gateways.gateway.networking.k8s.io crd/httproutes.gateway.networking.k8s.io --timeout=120s
+
   manifests:apply:
     desc: Generate and apply dns-api manifests to the current Kubernetes context.
     cmds:
       - task: manifests
       - kustomize build app/operator/config/crd | kubectl apply -f -
-      - kubectl wait --for=condition=Established crd/providers.dns.appthrust.io crd/zoneclasses.dns.appthrust.io crd/zones.dns.appthrust.io crd/recordsets.dns.appthrust.io crd/zoneunits.dns.appthrust.io crd/cloudflareidentities.cloudflare.dns.appthrust.io crd/route53identities.route53.dns.appthrust.io --timeout=120s
+      - kubectl wait --for=condition=Established crd/providers.dns.appthrust.io crd/zoneclasses.dns.appthrust.io crd/zones.dns.appthrust.io crd/recordsets.dns.appthrust.io crd/zoneunits.dns.appthrust.io crd/endpointprovidercapabilities.endpoint.dns.appthrust.io crd/endpointrecordsets.endpoint.dns.appthrust.io crd/cloudflareidentities.cloudflare.dns.appthrust.io crd/route53identities.route53.dns.appthrust.io --timeout=120s
       - kustomize build app/operator/config/default | kubectl apply -f -
 
   controller-image:build:
@@ -574,6 +581,7 @@ tasks:
         vars:
           KIND_CLUSTER: '{{.KIND_CLUSTER}}'
       - task: cert-manager:install
+      - task: gateway-api:install
       - task: local-irsa:install
         vars:
           LOCAL_IRSA_NAME: '{{.LOCAL_IRSA_NAME}}'
@@ -614,6 +622,7 @@ tasks:
         vars:
           KIND_CLUSTER: '{{.KIND_CLUSTER}}'
       - task: cert-manager:install
+      - task: gateway-api:install
       - task: manifests:apply
       - task: controller:rollout-status
       - task: controller:webhook-ready

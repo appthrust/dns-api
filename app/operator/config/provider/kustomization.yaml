@@ -1,3 +1,4 @@
 resources:
   - cloudflare_extensions.yaml
+  - endpoint_capabilities.yaml
   - route53_extensions.yaml

@@ -1,0 +1,12 @@
+apiVersion: endpoint.dns.appthrust.io/v1alpha1
+kind: EndpointProviderCapability
+metadata:
+  name: route53.dns.appthrust.io-v1alpha1
+spec:
+  provider:
+    name: route53.dns.appthrust.io
+    version: v1alpha1
+  conversion:
+    group: endpoint.route53.dns.appthrust.io
+    version: v1alpha1
+    resource: endpointrecordsetconversions

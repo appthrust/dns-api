@@ -4,6 +4,8 @@
 
 `Provider` is a cluster-scoped resource. A provider package creates one `Provider` per provider. It defines provider-specific inline objects, support level, validation, and display metadata for `ZoneClass`, `Zone`, and `RecordSet`. Multiple compatible schema versions are stored in `spec.versions`.
 
+`Provider` belongs to the Core layer described in `docs/design/overview.md`. It is the Core Provider discovery contract. App Provider capabilities, such as endpoint record set support for Gateway, Ingress, or Service Apps, live in App-specific API groups instead of on `Provider`.
+
 `ZoneClass.spec.provider`, `Zone.spec.provider`, `RecordSet.spec.provider`, and `ZoneUnit.spec.provider` use an object with `name` and `version`. `provider.name` is `Provider.metadata.name`; `provider.version` is `Provider.spec.versions[].name`. For example, `name: route53.dns.appthrust.io` and `version: v1alpha1` references version `v1alpha1` in `Provider/route53.dns.appthrust.io`.
 
 The core API resolves Provider and version from those two fields. It does not interpret the DNS-name-like structure of the provider name or the semantics of the version name. Incompatible schema changes add a new version under the same `Provider` instead of changing an existing version destructively.
