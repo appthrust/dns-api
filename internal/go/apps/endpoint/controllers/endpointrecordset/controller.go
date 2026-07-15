@@ -46,6 +46,7 @@ type Reconciler struct {
 	Scheme             *runtime.Scheme
 	RESTConfig         *rest.Config
 	RecordSetNamespace string
+	conversionFunc     func(context.Context, *endpointv1alpha1.EndpointProviderCapability, endpointv1alpha1.EndpointRecordSetConversionInput) ([]endpointv1alpha1.RecordSetSpecFragment, string, error)
 }
 
 // +kubebuilder:rbac:groups=endpoint.dns.appthrust.io,resources=endpointrecordsets,verbs=get;list;watch;patch;update
@@ -269,6 +270,9 @@ func (r *Reconciler) recordSetsForHostname(ctx context.Context, endpointRecordSe
 }
 
 func (r *Reconciler) convertEndpointRecordSet(ctx context.Context, capability *endpointv1alpha1.EndpointProviderCapability, input endpointv1alpha1.EndpointRecordSetConversionInput) ([]endpointv1alpha1.RecordSetSpecFragment, string, error) {
+	if r.conversionFunc != nil {
+		return r.conversionFunc(ctx, capability, input)
+	}
 	if r.RESTConfig == nil {
 		return nil, "EndpointRecordSet conversion API is configured but no REST config is available", nil
 	}

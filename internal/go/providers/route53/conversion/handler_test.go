@@ -72,6 +72,37 @@ func TestHandlerConvertsELBHostnameToAliasAAndAAAA(t *testing.T) {
 	}
 }
 
+func TestConvertOrganizationApexAndWildcardToAliasAAndAAAA(t *testing.T) {
+	for _, recordName := range []string{"reo", "*.reo"} {
+		t.Run(recordName, func(t *testing.T) {
+			fragments, result := convertEndpoint(endpointv1alpha1.EndpointRecordSetConversionInput{
+				Hostname: recordName + ".appthrust.app",
+				Name:     recordName,
+				Zone:     endpointv1alpha1.EndpointRecordSetConversionZone{DomainName: "appthrust.app"},
+				Targets: []endpointv1alpha1.EndpointTarget{{
+					Type:  endpointv1alpha1.EndpointTargetTypeHostname,
+					Value: "k8s-public-123456.ap-northeast-1.elb.amazonaws.com",
+				}},
+			})
+			if result.Status != "Success" || len(fragments) != 2 {
+				t.Fatalf("conversion = (%#v, %#v), want two successful fragments", fragments, result)
+			}
+			if fragments[0].Name != recordName || fragments[0].Type != endpointv1alpha1.EndpointRecordSetTypeA || fragments[1].Name != recordName || fragments[1].Type != endpointv1alpha1.EndpointRecordSetTypeAAAA {
+				t.Fatalf("fragments = %#v, want %s A/AAAA", fragments, recordName)
+			}
+			for _, fragment := range fragments {
+				var options route53v1alpha1.Route53RecordSetOptions
+				if err := json.Unmarshal(fragment.Options.Raw, &options); err != nil {
+					t.Fatalf("decode %s options: %v", fragment.Type, err)
+				}
+				if options.Alias == nil || options.Alias.DNSName != "dualstack.k8s-public-123456.ap-northeast-1.elb.amazonaws.com." || options.Alias.HostedZoneID != "Z14GRHDCWA56QT" {
+					t.Fatalf("%s alias = %#v", fragment.Type, options.Alias)
+				}
+			}
+		})
+	}
+}
+
 func TestHandlerPreservesExistingELBDualstackAliasPrefix(t *testing.T) {
 	review := endpointconversionv1alpha1.EndpointRecordSetConversion{
 		TypeMeta: metav1.TypeMeta{APIVersion: GroupName + "/" + Version, Kind: "EndpointRecordSetConversion"},

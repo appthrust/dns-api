@@ -188,6 +188,15 @@ For cross-namespace access, `records` is required. When a shared zone is exposed
 
 `allowedRecordSets` is cross-namespace policy only. If a `RecordSet` references a `Zone` in the same namespace, `allowedRecordSets` is not evaluated. Same namespace is treated as one trust boundary. This allows application engineers to own a custom-domain `Zone` and manage `RecordSet` resources in the same namespace. Shared zones are placed in a platform namespace and limited with `allowedRecordSets`.
 
+For a shared parent zone, the platform root-record owner and generated endpoint
+writer must use different namespaces. A namespace-label selector, a full-match
+record-name pattern such as one Organization label or `*.<organization>`, and
+`types: [A, AAAA]` can then grant only Organization endpoint aliases. Parent
+apex records, CAA, TXT, delegated NS, and deeper names remain outside that
+grant; provider-owned SOA is not a tenant `RecordSet` type. Co-locating the
+endpoint writer with the `Zone` would intentionally bypass this policy and is
+therefore not a valid shared-zone topology.
+
 Admission validates only the object-local shape of `allowedRecordSets`: required fields, selector syntax, record name pattern syntax, and record type values. It does not reject a `RecordSet` create/update because the current `Zone`, `RecordSet` namespace labels, record name, or record type are outside the policy. The Core ZoneUnit Controller evaluates the saved objects and sets `RecordSet.status.conditions[Accepted]` to `False`, reason `NotAllowedByZone`, when a cross-namespace `RecordSet` is not allowed by its referenced `Zone`.
 
 When updating `Zone.spec.allowedRecordSets`, admission does not list existing `RecordSet` resources and does not reject policy shrink. If the new policy makes existing cross-namespace `RecordSet` resources disallowed, the Core ZoneUnit Controller re-evaluates them and returns `Accepted=False`, reason `NotAllowedByZone`. Same-namespace `RecordSet` resources are not affected by `allowedRecordSets`.
