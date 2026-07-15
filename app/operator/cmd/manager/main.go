@@ -53,6 +53,7 @@ import (
 // +kubebuilder:rbac:groups=dns.appthrust.io,resources=zoneunits/status,verbs=get;watch;patch;update
 // +kubebuilder:rbac:groups=endpoint.dns.appthrust.io,resources=endpointprovidercapabilities,verbs=get;list;watch
 // +kubebuilder:rbac:groups=endpoint.dns.appthrust.io,resources=endpointrecordsets,verbs=create;delete;get;list;watch;patch;update
+// +kubebuilder:rbac:groups=endpoint.dns.appthrust.io,resources=endpointrecordsets/finalizers,verbs=update
 // +kubebuilder:rbac:groups=endpoint.dns.appthrust.io,resources=endpointrecordsets/status,verbs=get;patch;update
 // +kubebuilder:rbac:groups=endpoint.route53.dns.appthrust.io,resources=endpointrecordsetconversions,verbs=create
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;update

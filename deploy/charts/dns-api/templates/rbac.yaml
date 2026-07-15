@@ -138,6 +138,12 @@ rules:
   - apiGroups:
       - endpoint.dns.appthrust.io
     resources:
+      - endpointrecordsets/finalizers
+    verbs:
+      - update
+  - apiGroups:
+      - endpoint.dns.appthrust.io
+    resources:
       - endpointrecordsets/status
     verbs:
       - get
