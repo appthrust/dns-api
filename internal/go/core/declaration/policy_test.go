@@ -47,10 +47,15 @@ func TestSharedParentZonePolicyAllowsOnlyOrganizationAliasRecords(t *testing.T) 
 		{name: "organization wildcard alias AAAA", namespace: writerNamespace.Name, recordName: "*.reo", recordType: dnsv1alpha1.RecordTypeAAAA, allowed: true},
 		{name: "tenant cannot forge organization apex", namespace: tenantNamespace.Name, recordName: "reo", recordType: dnsv1alpha1.RecordTypeA},
 		{name: "parent apex", recordName: "@", recordType: dnsv1alpha1.RecordTypeA},
+		{name: "parent apex CNAME", recordName: "@", recordType: dnsv1alpha1.RecordTypeCNAME},
 		{name: "root CAA", recordName: "@", recordType: dnsv1alpha1.RecordTypeCAA},
 		{name: "root TXT", recordName: "@", recordType: dnsv1alpha1.RecordTypeTXT},
 		{name: "delegated NS", recordName: "reo", recordType: dnsv1alpha1.RecordTypeNS},
+		{name: "organization CNAME", recordName: "reo", recordType: dnsv1alpha1.RecordTypeCNAME},
+		{name: "organization wildcard CNAME", recordName: "*.reo", recordType: dnsv1alpha1.RecordTypeCNAME},
 		{name: "deeper record", recordName: "api.reo", recordType: dnsv1alpha1.RecordTypeA},
+		{name: "deeper CNAME", recordName: "api.reo", recordType: dnsv1alpha1.RecordTypeCNAME},
+		{name: "deeper wildcard", recordName: "*.api.reo", recordType: dnsv1alpha1.RecordTypeAAAA},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
