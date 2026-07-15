@@ -17,17 +17,20 @@ rules:
       - ""
     resources:
       - namespaces
-      - services
       - secrets
     verbs:
       - get
       - list
       - watch
+  {{- if .Values.serviceEndpoint.enabled }}
   - apiGroups:
       - ""
     resources:
       - services
     verbs:
+      - get
+      - list
+      - watch
       - update
   - apiGroups:
       - ""
@@ -35,6 +38,7 @@ rules:
       - services/finalizers
     verbs:
       - update
+  {{- end }}
   - apiGroups:
       - cloudflare.dns.appthrust.io
     resources:
@@ -155,6 +159,7 @@ rules:
       - endpointrecordsetconversions
     verbs:
       - create
+  {{- if .Values.gatewayEndpoint.enabled }}
   - apiGroups:
       - gateway.networking.k8s.io
     resources:
@@ -178,6 +183,7 @@ rules:
       - httproutes/finalizers
     verbs:
       - update
+  {{- end }}
   - apiGroups:
       - route53.dns.appthrust.io
     resources:

@@ -312,7 +312,13 @@ tasks:
     cmds:
       - task: controller-chart:lint
       - task: controller-chart:template
+      - task: controller-chart:central-profile-check
       - task: controller-chart:package
+
+  controller-chart:central-profile-check:
+    desc: Verify the central DNS profile cannot discover Gateway or Service sources.
+    cmds:
+      - ./scripts/check-central-profile.sh deploy/charts/dns-api
 
   controller:rollout-status:
     desc: Wait for the dns-api controller Deployment rollout.
