@@ -32,6 +32,12 @@ leaderElection:
 endpoint:
   recordSetNamespace: dns-api-system
 
+gatewayEndpoint:
+  enabled: true
+
+serviceEndpoint:
+  enabled: true
+
 metrics:
   port: 8080
 

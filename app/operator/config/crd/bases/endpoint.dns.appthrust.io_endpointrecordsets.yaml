@@ -141,6 +141,12 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              generatedRecordSetCount:
+                description: |-
+                  GeneratedRecordSetCount is the number of generated RecordSets that are
+                  represented by this status.
+                format: int32
+                type: integer
               hostnameCount:
                 description: HostnameCount is the number of hostname status entries.
                 format: int32
@@ -357,9 +363,21 @@ spec:
                               rule: self.type != 'AAAA' || has(self.aaaa) || has(self.options)
                             - message: cname is required when type is CNAME
                               rule: self.type != 'CNAME' || has(self.cname)
+                          generation:
+                            description: |-
+                              Generation is the current metadata generation of the generated RecordSet.
+                              It is zero until the generated RecordSet has been observed.
+                            format: int64
+                            type: integer
                           name:
                             description: Name is the zone-relative DNS owner name.
                             type: string
+                          observedGeneration:
+                            description: |-
+                              ObservedGeneration is the generated RecordSet generation reflected by its
+                              mirrored status conditions.
+                            format: int64
+                            type: integer
                           ref:
                             description: Ref points to the generated Core RecordSet.
                             properties:

@@ -53,6 +53,7 @@ import (
 // +kubebuilder:rbac:groups=dns.appthrust.io,resources=zoneunits/status,verbs=get;watch;patch;update
 // +kubebuilder:rbac:groups=endpoint.dns.appthrust.io,resources=endpointprovidercapabilities,verbs=get;list;watch
 // +kubebuilder:rbac:groups=endpoint.dns.appthrust.io,resources=endpointrecordsets,verbs=create;delete;get;list;watch;patch;update
+// +kubebuilder:rbac:groups=endpoint.dns.appthrust.io,resources=endpointrecordsets/finalizers,verbs=update
 // +kubebuilder:rbac:groups=endpoint.dns.appthrust.io,resources=endpointrecordsets/status,verbs=get;patch;update
 // +kubebuilder:rbac:groups=endpoint.route53.dns.appthrust.io,resources=endpointrecordsetconversions,verbs=create
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;update
@@ -79,6 +80,8 @@ func main() {
 	var metricsAddr string
 	var probeAddr string
 	var leaderElection bool
+	var gatewayEndpointControllerEnabled bool
+	var serviceEndpointControllerEnabled bool
 	endpointRecordSetNamespace := envOrDefault("ENDPOINT_RECORDSET_NAMESPACE", "")
 	route53ControllerName := envOrDefault("ROUTE53_CONTROLLER_NAME", route53zoneunit.DefaultControllerName)
 	route53ProviderName := envOrDefault("ROUTE53_PROVIDER_NAME", route53v1alpha1.ProviderName)
@@ -90,6 +93,8 @@ func main() {
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&leaderElection, "leader-elect", false, "Enable leader election for controller manager.")
+	flag.BoolVar(&gatewayEndpointControllerEnabled, "gateway-endpoint-controller-enabled", true, "Watch Gateway API resources and synthesize EndpointRecordSets from HTTPRoutes.")
+	flag.BoolVar(&serviceEndpointControllerEnabled, "service-endpoint-controller-enabled", true, "Watch Services and synthesize EndpointRecordSets from their endpoint annotations.")
 	flag.StringVar(&endpointRecordSetNamespace, "endpoint-recordset-namespace", endpointRecordSetNamespace, "Namespace where generated EndpointRecordSet and RecordSet resources are stored. Defaults to the source namespace.")
 	flag.StringVar(&route53ControllerName, "route53-controller-name", route53ControllerName, "ZoneClass.spec.controllerName handled by the Route 53 controller.")
 	flag.StringVar(&route53ProviderName, "route53-provider-name", route53ProviderName, "Provider.metadata.name handled by the Route 53 controller.")
@@ -199,22 +204,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&gatewayendpointcontroller.Reconciler{
-		Client:                     mgr.GetClient(),
-		Scheme:                     mgr.GetScheme(),
-		EndpointRecordSetNamespace: endpointRecordSetNamespace,
-	}).SetupWithManager(mgr); err != nil {
-		ctrl.Log.Error(err, "unable to set up Gateway Endpoint controller")
-		os.Exit(1)
+	if gatewayEndpointControllerEnabled {
+		if err := (&gatewayendpointcontroller.Reconciler{
+			Client:                     mgr.GetClient(),
+			Scheme:                     mgr.GetScheme(),
+			EndpointRecordSetNamespace: endpointRecordSetNamespace,
+		}).SetupWithManager(mgr); err != nil {
+			ctrl.Log.Error(err, "unable to set up Gateway Endpoint controller")
+			os.Exit(1)
+		}
 	}
 
-	if err := (&serviceendpointcontroller.Reconciler{
-		Client:                     mgr.GetClient(),
-		Scheme:                     mgr.GetScheme(),
-		EndpointRecordSetNamespace: endpointRecordSetNamespace,
-	}).SetupWithManager(mgr); err != nil {
-		ctrl.Log.Error(err, "unable to set up Service Endpoint controller")
-		os.Exit(1)
+	if serviceEndpointControllerEnabled {
+		if err := (&serviceendpointcontroller.Reconciler{
+			Client:                     mgr.GetClient(),
+			Scheme:                     mgr.GetScheme(),
+			EndpointRecordSetNamespace: endpointRecordSetNamespace,
+		}).SetupWithManager(mgr); err != nil {
+			ctrl.Log.Error(err, "unable to set up Service Endpoint controller")
+			os.Exit(1)
+		}
 	}
 
 	if err := corewebhook.SetupCoreValidationWebhookWithManager(mgr); err != nil {

@@ -39,6 +39,8 @@ spec:
           args:
             - --leader-elect={{ .Values.leaderElection.enabled }}
             - --endpoint-recordset-namespace={{ .Values.endpoint.recordSetNamespace }}
+            - --gateway-endpoint-controller-enabled={{ .Values.gatewayEndpoint.enabled }}
+            - --service-endpoint-controller-enabled={{ .Values.serviceEndpoint.enabled }}
             {{- range .Values.extraArgs }}
             - {{ . | quote }}
             {{- end }}

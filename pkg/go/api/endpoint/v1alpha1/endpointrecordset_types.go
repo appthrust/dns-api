@@ -59,6 +59,11 @@ type EndpointRecordSetStatus struct {
 	// +optional
 	HostnameCount int32 `json:"hostnameCount,omitempty"`
 
+	// GeneratedRecordSetCount is the number of generated RecordSets that are
+	// represented by this status.
+	// +optional
+	GeneratedRecordSetCount int32 `json:"generatedRecordSetCount,omitempty"`
+
 	// Hostnames contains per-hostname resolution and generated RecordSet status.
 	// +optional
 	// +listType=map
@@ -115,6 +120,16 @@ type EndpointRecordSetGeneratedRecordSetStatus struct {
 
 	// Type is the DNS record type.
 	Type EndpointRecordSetType `json:"type"`
+
+	// Generation is the current metadata generation of the generated RecordSet.
+	// It is zero until the generated RecordSet has been observed.
+	// +optional
+	Generation int64 `json:"generation,omitempty"`
+
+	// ObservedGeneration is the generated RecordSet generation reflected by its
+	// mirrored status conditions.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Fragment is the Provider-converted RecordSet.spec fragment.
 	// +optional

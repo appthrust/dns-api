@@ -62,6 +62,24 @@ The endpoint controller reconciles `EndpointRecordSet` resources:
 
 The endpoint controller does not decide provider-specific record shape. It does not hard-code Route 53 alias hosted zone IDs or Cloudflare TTL behavior.
 
+### Aggregate readiness and deletion
+
+`EndpointRecordSet.status.conditions` contains generation-aware `Accepted`,
+`Programmed`, and `Ready` summaries. `Ready=True` requires every generated
+`RecordSet` to have current `status.observedGeneration` and current
+`Accepted=True` and `Programmed=True` conditions. Missing, empty, `Unknown`, or
+prior-generation child status is not ready. Each generated child status exposes
+both its current metadata `generation` and mirrored `observedGeneration` so a
+consumer can independently verify the aggregate.
+
+The endpoint controller holds the
+`endpoint.dns.appthrust.io/generated-recordsets` finalizer while generated
+`RecordSet` resources exist. On deletion it requests deletion of every generated
+child and removes the finalizer only after a label-selected read proves that no
+child remains in the Kubernetes API. Provider cleanup failures therefore retain
+both the child provider finalizer and the parent endpoint finalizer; parent
+disappearance alone is never used as inferred provider cleanup evidence.
+
 ## EndpointProviderCapability
 
 `EndpointProviderCapability` is a cluster-scoped discovery object that describes how one Core Provider version participates in endpoint Apps.

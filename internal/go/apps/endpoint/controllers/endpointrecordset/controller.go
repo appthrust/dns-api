@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -37,6 +38,7 @@ const (
 	generatedLabelEndpointRecordSetNamespace = "endpoint.dns.appthrust.io/endpointrecordset-namespace"
 	generatedLabelEndpointRecordSetName      = "endpoint.dns.appthrust.io/endpointrecordset-name"
 	route53RecordSetAdoptionAnnotation       = "endpoint.dns.appthrust.io/route53-recordset-adoption"
+	generatedRecordSetsFinalizer             = "endpoint.dns.appthrust.io/generated-recordsets"
 )
 
 type Reconciler struct {
@@ -44,10 +46,12 @@ type Reconciler struct {
 	Scheme             *runtime.Scheme
 	RESTConfig         *rest.Config
 	RecordSetNamespace string
+	conversionFunc     func(context.Context, *endpointv1alpha1.EndpointProviderCapability, endpointv1alpha1.EndpointRecordSetConversionInput) ([]endpointv1alpha1.RecordSetSpecFragment, string, error)
 }
 
 // +kubebuilder:rbac:groups=endpoint.dns.appthrust.io,resources=endpointrecordsets,verbs=get;list;watch;patch;update
 // +kubebuilder:rbac:groups=endpoint.dns.appthrust.io,resources=endpointrecordsets/status,verbs=get;patch;update
+// +kubebuilder:rbac:groups=endpoint.dns.appthrust.io,resources=endpointrecordsets/finalizers,verbs=update
 // +kubebuilder:rbac:groups=endpoint.dns.appthrust.io,resources=endpointprovidercapabilities,verbs=get;list;watch
 // +kubebuilder:rbac:groups=endpoint.route53.dns.appthrust.io,resources=endpointrecordsetconversions,verbs=create
 // +kubebuilder:rbac:groups=dns.appthrust.io,resources=zones,verbs=get;list;watch
@@ -67,7 +71,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 	if !endpointRecordSet.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, r.cleanupForEndpointRecordSet(ctx, recordSetNamespace, endpointRecordSet.Namespace, endpointRecordSet.Name)
+		return ctrl.Result{}, r.reconcileDeletion(ctx, &endpointRecordSet, recordSetNamespace)
+	}
+	if !slices.Contains(endpointRecordSet.Finalizers, generatedRecordSetsFinalizer) {
+		base := endpointRecordSet.DeepCopy()
+		endpointRecordSet.Finalizers = append(endpointRecordSet.Finalizers, generatedRecordSetsFinalizer)
+		if err := r.Patch(ctx, &endpointRecordSet, client.MergeFrom(base)); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
 	}
 
 	status, desired, err := r.buildStatusAndRecordSets(ctx, &endpointRecordSet, recordSetNamespace)
@@ -77,6 +89,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.applyRecordSets(ctx, &endpointRecordSet, recordSetNamespace, desired); err != nil {
 		return ctrl.Result{}, err
 	}
+	if err := r.refreshGeneratedRecordSetStatus(ctx, &status); err != nil {
+		return ctrl.Result{}, err
+	}
+	setAggregateConditions(&status, endpointRecordSet.Generation)
 	if err := r.patchStatus(ctx, &endpointRecordSet, status); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -131,8 +147,12 @@ func (r *Reconciler) buildStatusAndRecordSets(ctx context.Context, endpointRecor
 		}
 	}
 	status.HostnameCount = int32(len(status.Hostnames))
+	for _, hostnameStatus := range status.Hostnames {
+		status.GeneratedRecordSetCount += int32(len(hostnameStatus.RecordSets))
+	}
 	if len(status.Hostnames) == 0 {
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: "Resolved", Status: metav1.ConditionFalse, ObservedGeneration: endpointRecordSet.Generation, Reason: "NoHostname", Message: "EndpointRecordSet has no hostnames."})
+		setAggregateConditions(&status, endpointRecordSet.Generation)
 		return status, nil, nil
 	}
 	allResolved := true
@@ -148,6 +168,7 @@ func (r *Reconciler) buildStatusAndRecordSets(ctx context.Context, endpointRecor
 	} else {
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: "Resolved", Status: metav1.ConditionFalse, ObservedGeneration: endpointRecordSet.Generation, Reason: "HostnameNotResolved", Message: "At least one hostname could not be resolved."})
 	}
+	setAggregateConditions(&status, endpointRecordSet.Generation)
 	desired := make([]dnsv1alpha1.RecordSet, 0, len(desiredByName))
 	for _, recordSet := range desiredByName {
 		desired = append(desired, recordSet)
@@ -235,6 +256,8 @@ func (r *Reconciler) recordSetsForHostname(ctx context.Context, endpointRecordSe
 			}
 			var existing dnsv1alpha1.RecordSet
 			if err := r.Get(ctx, client.ObjectKey{Namespace: recordSet.Namespace, Name: recordSet.Name}, &existing); err == nil {
+				item.Generation = existing.Generation
+				item.ObservedGeneration = existing.Status.ObservedGeneration
 				item.Conditions = existing.Status.Conditions
 			}
 			status.RecordSets = append(status.RecordSets, item)
@@ -247,6 +270,9 @@ func (r *Reconciler) recordSetsForHostname(ctx context.Context, endpointRecordSe
 }
 
 func (r *Reconciler) convertEndpointRecordSet(ctx context.Context, capability *endpointv1alpha1.EndpointProviderCapability, input endpointv1alpha1.EndpointRecordSetConversionInput) ([]endpointv1alpha1.RecordSetSpecFragment, string, error) {
+	if r.conversionFunc != nil {
+		return r.conversionFunc(ctx, capability, input)
+	}
 	if r.RESTConfig == nil {
 		return nil, "EndpointRecordSet conversion API is configured but no REST config is available", nil
 	}
@@ -450,22 +476,136 @@ func (r *Reconciler) applyRecordSets(ctx context.Context, endpointRecordSet *end
 	return nil
 }
 
+func (r *Reconciler) refreshGeneratedRecordSetStatus(ctx context.Context, status *endpointv1alpha1.EndpointRecordSetStatus) error {
+	for hostnameIndex := range status.Hostnames {
+		for recordSetIndex := range status.Hostnames[hostnameIndex].RecordSets {
+			item := &status.Hostnames[hostnameIndex].RecordSets[recordSetIndex]
+			var current dnsv1alpha1.RecordSet
+			if err := r.Get(ctx, client.ObjectKey{Namespace: item.Ref.Namespace, Name: item.Ref.Name}, &current); err != nil {
+				if apierrors.IsNotFound(err) {
+					item.Generation = 0
+					item.ObservedGeneration = 0
+					item.Conditions = nil
+					continue
+				}
+				return err
+			}
+			item.Generation = current.Generation
+			item.ObservedGeneration = current.Status.ObservedGeneration
+			item.Conditions = current.Status.Conditions
+		}
+	}
+	return nil
+}
+
 func (r *Reconciler) cleanupForEndpointRecordSet(ctx context.Context, recordSetNamespace, endpointRecordSetNamespace, endpointRecordSetName string) error {
+	_, err := r.deleteGeneratedRecordSets(ctx, recordSetNamespace, endpointRecordSetNamespace, endpointRecordSetName)
+	return err
+}
+
+func (r *Reconciler) reconcileDeletion(ctx context.Context, endpointRecordSet *endpointv1alpha1.EndpointRecordSet, recordSetNamespace string) error {
+	if !slices.Contains(endpointRecordSet.Finalizers, generatedRecordSetsFinalizer) {
+		return nil
+	}
+	remaining, err := r.deleteGeneratedRecordSets(ctx, recordSetNamespace, endpointRecordSet.Namespace, endpointRecordSet.Name)
+	if err != nil {
+		return err
+	}
+	if remaining > 0 {
+		status := endpointRecordSet.Status
+		meta.SetStatusCondition(&status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: endpointRecordSet.Generation,
+			Reason:             "Deleting",
+			Message:            fmt.Sprintf("Waiting for %d generated RecordSet(s) to reach terminal deletion.", remaining),
+		})
+		return r.patchStatus(ctx, endpointRecordSet, status)
+	}
+	base := endpointRecordSet.DeepCopy()
+	endpointRecordSet.Finalizers = slices.DeleteFunc(endpointRecordSet.Finalizers, func(finalizer string) bool {
+		return finalizer == generatedRecordSetsFinalizer
+	})
+	return r.Patch(ctx, endpointRecordSet, client.MergeFrom(base))
+}
+
+func (r *Reconciler) deleteGeneratedRecordSets(ctx context.Context, recordSetNamespace, endpointRecordSetNamespace, endpointRecordSetName string) (int, error) {
 	var existing dnsv1alpha1.RecordSetList
 	if err := r.List(ctx, &existing, client.InNamespace(recordSetNamespace), client.MatchingLabels{
 		managedByLabel:                           managedByValue,
 		generatedLabelEndpointRecordSetNamespace: endpointRecordSetNamespace,
 		generatedLabelEndpointRecordSetName:      endpointRecordSetName,
 	}); err != nil {
-		return err
+		return 0, err
 	}
 	for _, item := range existing.Items {
 		item := item
 		if err := r.Delete(ctx, &item); err != nil && !apierrors.IsNotFound(err) {
-			return err
+			return 0, err
 		}
 	}
-	return nil
+	var remaining dnsv1alpha1.RecordSetList
+	if err := r.List(ctx, &remaining, client.InNamespace(recordSetNamespace), client.MatchingLabels{
+		managedByLabel:                           managedByValue,
+		generatedLabelEndpointRecordSetNamespace: endpointRecordSetNamespace,
+		generatedLabelEndpointRecordSetName:      endpointRecordSetName,
+	}); err != nil {
+		return 0, err
+	}
+	return len(remaining.Items), nil
+}
+
+func setAggregateConditions(status *endpointv1alpha1.EndpointRecordSetStatus, generation int64) {
+	resolved := meta.FindStatusCondition(status.Conditions, "Resolved")
+	if resolved == nil || resolved.Status != metav1.ConditionTrue || resolved.ObservedGeneration != generation {
+		setAggregateCondition(status, "Accepted", metav1.ConditionFalse, generation, "NotResolved", "EndpointRecordSet hostnames are not currently resolved.")
+		setAggregateCondition(status, "Programmed", metav1.ConditionFalse, generation, "NotAccepted", "EndpointRecordSet is not currently accepted.")
+		setAggregateCondition(status, "Ready", metav1.ConditionFalse, generation, "NotProgrammed", "EndpointRecordSet is not currently programmed.")
+		return
+	}
+	if status.GeneratedRecordSetCount == 0 {
+		setAggregateCondition(status, "Accepted", metav1.ConditionFalse, generation, "RecordSetsPending", "No generated RecordSets have been observed.")
+		setAggregateCondition(status, "Programmed", metav1.ConditionFalse, generation, "RecordSetsPending", "No generated RecordSets have been observed.")
+		setAggregateCondition(status, "Ready", metav1.ConditionFalse, generation, "RecordSetsPending", "No generated RecordSets have been observed.")
+		return
+	}
+
+	accepted, acceptedReason, acceptedMessage := aggregateGeneratedCondition(status.Hostnames, string(dnsv1alpha1.ConditionAccepted))
+	setAggregateCondition(status, "Accepted", accepted, generation, acceptedReason, acceptedMessage)
+	programmed, programmedReason, programmedMessage := aggregateGeneratedCondition(status.Hostnames, string(dnsv1alpha1.ConditionProgrammed))
+	if accepted != metav1.ConditionTrue && programmed == metav1.ConditionTrue {
+		programmed = metav1.ConditionFalse
+		programmedReason = "NotAccepted"
+		programmedMessage = "At least one generated RecordSet is not currently accepted."
+	}
+	setAggregateCondition(status, "Programmed", programmed, generation, programmedReason, programmedMessage)
+	if accepted == metav1.ConditionTrue && programmed == metav1.ConditionTrue {
+		setAggregateCondition(status, "Ready", metav1.ConditionTrue, generation, "Ready", "All generated RecordSets are currently accepted and programmed.")
+	} else {
+		setAggregateCondition(status, "Ready", metav1.ConditionFalse, generation, "RecordSetsNotReady", "At least one generated RecordSet is not currently accepted and programmed.")
+	}
+}
+
+func aggregateGeneratedCondition(hostnames []endpointv1alpha1.EndpointRecordSetHostnameStatus, conditionType string) (metav1.ConditionStatus, string, string) {
+	for _, hostname := range hostnames {
+		for _, recordSet := range hostname.RecordSets {
+			if recordSet.Generation == 0 || recordSet.ObservedGeneration != recordSet.Generation {
+				return metav1.ConditionFalse, "RecordSetStatusStale", fmt.Sprintf("Generated RecordSet %s/%s status is not current.", recordSet.Ref.Namespace, recordSet.Ref.Name)
+			}
+			condition := meta.FindStatusCondition(recordSet.Conditions, conditionType)
+			if condition == nil || condition.ObservedGeneration != recordSet.Generation {
+				return metav1.ConditionFalse, "RecordSetConditionStale", fmt.Sprintf("Generated RecordSet %s/%s %s condition is missing or stale.", recordSet.Ref.Namespace, recordSet.Ref.Name, conditionType)
+			}
+			if condition.Status != metav1.ConditionTrue {
+				return metav1.ConditionFalse, "RecordSet" + conditionType + "False", fmt.Sprintf("Generated RecordSet %s/%s is not %s.", recordSet.Ref.Namespace, recordSet.Ref.Name, strings.ToLower(conditionType))
+			}
+		}
+	}
+	return metav1.ConditionTrue, conditionType, "All generated RecordSets are currently " + strings.ToLower(conditionType) + "."
+}
+
+func setAggregateCondition(status *endpointv1alpha1.EndpointRecordSetStatus, conditionType string, conditionStatus metav1.ConditionStatus, generation int64, reason, message string) {
+	meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: conditionType, Status: conditionStatus, ObservedGeneration: generation, Reason: reason, Message: message})
 }
 
 func (r *Reconciler) patchStatus(ctx context.Context, endpointRecordSet *endpointv1alpha1.EndpointRecordSet, status endpointv1alpha1.EndpointRecordSetStatus) error {
