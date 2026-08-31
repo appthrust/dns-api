@@ -14,9 +14,26 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
+
+func TestPreferredRecordTypeForEndpointRecordSet(t *testing.T) {
+	recordSet := &endpointv1alpha1.EndpointRecordSet{
+		ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
+			route53RecordTypeAnnotation: "cname",
+		}},
+	}
+	got, err := preferredRecordTypeForEndpointRecordSet(recordSet)
+	if err != nil || got != endpointv1alpha1.EndpointRecordSetTypeCNAME {
+		t.Fatalf("preferred record type = (%q, %v)", got, err)
+	}
+	recordSet.Annotations[route53RecordTypeAnnotation] = "A"
+	if _, err := preferredRecordTypeForEndpointRecordSet(recordSet); err == nil {
+		t.Fatal("unsupported preferred record type was accepted")
+	}
+}
 
 func TestEndpointRecordSetApexWildcardAliasLifecycleSurvivesControllerRestart(t *testing.T) {
 	ctx := context.Background()

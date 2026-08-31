@@ -72,6 +72,28 @@ func TestHandlerConvertsELBHostnameToAliasAAndAAAA(t *testing.T) {
 	}
 }
 
+func TestConvertELBHostnameToCNAMEWhenRequestedForAdoption(t *testing.T) {
+	fragments, result := convertEndpoint(endpointv1alpha1.EndpointRecordSetConversionInput{
+		Hostname:            "api.example.com",
+		Name:                "api",
+		Zone:                endpointv1alpha1.EndpointRecordSetConversionZone{DomainName: "example.com"},
+		PreferredRecordType: endpointv1alpha1.EndpointRecordSetTypeCNAME,
+		Targets: []endpointv1alpha1.EndpointTarget{{
+			Type:  endpointv1alpha1.EndpointTargetTypeHostname,
+			Value: "k8s-public-123456.ap-northeast-1.elb.amazonaws.com",
+		}},
+	})
+	if result.Status != "Success" || len(fragments) != 1 {
+		t.Fatalf("conversion = (%#v, %#v)", fragments, result)
+	}
+	if fragments[0].Type != endpointv1alpha1.EndpointRecordSetTypeCNAME ||
+		fragments[0].CNAME == nil ||
+		fragments[0].CNAME.Target != "k8s-public-123456.ap-northeast-1.elb.amazonaws.com" ||
+		fragments[0].TTL == nil || *fragments[0].TTL != 60 {
+		t.Fatalf("CNAME fragment = %#v", fragments[0])
+	}
+}
+
 func TestConvertOrganizationApexAndWildcardToAliasAAndAAAA(t *testing.T) {
 	for _, recordName := range []string{"reo", "*.reo"} {
 		t.Run(recordName, func(t *testing.T) {

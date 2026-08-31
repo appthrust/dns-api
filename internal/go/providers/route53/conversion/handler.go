@@ -114,6 +114,12 @@ func convertEndpoint(input endpointv1alpha1.EndpointRecordSetConversionInput) ([
 		return nil, failureResult("UnsupportedTarget", "multiple hostname targets require routing policy, which is not supported yet", false)
 	}
 	if len(hostnameTargets) == 1 {
+		if input.PreferredRecordType == endpointv1alpha1.EndpointRecordSetTypeCNAME {
+			return route53CNAMEFragments(input.Name, hostnameTargets[0])
+		}
+		if input.PreferredRecordType != "" {
+			return nil, failureResult("UnsupportedTarget", "preferredRecordType must be CNAME for a hostname target", false)
+		}
 		return route53AliasFragments(input.Name, hostnameTargets[0])
 	}
 	fragments := make([]endpointv1alpha1.RecordSetSpecFragment, 0, 2)
@@ -138,6 +144,20 @@ func convertEndpoint(input endpointv1alpha1.EndpointRecordSetConversionInput) ([
 		return nil, failureResult("UnsupportedTarget", "no supported Route 53 target was found", false)
 	}
 	return fragments, successResult("Converted", "converted endpoint targets to Route 53 record sets")
+}
+
+func route53CNAMEFragments(name, targetValue string) ([]endpointv1alpha1.RecordSetSpecFragment, endpointconversionv1alpha1.EndpointRecordSetConversionResult) {
+	target := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(targetValue)), ".")
+	if target == "" {
+		return nil, failureResult("InvalidInput", "CNAME target must not be empty", false)
+	}
+	ttl := int32(60)
+	return []endpointv1alpha1.RecordSetSpecFragment{{
+		Type:  endpointv1alpha1.EndpointRecordSetTypeCNAME,
+		Name:  name,
+		TTL:   &ttl,
+		CNAME: &dnsv1alpha1.CNAMERecordSet{Target: target},
+	}}, successResult("Converted", "converted hostname endpoint target to Route 53 CNAME record set")
 }
 
 func route53AliasFragments(name, targetValue string) ([]endpointv1alpha1.RecordSetSpecFragment, endpointconversionv1alpha1.EndpointRecordSetConversionResult) {
