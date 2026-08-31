@@ -38,6 +38,7 @@ const (
 	generatedLabelEndpointRecordSetNamespace = "endpoint.dns.appthrust.io/endpointrecordset-namespace"
 	generatedLabelEndpointRecordSetName      = "endpoint.dns.appthrust.io/endpointrecordset-name"
 	route53RecordSetAdoptionAnnotation       = "endpoint.dns.appthrust.io/route53-recordset-adoption"
+	route53RecordTypeAnnotation              = "endpoint.dns.appthrust.io/route53-record-type"
 	generatedRecordSetsFinalizer             = "endpoint.dns.appthrust.io/generated-recordsets"
 )
 
@@ -203,11 +204,16 @@ func (r *Reconciler) recordSetsForHostname(ctx context.Context, endpointRecordSe
 			rejections = append(rejections, fmt.Sprintf("%s/%s: multiple EndpointProviderCapability resources for provider %s/%s", zone.Namespace, zone.Name, zone.Spec.Provider.Name, zone.Spec.Provider.Version))
 			continue
 		}
+		preferredRecordType, err := preferredRecordTypeForEndpointRecordSet(endpointRecordSet)
+		if err != nil {
+			return status, nil, err
+		}
 		input := endpointv1alpha1.EndpointRecordSetConversionInput{
-			Hostname: hostname,
-			Name:     relativeRecordName(hostname, zone.Spec.DomainName),
-			Zone:     endpointv1alpha1.EndpointRecordSetConversionZone{DomainName: zone.Spec.DomainName},
-			Targets:  endpointRecordSet.Spec.Targets,
+			Hostname:            hostname,
+			Name:                relativeRecordName(hostname, zone.Spec.DomainName),
+			Zone:                endpointv1alpha1.EndpointRecordSetConversionZone{DomainName: zone.Spec.DomainName},
+			Targets:             endpointRecordSet.Spec.Targets,
+			PreferredRecordType: preferredRecordType,
 		}
 		fragments, message, err := r.convertEndpointRecordSet(ctx, capability, input)
 		if err != nil {
@@ -269,6 +275,17 @@ func (r *Reconciler) recordSetsForHostname(ctx context.Context, endpointRecordSe
 	return status, nil, nil
 }
 
+func preferredRecordTypeForEndpointRecordSet(endpointRecordSet *endpointv1alpha1.EndpointRecordSet) (endpointv1alpha1.EndpointRecordSetType, error) {
+	value := strings.ToUpper(strings.TrimSpace(endpointRecordSet.Annotations[route53RecordTypeAnnotation]))
+	switch value {
+	case "":
+		return "", nil
+	case string(endpointv1alpha1.EndpointRecordSetTypeCNAME):
+		return endpointv1alpha1.EndpointRecordSetTypeCNAME, nil
+	default:
+		return "", fmt.Errorf("unsupported %s value %q", route53RecordTypeAnnotation, value)
+	}
+}
 func (r *Reconciler) convertEndpointRecordSet(ctx context.Context, capability *endpointv1alpha1.EndpointProviderCapability, input endpointv1alpha1.EndpointRecordSetConversionInput) ([]endpointv1alpha1.RecordSetSpecFragment, string, error) {
 	if r.conversionFunc != nil {
 		return r.conversionFunc(ctx, capability, input)
@@ -286,6 +303,7 @@ func (r *Reconciler) convertEndpointRecordSet(ctx context.Context, capability *e
 		Resource: capability.Spec.Conversion.Resource,
 	}
 	uid := string(uuid.NewUUID())
+
 	request := endpointconversionv1alpha1.EndpointRecordSetConversion{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: gvr.Group + "/" + gvr.Version,

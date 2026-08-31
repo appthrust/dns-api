@@ -182,6 +182,12 @@ type EndpointRecordSetConversionInput struct {
 	// +kubebuilder:validation:MinItems=1
 	// +listType=atomic
 	Targets []EndpointTarget `json:"targets"`
+
+	// PreferredRecordType asks a Provider conversion API to preserve an
+	// existing provider-neutral record shape when supported. Omitted means
+	// provider-default conversion.
+	// +optional
+	PreferredRecordType EndpointRecordSetType `json:"preferredRecordType,omitempty"`
 }
 
 type EndpointRecordSetConversionZone struct {
