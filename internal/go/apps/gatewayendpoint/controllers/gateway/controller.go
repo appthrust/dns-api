@@ -9,13 +9,16 @@ import (
 	"strings"
 
 	endpointv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/endpoint/v1alpha1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
@@ -30,6 +33,7 @@ const (
 	generatedLabelListenerName     = "gateway.endpoint.dns.appthrust.io/listener-name"
 	managedByLabel                 = "app.kubernetes.io/managed-by"
 	managedByValue                 = "dns-api-gateway-endpoint"
+	httpRouteGatewayIndex          = "gateway.endpoint.dns.appthrust.io/parent-gateway"
 )
 
 type Reconciler struct {
@@ -89,10 +93,17 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Scheme == nil {
 		r.Scheme = mgr.GetScheme()
 	}
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &gatewayv1.HTTPRoute{}, httpRouteGatewayIndex, routeGatewayIndexKeys); err != nil {
+		return fmt.Errorf("index HTTPRoute parent Gateways: %w", err)
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("gateway-endpoint").
 		For(&gatewayv1.HTTPRoute{}).
 		Watches(&gatewayv1.Gateway{}, handler.EnqueueRequestsFromMapFunc(r.mapGatewayToHTTPRoutes)).
+		// Cross-namespace projections cannot use owner references. The final
+		// delete event must wake routes even when their own state has not changed.
+		Watches(&endpointv1alpha1.EndpointRecordSet{}, handler.EnqueueRequestsFromMapFunc(r.mapEndpointRecordSetToHTTPRoutes),
+			builder.WithPredicates(predicate.Or(predicate.GenerationChangedPredicate{}, predicate.LabelChangedPredicate{}))).
 		Complete(r)
 }
 
@@ -101,22 +112,40 @@ func (r *Reconciler) mapGatewayToHTTPRoutes(ctx context.Context, obj client.Obje
 	if !ok {
 		return nil
 	}
-	var routes gatewayv1.HTTPRouteList
-	if err := r.List(ctx, &routes); err != nil {
+	return r.routesForGateway(ctx, client.ObjectKeyFromObject(gateway))
+}
+
+func routeGatewayIndexKeys(obj client.Object) []string {
+	route := obj.(*gatewayv1.HTTPRoute)
+	keys := gatewayKeysForRoute(route)
+	values := make([]string, 0, len(keys))
+	for _, key := range keys {
+		values = append(values, key.String())
+	}
+	return values
+}
+
+func (r *Reconciler) mapEndpointRecordSetToHTTPRoutes(ctx context.Context, obj client.Object) []reconcile.Request {
+	labels := obj.GetLabels()
+	if labels[managedByLabel] != managedByValue {
 		return nil
 	}
-	requests := make([]reconcile.Request, 0)
+	key := client.ObjectKey{Namespace: labels[generatedLabelGatewayNamespace], Name: labels[generatedLabelGatewayName]}
+	if key.Namespace == "" || key.Name == "" {
+		return nil
+	}
+	return r.routesForGateway(ctx, key)
+}
+
+func (r *Reconciler) routesForGateway(ctx context.Context, key client.ObjectKey) []reconcile.Request {
+	var routes gatewayv1.HTTPRouteList
+	if err := r.List(ctx, &routes, client.MatchingFields{httpRouteGatewayIndex: key.String()}); err != nil {
+		ctrl.LoggerFrom(ctx).Error(err, "list HTTPRoutes for Gateway", "gateway", key)
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(routes.Items))
 	for _, route := range routes.Items {
-		for _, parentRef := range route.Spec.ParentRefs {
-			namespace := route.Namespace
-			if parentRef.Namespace != nil {
-				namespace = string(*parentRef.Namespace)
-			}
-			if namespace == gateway.Namespace && string(parentRef.Name) == gateway.Name {
-				requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&route)})
-				break
-			}
-		}
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&route)})
 	}
 	return requests
 }
@@ -281,6 +310,15 @@ func (r *Reconciler) applyGatewayEndpointRecordSets(ctx context.Context, namespa
 		}
 		if err != nil {
 			return err
+		}
+		if !existing.DeletionTimestamp.IsZero() {
+			// Deletion is irreversible. Let the endpoint controller finish its
+			// provider cleanup; the EndpointRecordSet delete watch retries creation.
+			continue
+		}
+		if apiequality.Semantic.DeepEqual(existing.Labels, desired.Labels) &&
+			apiequality.Semantic.DeepEqual(existing.Spec, desired.Spec) {
+			continue
 		}
 		existing.Labels = desired.Labels
 		existing.Spec = desired.Spec
