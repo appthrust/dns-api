@@ -299,6 +299,14 @@ Route 53 ZoneUnit controller serializes `ChangeResourceRecordSets` by hosted zon
 
 Route 53 controller self-heals. After `Programmed=True`, periodic re-observation or Kubernetes events may find that Route 53 RRSet state differs from `ZoneUnit.spec.recordSets[]`. The controller sets `Programmed=False` with `ProviderChangePending` or `ProviderChangeDeferred`, and drives the provider back to desired state. `Programmed=True` means not only that the last change became `INSYNC`, but also that the last observed Route 53 RRSet matches the accepted desired state and no pending change affects the record identity.
 
+Pending-change completion must survive informer cache skew. The provider projects
+the before/after delta of each hosted-zone status mutation into `ZoneUnit.status`,
+not a replacement snapshot of unrelated provider state. A name-server or condition
+update must not resurrect a completed record-set DELETE, and clearing that DELETE
+must still reach the API server when the cache has not observed its submission.
+This allows an accepted same-name replacement to proceed to a fresh UPSERT and
+become `Programmed` without replaying the old change.
+
 Route 53 APIs may return DNS names with escaped octal labels. For example, wildcard label `*` may be returned as `\052`. The controller normalizes observed Route 53 RRSet names into dns-api canonical record names before comparing. `*.platform2.test.` and `\052.platform2.test.` are the same record identity. Values sent to Route 53 may use any form accepted by Route 53, but dns-api spec, status, adoption payloads, `ZoneUnit`, and UI use canonical form.
 
 Route 53-specific RecordSet Events do not replace common Events. They track Route 53 record set changes. Reasons start with `Route53`. Route 53 record set changes are submitted in hosted-zone batches, but Events are emitted per affected `RecordSet`, not on the `Zone`.
