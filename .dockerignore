@@ -10,3 +10,7 @@
 !pkg/**
 !internal/
 !internal/**
+
+!scripts/
+!scripts/verify-controller-architecture/
+!scripts/verify-controller-architecture/**

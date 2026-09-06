@@ -7,10 +7,12 @@ RUN go mod download
 
 COPY . .
 
-ARG BUILDPLATFORM
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /manager ./app/operator/cmd/manager
+# Inherit BuildKit's target instead of overriding ARM64 with an AMD64 default.
+ARG TARGETOS
+ARG TARGETARCH
+ARG TARGETPLATFORM
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /manager ./app/operator/cmd/manager \
+    && go run ./scripts/verify-controller-architecture /manager "${TARGETPLATFORM}"
 
 FROM gcr.io/distroless/static:nonroot
 

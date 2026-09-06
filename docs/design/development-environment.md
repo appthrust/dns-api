@@ -12,6 +12,16 @@ The development environment is provided by devbox. Go, kind, kubectl, kustomize,
 
 The Go version must match across `go.mod`, devbox, and the controller image build. The initial implementation uses Go `1.26.2`. The `go` directive in `go.mod` is `1.26.2`, the Go package in `devbox.json` is `go@1.26.2`, and the Dockerfile builder image is `golang:1.26.2`. The Go version in the Dockerfile must not be older than the version required by `go.mod`. If adding or updating a Go tool dependency such as `local-irsa` raises the required Go version, update `go.mod`, `devbox.json`, and `Dockerfile` in the same change.
 
+Controller images support `linux/amd64` and `linux/arm64`. The builder runs on
+`BUILDPLATFORM` and inherits BuildKit's `TARGETOS` and `TARGETARCH` without
+defaults. Do not set `TARGETARCH=amd64`: it overrides an ARM64 target while the
+final image can still be labeled ARM64.
+
+Every image build runs `scripts/verify-controller-architecture` on `/manager`
+before copying it into the runtime stage. The guard compares the ELF machine,
+class, and byte order against the independent `TARGETPLATFORM`, not the compiler's
+`GOARCH` setting. A mislabeled executable must fail the build before publication.
+
 Repository development commands are centralized in Taskfile. Do not use a Makefile. The development environment entry point is `task up`. The repository does not provide a development mode such as `task run` that runs the controller as a host-side process.
 
 Kubernetes controller implementation uses controller-runtime. API types, webhooks, reconcilers, and manager setup follow controller-runtime conventions.
@@ -32,6 +42,7 @@ The Docker build context and Tilt watch scope for the `dns-api-controller` image
 !app/operator/cmd/**
 !pkg/go/api/**
 !internal/**
+!scripts/verify-controller-architecture/**
 ```
 
 `docs/design/`, `docs/manual/`, `docs/design-feedback/`, UI packages, the Headlamp plugin package, package-manager artifacts, local state, test output, `.git/`, `.devbox/`, `.task/`, and `tmp/` are not inputs to the controller image. Changes only in these paths must not rebuild the `dns-api-controller` image or redeploy the `dns-api-controller-manager` Deployment.
@@ -261,7 +272,7 @@ The always-on controller check workflow runs on pull requests and pushes to `mai
 3. Run `task test`.
 4. Run `go vet ./...`.
 5. Build the default Kubernetes manifests with `kustomize build app/operator/config/default`.
-6. Build the controller image with `docker build`.
+6. Build both controller platforms with Buildx, including the executable architecture guard in each build.
 
 The always-on controller check workflow covers code generation, Go unit tests, controller-runtime fake-client or envtest-style tests, webhook validation tests, manifest rendering, and controller image buildability. It does not create hosted zones and does not call AWS APIs.
 
