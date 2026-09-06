@@ -23,7 +23,7 @@ The Gateway controller is a source controller. It reads Gateway API attachment s
 
 The Gateway controller:
 
-- watches `HTTPRoute` and `Gateway`;
+- watches `HTTPRoute`, `Gateway`, and generated `EndpointRecordSet` lifecycle and desired-state changes;
 - waits until all `HTTPRoute.spec.parentRefs` are accepted;
 - resolves hostnames from the route/listener relationship;
 - reads targets from `Gateway.status.addresses`;
@@ -147,6 +147,24 @@ The Gateway controller preserves target type and value. It does not turn hostnam
 The initial behavior is conservative: DNS intent is generated only after every `HTTPRoute.spec.parentRefs[]` entry has an `Accepted=True` parent status.
 
 This avoids partial DNS publication for a route whose complete Gateway attachment is not settled.
+
+## Deletion and Recovery
+
+An `EndpointRecordSet` may still be terminating when its route becomes accepted
+again. The Gateway controller must not update that terminating intent or remove
+its finalizers: provider cleanup belongs to the endpoint controller.
+
+Generated endpoint deletion events enqueue the current routes referencing the
+Gateway named by the endpoint's management labels. This relation uses a parent
+Gateway index because the endpoint and Gateway may be in different namespaces
+and cannot use a namespaced owner reference. Once deletion completes, accepted
+routes recreate the intent without requiring another Route or Gateway change.
+Routes that no longer satisfy publication requirements do not recreate it.
+
+Endpoint status-only changes do not enqueue the source controller, and unchanged
+endpoint spec and labels are not rewritten. Recovery therefore does not create a
+self-sustaining write/watch loop; actual Gateway target or Route changes still
+converge normally.
 
 ## Observability
 
