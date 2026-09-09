@@ -67,6 +67,7 @@ func TestZoneUnitProgrammedConditionAggregatesRoute53Targets(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			unit := route53ZoneUnitWithRecordSetItem("app", "apps-example-com", "app", "www-a", "www", dnsv1alpha1.RecordTypeA)
 			unit.Generation = 7
+			unit.Spec.RecordSets[0].ObservedGeneration = 1
 			unit.Status.Zone = &dnsv1alpha1.ZoneUnitZoneStatus{
 				Conditions: []metav1.Condition{
 					{Type: string(dnsv1alpha1.ConditionProgrammed), Status: tt.zoneStatus, Reason: tt.zoneReason, ObservedGeneration: 1},
@@ -77,6 +78,8 @@ func TestZoneUnitProgrammedConditionAggregatesRoute53Targets(t *testing.T) {
 					{
 						RecordSetNamespace: "app",
 						RecordSetName:      "www-a",
+						RecordSetUID:       unit.Spec.RecordSets[0].RecordSetUID,
+						ObservedGeneration: unit.Spec.RecordSets[0].ObservedGeneration,
 						Conditions: []metav1.Condition{
 							{Type: string(dnsv1alpha1.ConditionProgrammed), Status: tt.recordSetStatus, Reason: tt.recordSetReason, ObservedGeneration: 1},
 						},
@@ -88,5 +91,28 @@ func TestZoneUnitProgrammedConditionAggregatesRoute53Targets(t *testing.T) {
 
 			assertCondition(t, unit.Status.Conditions, string(dnsv1alpha1.ConditionProgrammed), tt.wantStatus, tt.wantReason)
 		})
+	}
+}
+
+func TestRoute53AggregateRequiresCurrentProgrammedObservation(t *testing.T) {
+	unit := route53ZoneUnitWithRecordSetItem("app", "apps-example-com", "app", "www-a", "www", dnsv1alpha1.RecordTypeA)
+	unit.Spec.RecordSets[0].ObservedGeneration = 2
+	unit.Status.Zone = &dnsv1alpha1.ZoneUnitZoneStatus{
+		Conditions: []metav1.Condition{{
+			Type: string(dnsv1alpha1.ConditionProgrammed), Status: metav1.ConditionTrue,
+			Reason: "Programmed",
+		}},
+	}
+	unit.Status.RecordSets = []dnsv1alpha1.ZoneUnitRecordSetStatus{{
+		RecordSetNamespace: "app", RecordSetName: "www-a",
+		RecordSetUID:       unit.Spec.RecordSets[0].RecordSetUID,
+		ObservedGeneration: 2,
+		Conditions: []metav1.Condition{{
+			Type: string(dnsv1alpha1.ConditionProgrammed), Status: metav1.ConditionTrue,
+			Reason: "Programmed", ObservedGeneration: 1,
+		}},
+	}}
+	if status, _, _ := zoneUnitProgrammedCondition(unit); status == metav1.ConditionTrue {
+		t.Fatal("an Accepted refresh promoted the previous generation's Programmed observation")
 	}
 }

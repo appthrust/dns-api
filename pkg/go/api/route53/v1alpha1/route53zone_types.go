@@ -1,6 +1,9 @@
 package v1alpha1
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+)
 
 type Route53ChangeStatus string
 
@@ -72,4 +75,9 @@ type Route53AffectedRecordSet struct {
 
 	// Name is the RecordSet name.
 	Name string `json:"name"`
+
+	// UID binds completion to the claim that submitted this batch. Legacy
+	// UID-less changes may be polled, but cannot attest a current claim.
+	// +optional
+	UID types.UID `json:"uid,omitempty"`
 }

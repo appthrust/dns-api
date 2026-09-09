@@ -169,6 +169,7 @@ export interface ZoneUnit extends KubeObjectInterface {
 export interface ZoneUnitRecordSetSpec {
   recordSetNamespace: string;
   recordSetName: string;
+  recordSetUID?: string;
   observedGeneration?: number;
   name: string;
   type: string;
@@ -178,6 +179,7 @@ export interface ZoneUnitRecordSetSpec {
 export interface ZoneUnitRecordSetStatus {
   recordSetNamespace: string;
   recordSetName: string;
+  recordSetUID?: string;
   observedGeneration?: number;
   deletionCompleted?: boolean;
   provider?: {

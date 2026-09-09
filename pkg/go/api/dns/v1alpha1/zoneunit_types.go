@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // ZoneUnit is the zone-scoped desired-state and ownership ledger built from accepted Zone and RecordSet claims.
@@ -62,6 +63,14 @@ type ZoneUnitRecordSetSpec struct {
 
 	// RecordSetName is the owner RecordSet name.
 	RecordSetName string `json:"recordSetName"`
+
+	// RecordSetUID binds this item to one claim incarnation. It is optional on
+	// the wire so pre-upgrade ledgers remain readable, not to authorize an
+	// unbound provider mutation. Composition supplies the current claim UID.
+	// +optional
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:MinLength=1
+	RecordSetUID types.UID `json:"recordSetUID,omitempty"`
 
 	// ObservedGeneration is the RecordSet generation used to build this item.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -179,6 +188,14 @@ type ZoneUnitRecordSetStatus struct {
 	// RecordSetName is the owner RecordSet name matching spec.recordSets[].
 	RecordSetName string `json:"recordSetName"`
 
+	// RecordSetUID identifies the claim incarnation observed by the provider.
+	// Empty or mismatched UIDs cannot authorize cleanup or transfer provider
+	// ownership to a recreated claim, even when name and generation match.
+	// +optional
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:MinLength=1
+	RecordSetUID types.UID `json:"recordSetUID,omitempty"`
+
 	// ObservedGeneration is the owner RecordSet generation observed in ZoneUnit.spec.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -187,7 +204,8 @@ type ZoneUnitRecordSetStatus struct {
 	// +optional
 	Provider *ProviderStatus `json:"provider,omitempty"`
 
-	// DeletionCompleted is true after provider-side record cleanup has completed.
+	// DeletionCompleted is true after provider-side cleanup for RecordSetUID has
+	// completed. Consumers must match its nonempty UID to the current claim.
 	// +optional
 	DeletionCompleted bool `json:"deletionCompleted,omitempty"`
 

@@ -217,6 +217,13 @@ spec:
                     recordSetNamespace:
                       description: RecordSetNamespace is the owner RecordSet namespace.
                       type: string
+                    recordSetUID:
+                      description: |-
+                        RecordSetUID binds this item to one claim incarnation. It is optional on
+                        the wire so pre-upgrade ledgers remain readable, not to authorize an
+                        unbound provider mutation. Composition supplies the current claim UID.
+                      minLength: 1
+                      type: string
                     ttl:
                       description: TTL is the record TTL in seconds for standard records.
                       format: int32
@@ -457,8 +464,9 @@ spec:
                       - type
                       x-kubernetes-list-type: map
                     deletionCompleted:
-                      description: DeletionCompleted is true after provider-side record
-                        cleanup has completed.
+                      description: |-
+                        DeletionCompleted is true after provider-side cleanup for RecordSetUID has
+                        completed. Consumers must match its nonempty UID to the current claim.
                       type: boolean
                     observedGeneration:
                       description: ObservedGeneration is the owner RecordSet generation
@@ -487,6 +495,13 @@ spec:
                     recordSetNamespace:
                       description: RecordSetNamespace is the owner RecordSet namespace
                         matching spec.recordSets[].
+                      type: string
+                    recordSetUID:
+                      description: |-
+                        RecordSetUID identifies the claim incarnation observed by the provider.
+                        Empty or mismatched UIDs cannot authorize cleanup or transfer provider
+                        ownership to a recreated claim, even when name and generation match.
+                      minLength: 1
                       type: string
                   required:
                   - recordSetName
