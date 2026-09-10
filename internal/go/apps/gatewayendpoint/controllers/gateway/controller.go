@@ -55,6 +55,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	var route gatewayv1.HTTPRoute
 	if err := r.Get(ctx, req.NamespacedName, &route); err != nil {
 		if apierrors.IsNotFound(err) {
+			if err := r.syncGatewaysForMissingRoute(ctx, namespace, req.Namespace, req.Name); err != nil {
+				return ctrl.Result{}, err
+			}
 			return ctrl.Result{}, r.cleanupForRoute(ctx, namespace, req.Namespace, req.Name)
 		}
 		return ctrl.Result{}, err
@@ -151,7 +154,36 @@ func (r *Reconciler) routesForGateway(ctx context.Context, key client.ObjectKey)
 }
 
 func (r *Reconciler) syncGatewaysForRoute(ctx context.Context, endpointRecordSetNamespace string, route *gatewayv1.HTTPRoute) error {
-	keys := gatewayKeysForRoute(route)
+	receiptKeys, err := r.gatewayKeysFromAdmissionReceipts(ctx, endpointRecordSetNamespace, route.Namespace, route.Name)
+	if err != nil {
+		return err
+	}
+	return r.syncGatewayKeys(ctx, endpointRecordSetNamespace, append(gatewayKeysForRoute(route), receiptKeys...))
+}
+
+func (r *Reconciler) syncGatewaysForMissingRoute(ctx context.Context, endpointRecordSetNamespace, routeNamespace, routeName string) error {
+	keys, err := r.gatewayKeysFromAdmissionReceipts(ctx, endpointRecordSetNamespace, routeNamespace, routeName)
+	if err != nil {
+		return err
+	}
+	return r.syncGatewayKeys(ctx, endpointRecordSetNamespace, keys)
+}
+
+func (r *Reconciler) syncGatewayKeys(ctx context.Context, endpointRecordSetNamespace string, keys []client.ObjectKey) error {
+	seen := map[client.ObjectKey]struct{}{}
+	for _, key := range keys {
+		seen[key] = struct{}{}
+	}
+	keys = keys[:0]
+	for key := range seen {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].Namespace == keys[j].Namespace {
+			return keys[i].Name < keys[j].Name
+		}
+		return keys[i].Namespace < keys[j].Namespace
+	})
 	for _, key := range keys {
 		if err := r.syncGatewayEndpointRecordSet(ctx, endpointRecordSetNamespace, key); err != nil {
 			return err
@@ -192,52 +224,108 @@ func (r *Reconciler) syncGatewayEndpointRecordSet(ctx context.Context, endpointR
 		}
 		return err
 	}
-	desired, err := r.endpointRecordSetsForGateway(ctx, &gateway, endpointRecordSetNamespace)
+	if !gateway.DeletionTimestamp.IsZero() {
+		return r.applyGatewayEndpointRecordSets(ctx, endpointRecordSetNamespace, gatewayKey, nil)
+	}
+	existing, err := r.existingGatewayEndpointRecordSet(ctx, endpointRecordSetNamespace, &gateway)
+	if err != nil {
+		return err
+	}
+	desired, err := r.endpointRecordSetsForGateway(ctx, &gateway, endpointRecordSetNamespace, existing)
 	if err != nil {
 		return err
 	}
 	return r.applyGatewayEndpointRecordSets(ctx, endpointRecordSetNamespace, gatewayKey, desired)
 }
 
-func (r *Reconciler) endpointRecordSetsForGateway(ctx context.Context, gateway *gatewayv1.Gateway, namespace string) ([]endpointv1alpha1.EndpointRecordSet, error) {
-	targets := endpointTargets(gateway.Status.Addresses)
-	if len(targets) == 0 {
+func (r *Reconciler) endpointRecordSetsForGateway(ctx context.Context, gateway *gatewayv1.Gateway, namespace string, existing *endpointv1alpha1.EndpointRecordSet) ([]endpointv1alpha1.EndpointRecordSet, error) {
+	if gatewayAcceptance(gateway) == parentAcceptanceRejected {
 		return nil, nil
 	}
+	targets := endpointTargets(gateway.Status.Addresses)
 	var routes gatewayv1.HTTPRouteList
 	if err := r.List(ctx, &routes); err != nil {
 		return nil, err
 	}
+
+	receipt := existingAdmissionReceipt(existing)
+	publishedHostnames := map[string]struct{}{}
+	if existing != nil {
+		for _, hostname := range existing.Spec.Hostnames {
+			publishedHostnames[hostname] = struct{}{}
+		}
+	}
 	hostnames := map[string]struct{}{}
-	for _, route := range routes.Items {
-		if !route.DeletionTimestamp.IsZero() || !allRouteParentRefsAccepted(&route) {
+	retainedHostnames := map[string]struct{}{}
+	receiptBindings := map[string]admissionReceiptBinding{}
+	for i := range routes.Items {
+		route := &routes.Items[i]
+		if !route.DeletionTimestamp.IsZero() {
 			continue
 		}
-		parents, err := r.acceptedParents(ctx, &route)
-		if err != nil {
-			return nil, err
-		}
-		for _, parent := range parents {
-			if parent.gateway.Namespace != gateway.Namespace || parent.gateway.Name != gateway.Name {
-				continue
-			}
-			for _, hostname := range effectiveHostnamesForParent(&route, parent) {
+		fullyAccepted := allRouteParentRefsAccepted(route)
+		for _, binding := range routeGatewayBindings(route, gateway) {
+			acceptance := routeParentAcceptance(route, binding.ref)
+			for _, hostname := range effectiveHostnamesForListener(route, binding.listener) {
+				match, hasReceipt := admissionReceiptBinding{}, false
+				conflictingReceipt := false
+				if _, published := publishedHostnames[hostname]; published {
+					match, hasReceipt = receipt.matchingBinding(route, gateway, binding, hostname)
+					conflictingReceipt = receipt.conflictsCurrentBinding(route, gateway, binding, hostname)
+				}
+				if fullyAccepted && acceptance == parentAcceptanceAccepted {
+					if conflictingReceipt {
+						continue
+					}
+					hostnames[hostname] = struct{}{}
+					if len(targets) != 0 {
+						if current, ok := newAdmissionReceiptBinding(route, gateway, binding); ok {
+							addReceiptHostname(receiptBindings, current, hostname)
+						}
+					} else if hasReceipt {
+						addReceiptHostname(receiptBindings, match, hostname)
+					}
+					if hasReceipt {
+						retainedHostnames[hostname] = struct{}{}
+					}
+					continue
+				}
+				if acceptance == parentAcceptanceRejected ||
+					(acceptance == parentAcceptanceUnknown && !listenerAllowsUnknownRetention(route, gateway, binding.listener)) ||
+					!hasReceipt {
+					continue
+				}
 				hostnames[hostname] = struct{}{}
+				retainedHostnames[hostname] = struct{}{}
+				addReceiptHostname(receiptBindings, match, hostname)
 			}
 		}
 	}
-	if len(hostnames) == 0 {
+	if len(targets) == 0 {
+		hostnames = retainedHostnames
+	}
+	if len(hostnames) == 0 || len(targets) == 0 && (existing == nil || len(existing.Spec.Targets) == 0) {
 		return nil, nil
 	}
+	if len(targets) == 0 {
+		targets = existing.Spec.Targets
+	}
+
 	hostnameList := make([]string, 0, len(hostnames))
 	for hostname := range hostnames {
 		hostnameList = append(hostnameList, hostname)
 	}
 	sort.Strings(hostnameList)
+	retainReceiptHostnames(receiptBindings, hostnames)
+	annotations := map[string]string(nil)
+	if encoded := encodeAdmissionReceipt(receiptBindings); encoded != "" {
+		annotations = map[string]string{admissionReceiptAnnotation: encoded}
+	}
 	return []endpointv1alpha1.EndpointRecordSet{{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: namespace,
-			Name:      generatedGatewayEndpointRecordSetName(gateway.Namespace, gateway.Name),
+			Namespace:   namespace,
+			Name:        generatedGatewayEndpointRecordSetName(gateway.Namespace, gateway.Name),
+			Annotations: annotations,
 			Labels: map[string]string{
 				managedByLabel:                 managedByValue,
 				generatedLabelGatewayNamespace: gateway.Namespace,
@@ -249,50 +337,6 @@ func (r *Reconciler) endpointRecordSetsForGateway(ctx context.Context, gateway *
 			Targets:   targets,
 		},
 	}}, nil
-}
-
-func (r *Reconciler) endpointRecordSetsForRoute(ctx context.Context, route *gatewayv1.HTTPRoute, namespace string) ([]endpointv1alpha1.EndpointRecordSet, error) {
-	parents, err := r.acceptedParents(ctx, route)
-	if err != nil {
-		return nil, err
-	}
-	if len(parents) == 0 || !allRouteParentRefsAccepted(route) {
-		return nil, nil
-	}
-	desired := make([]endpointv1alpha1.EndpointRecordSet, 0, len(parents))
-	for _, parent := range parents {
-		hostnames := effectiveHostnamesForParent(route, parent)
-		targets := endpointTargets(parent.addresses)
-		if len(hostnames) == 0 || len(targets) == 0 {
-			continue
-		}
-		listenerName := string(parent.listener.Name)
-		gatewayNamespace := parent.gateway.Namespace
-		gatewayName := parent.gateway.Name
-		item := endpointv1alpha1.EndpointRecordSet{
-			ObjectMeta: metav1.ObjectMeta{
-				Namespace: namespace,
-				Name:      generatedEndpointRecordSetName(route.Namespace, route.Name, gatewayNamespace, gatewayName, listenerName),
-				Labels: map[string]string{
-					managedByLabel:                 managedByValue,
-					generatedLabelRouteNamespace:   route.Namespace,
-					generatedLabelRouteName:        route.Name,
-					generatedLabelGatewayNamespace: gatewayNamespace,
-					generatedLabelGatewayName:      gatewayName,
-					generatedLabelListenerName:     listenerName,
-				},
-			},
-			Spec: endpointv1alpha1.EndpointRecordSetSpec{
-				Hostnames: hostnames,
-				Targets:   targets,
-			},
-		}
-		desired = append(desired, item)
-	}
-	sort.Slice(desired, func(i, j int) bool {
-		return desired[i].Name < desired[j].Name
-	})
-	return desired, nil
 }
 
 func (r *Reconciler) applyGatewayEndpointRecordSets(ctx context.Context, namespace string, gatewayKey client.ObjectKey, desired []endpointv1alpha1.EndpointRecordSet) error {
@@ -316,12 +360,22 @@ func (r *Reconciler) applyGatewayEndpointRecordSets(ctx context.Context, namespa
 			// provider cleanup; the EndpointRecordSet delete watch retries creation.
 			continue
 		}
+		desiredReceipt := desired.Annotations[admissionReceiptAnnotation]
 		if apiequality.Semantic.DeepEqual(existing.Labels, desired.Labels) &&
-			apiequality.Semantic.DeepEqual(existing.Spec, desired.Spec) {
+			apiequality.Semantic.DeepEqual(existing.Spec, desired.Spec) &&
+			existing.Annotations[admissionReceiptAnnotation] == desiredReceipt {
 			continue
 		}
 		existing.Labels = desired.Labels
 		existing.Spec = desired.Spec
+		if desiredReceipt == "" {
+			delete(existing.Annotations, admissionReceiptAnnotation)
+		} else {
+			if existing.Annotations == nil {
+				existing.Annotations = map[string]string{}
+			}
+			existing.Annotations[admissionReceiptAnnotation] = desiredReceipt
+		}
 		if err := r.Update(ctx, &existing, client.FieldOwner(fieldOwner)); err != nil {
 			return err
 		}
@@ -331,48 +385,6 @@ func (r *Reconciler) applyGatewayEndpointRecordSets(ctx context.Context, namespa
 		managedByLabel:                 managedByValue,
 		generatedLabelGatewayNamespace: gatewayKey.Namespace,
 		generatedLabelGatewayName:      gatewayKey.Name,
-	}); err != nil {
-		return err
-	}
-	for _, item := range existing.Items {
-		if _, ok := desiredNames[item.Name]; ok {
-			continue
-		}
-		item := item
-		if err := r.Delete(ctx, &item); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-	}
-	return nil
-}
-
-func (r *Reconciler) applyEndpointRecordSets(ctx context.Context, route *gatewayv1.HTTPRoute, namespace string, desired []endpointv1alpha1.EndpointRecordSet) error {
-	desiredNames := map[string]struct{}{}
-	for _, item := range desired {
-		desired := item
-		desiredNames[desired.Name] = struct{}{}
-		var existing endpointv1alpha1.EndpointRecordSet
-		err := r.Get(ctx, client.ObjectKey{Namespace: desired.Namespace, Name: desired.Name}, &existing)
-		if apierrors.IsNotFound(err) {
-			if err := r.Create(ctx, &desired, client.FieldOwner(fieldOwner)); err != nil {
-				return err
-			}
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		existing.Labels = desired.Labels
-		existing.Spec = desired.Spec
-		if err := r.Update(ctx, &existing, client.FieldOwner(fieldOwner)); err != nil {
-			return err
-		}
-	}
-	var existing endpointv1alpha1.EndpointRecordSetList
-	if err := r.List(ctx, &existing, client.InNamespace(namespace), client.MatchingLabels{
-		managedByLabel:               managedByValue,
-		generatedLabelRouteNamespace: route.Namespace,
-		generatedLabelRouteName:      route.Name,
 	}); err != nil {
 		return err
 	}
@@ -412,19 +424,6 @@ func generatedGatewayEndpointRecordSetName(gatewayNamespace, gatewayName string)
 	hash := hex.EncodeToString(sum[:])[:10]
 	candidate := gatewayNamespace + "-" + gatewayName
 	candidate = strings.NewReplacer(".", "-", "_", "-").Replace(candidate)
-	candidate = strings.ToLower(candidate)
-	if len(candidate) <= 52 {
-		return candidate + "-" + hash
-	}
-	return strings.Trim(candidate[:52], "-") + "-" + hash
-}
-
-func generatedEndpointRecordSetName(routeNamespace, routeName, gatewayNamespace, gatewayName, listenerName string) string {
-	hashInput := routeNamespace + "/" + routeName + "/" + gatewayNamespace + "/" + gatewayName + "/" + listenerName
-	sum := sha256.Sum256([]byte(hashInput))
-	hash := hex.EncodeToString(sum[:])[:10]
-	candidate := fmt.Sprintf("%s-%s-%s", routeName, gatewayName, listenerName)
-	candidate = strings.NewReplacer(".", "-", "_", "-", "*", "wildcard").Replace(candidate)
 	candidate = strings.ToLower(candidate)
 	if len(candidate) <= 52 {
 		return candidate + "-" + hash
