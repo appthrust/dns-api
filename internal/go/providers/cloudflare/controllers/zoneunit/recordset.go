@@ -2,12 +2,9 @@ package cloudflare
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
-	"strings"
 	"time"
 
 	cloudflarev1alpha1 "github.com/appthrust/dns-api/pkg/go/api/cloudflare/v1alpha1"
@@ -28,8 +25,6 @@ const (
 	cloudflareFixedTTLMin = int32(60)
 	cloudflareFixedTTLMax = int32(86400)
 )
-
-var cloudflareTagPattern = regexp.MustCompile(`^([A-Za-z0-9_-]{1,32}):(.*)$`)
 
 type CloudflareDNSRecord struct {
 	ID        string
@@ -88,8 +83,13 @@ func (r *recordSetReconciler) reconcileZoneUnitRecordSets(ctx context.Context, u
 		if !item.IsAllowed() && !item.DeletionRequested {
 			continue
 		}
+		if item.RecordSetUID == "" {
+			aggregate = mergeCloudflareRecordSetResult(aggregate, ctrl.Result{RequeueAfter: r.requeueAfter()})
+			continue
+		}
 		recordSet := cloudflareRecordSetFromZoneUnitItem(unit, item, statusByRef[cloudflareRecordSetClaimKey(item.RecordSetNamespace, item.RecordSetName)])
 		ctxData, accepted, err := r.acceptRecordSetFromZoneUnit(ctx, &recordSet, unit)
+		ctxData.RecordSetSource = item.DeepCopy()
 		if err != nil || !accepted {
 			return aggregate, err
 		}
@@ -123,14 +123,15 @@ func (r *recordSetReconciler) reconcileZoneUnitRecordSets(ctx context.Context, u
 }
 
 type cloudflareRecordSetContext struct {
-	Zone      *dnsv1alpha1.Zone
-	ZoneClass *dnsv1alpha1.ZoneClass
-	Identity  *cloudflarev1alpha1.CloudflareIdentity
-	Provider  *dnsv1alpha1.Provider
-	Version   *dnsv1alpha1.ProviderVersion
-	ZoneUnit  *dnsv1alpha1.ZoneUnit
-	ZoneID    string
-	FullName  string
+	Zone            *dnsv1alpha1.Zone
+	ZoneClass       *dnsv1alpha1.ZoneClass
+	Identity        *cloudflarev1alpha1.CloudflareIdentity
+	Provider        *dnsv1alpha1.Provider
+	Version         *dnsv1alpha1.ProviderVersion
+	ZoneUnit        *dnsv1alpha1.ZoneUnit
+	RecordSetSource *dnsv1alpha1.ZoneUnitRecordSetSpec
+	ZoneID          string
+	FullName        string
 }
 
 func cloudflareRecordSetFromZoneUnitItem(unit *dnsv1alpha1.ZoneUnit, item dnsv1alpha1.ZoneUnitRecordSetSpec, status dnsv1alpha1.ZoneUnitRecordSetStatus) dnsv1alpha1.RecordSet {
@@ -138,6 +139,7 @@ func cloudflareRecordSetFromZoneUnitItem(unit *dnsv1alpha1.ZoneUnit, item dnsv1a
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:  item.RecordSetNamespace,
 			Name:       item.RecordSetName,
+			UID:        item.RecordSetUID,
 			Generation: item.ObservedGeneration,
 		},
 		Spec: dnsv1alpha1.RecordSetSpec{
@@ -156,13 +158,10 @@ func cloudflareRecordSetFromZoneUnitItem(unit *dnsv1alpha1.ZoneUnit, item dnsv1a
 			Options:  item.Options,
 			Adoption: item.Adoption,
 		},
-		Status: dnsv1alpha1.RecordSetStatus{
-			ObservedGeneration: status.ObservedGeneration,
-			Provider:           status.Provider,
-			Conditions:         slices.Clone(status.Conditions),
-		},
 	}
-	if status.ObservedGeneration == 0 {
+	if cloudflareZoneUnitRecordSetStatusMatchesItem(status, item) {
+		recordSet.Status = cloudflareRecordSetStatusFromZoneUnitStatus(status)
+	} else {
 		recordSet.Status.ObservedGeneration = item.ObservedGeneration
 	}
 	if item.DeletionRequested {
@@ -170,6 +169,77 @@ func cloudflareRecordSetFromZoneUnitItem(unit *dnsv1alpha1.ZoneUnit, item dnsv1a
 		recordSet.DeletionTimestamp = &now
 	}
 	return recordSet
+}
+
+func cloudflareRecordSetStatusFromZoneUnitStatus(status dnsv1alpha1.ZoneUnitRecordSetStatus) dnsv1alpha1.RecordSetStatus {
+	return dnsv1alpha1.RecordSetStatus{
+		ObservedGeneration: status.ObservedGeneration,
+		Provider:           status.Provider,
+		Conditions:         slices.Clone(status.Conditions),
+	}
+}
+
+func cloudflareZoneUnitRecordSetStatusMatchesItem(status dnsv1alpha1.ZoneUnitRecordSetStatus, item dnsv1alpha1.ZoneUnitRecordSetSpec) bool {
+	// Ownership belongs to the incarnation, not one desired generation. An
+	// ordinary update must retain provider IDs; readiness checks freshness below.
+	return status.RecordSetNamespace == item.RecordSetNamespace &&
+		status.RecordSetName == item.RecordSetName &&
+		status.RecordSetUID != "" &&
+		status.RecordSetUID == item.RecordSetUID
+}
+
+func cloudflareZoneUnitRecordSetSourceMatches(unit *dnsv1alpha1.ZoneUnit, item dnsv1alpha1.ZoneUnitRecordSetSpec, recordSet *dnsv1alpha1.RecordSet) bool {
+	zoneNamespace, zoneName := recordSetZoneKey(recordSet)
+	return item.RecordSetNamespace == recordSet.Namespace &&
+		item.RecordSetName == recordSet.Name &&
+		item.RecordSetUID != "" &&
+		item.RecordSetUID == recordSet.UID &&
+		item.ObservedGeneration == recordSet.Generation &&
+		item.DeletionRequested == !recordSet.DeletionTimestamp.IsZero() &&
+		unit.Spec.Provider == recordSet.Spec.Provider &&
+		zoneNamespace == unit.Namespace &&
+		zoneName == unit.Name &&
+		item.Name == recordSet.Spec.Name &&
+		item.Type == recordSet.Spec.Type &&
+		equality.Semantic.DeepEqual(item.TTL, recordSet.Spec.TTL) &&
+		equality.Semantic.DeepEqual(item.A, recordSet.Spec.A) &&
+		equality.Semantic.DeepEqual(item.AAAA, recordSet.Spec.AAAA) &&
+		equality.Semantic.DeepEqual(item.TXT, recordSet.Spec.TXT) &&
+		equality.Semantic.DeepEqual(item.CNAME, recordSet.Spec.CNAME) &&
+		equality.Semantic.DeepEqual(item.MX, recordSet.Spec.MX) &&
+		equality.Semantic.DeepEqual(item.CAA, recordSet.Spec.CAA) &&
+		equality.Semantic.DeepEqual(item.NS, recordSet.Spec.NS) &&
+		equality.Semantic.DeepEqual(item.Options, recordSet.Spec.Options) &&
+		equality.Semantic.DeepEqual(item.Adoption, recordSet.Spec.Adoption)
+}
+
+// authorizeCloudflareRecordSetMutation makes the status subresource the
+// API-server-authoritative mutation fence. The source check rejects a current
+// cache observation that no longer represents this claim; the optimistic,
+// otherwise no-op patch rejects an observation superseded in the API server.
+// It is intentionally called only immediately before an external write.
+func (r *recordSetReconciler) authorizeCloudflareRecordSetMutation(ctx context.Context, recordSet *dnsv1alpha1.RecordSet, source *dnsv1alpha1.ZoneUnitRecordSetSpec) error {
+	zoneNamespace, zoneName := recordSetZoneKey(recordSet)
+	var unit dnsv1alpha1.ZoneUnit
+	if err := r.Get(ctx, client.ObjectKey{Namespace: zoneNamespace, Name: zoneName}, &unit); err != nil {
+		if apierrors.IsNotFound(err) {
+			return apierrors.NewConflict(dnsv1alpha1.Resource("zoneunits"), zoneName, fmt.Errorf("ZoneUnit was deleted before Cloudflare DNS records could be changed"))
+		}
+		return err
+	}
+	itemIndex := -1
+	if source != nil {
+		itemIndex = slices.IndexFunc(unit.Spec.RecordSets, func(item dnsv1alpha1.ZoneUnitRecordSetSpec) bool {
+			return item.RecordSetNamespace == source.RecordSetNamespace && item.RecordSetName == source.RecordSetName
+		})
+	}
+	if itemIndex < 0 ||
+		!cloudflareZoneUnitRecordSetSourceMatches(&unit, unit.Spec.RecordSets[itemIndex], recordSet) ||
+		!equality.Semantic.DeepEqual(unit.Spec.RecordSets[itemIndex], *source) {
+		return apierrors.NewConflict(dnsv1alpha1.Resource("zoneunits"), zoneName, fmt.Errorf("ZoneUnit RecordSet source changed before Cloudflare DNS records could be changed"))
+	}
+	unitBase := unit.DeepCopy()
+	return r.Status().Patch(ctx, &unit, client.MergeFromWithOptions(unitBase, client.MergeFromWithOptimisticLock{}))
 }
 
 func mergeCloudflareRecordSetResult(left, right ctrl.Result) ctrl.Result {
@@ -247,12 +317,13 @@ func (r *recordSetReconciler) acceptRecordSetFromZoneUnit(ctx context.Context, r
 		ZoneID:    zoneStatus.Zone.ID,
 		FullName:  cloudflareFullRecordName(recordSet.Spec.Name, zone.Spec.DomainName),
 	}
-	if err := r.patchStatus(ctx, recordSet, func(status *dnsv1alpha1.RecordSetStatus) {
+	if err := r.patchStatus(ctx, recordSet, false, func(status *dnsv1alpha1.RecordSetStatus) error {
 		status.ObservedGeneration = recordSet.Generation
 		status.Zone = &dnsv1alpha1.RecordSetZoneStatus{
 			Ref: dnsv1alpha1.ObjectReference{Namespace: zone.Namespace, Name: zone.Name},
 		}
 		setCondition(&status.Conditions, string(dnsv1alpha1.ConditionAccepted), metav1.ConditionTrue, "Accepted", "RecordSet is accepted by Cloudflare policy", recordSet.Generation)
+		return nil
 	}); err != nil {
 		return out, false, err
 	}
@@ -303,12 +374,12 @@ func (r *recordSetReconciler) reconcileNormal(ctx context.Context, provider Reco
 		return r.applyCloudflareRecordSetDiff(ctx, provider, recordSet, ctxData, nil, desired)
 	}
 	managed, _ := cloudflareRecordsByIDs(sameType, managedIDs)
-	if unmanaged := cloudflareRecordsExcludingIDs(sameType, managedIDs); len(unmanaged) > 0 {
-		observed := append(slices.Clone(managed), unmanaged...)
-		if cloudflareDNSRecordSetEqual(observed, desired) {
-			return ctrl.Result{}, r.setReady(ctx, recordSet, observed)
+	// Only IDs durably recorded for this UID are mutable. Desired equality
+	// does not establish that an external ID was created or adopted by it.
+	for _, record := range sameType {
+		if _, owned := managedIDs[record.ID]; !owned {
+			return ctrl.Result{}, r.setProgrammed(ctx, recordSet, metav1.ConditionFalse, "ProviderConflict", "same Cloudflare DNS records already exist")
 		}
-		return ctrl.Result{}, r.setProgrammed(ctx, recordSet, metav1.ConditionFalse, "ProviderConflict", "same Cloudflare DNS records already exist")
 	}
 	return r.applyCloudflareRecordSetDiff(ctx, provider, recordSet, ctxData, managed, desired)
 }
@@ -369,6 +440,13 @@ func (r *recordSetReconciler) reconcileDeleteWithContext(ctx context.Context, re
 		}
 	}
 	if len(ids) == 0 {
+		observed, err := provider.ListDNSRecords(ctx, ctxData.ZoneID, ctxData.FullName)
+		if err != nil {
+			return r.failProgrammedForProviderError(ctx, recordSet, err)
+		}
+		if len(observed) > 0 {
+			return ctrl.Result{}, r.setProgrammed(ctx, recordSet, metav1.ConditionFalse, "ProviderOwnershipNotEstablished", "Cloudflare DNS records exist but are not owned by the current RecordSet UID")
+		}
 		return ctrl.Result{}, r.removeFinalizer(ctx, recordSet)
 	}
 	var deletes []CloudflareDNSRecord
@@ -392,6 +470,9 @@ func (r *recordSetReconciler) reconcileDeleteWithContext(ctx context.Context, re
 		deletes = append(deletes, observed)
 	}
 	if len(deletes) > 0 {
+		if err := r.authorizeCloudflareRecordSetMutation(ctx, recordSet, ctxData.RecordSetSource); err != nil {
+			return ctrl.Result{}, err
+		}
 		if _, err := provider.BatchDNSRecords(ctx, ctxData.ZoneID, CloudflareDNSRecordBatch{Deletes: deletes}); err != nil && !isCloudflareNotFound(err) {
 			return r.failProgrammedForProviderError(ctx, recordSet, err)
 		}
@@ -421,6 +502,9 @@ func (r *recordSetReconciler) applyCloudflareRecordSetDiff(ctx context.Context, 
 		return ctrl.Result{}, r.setReady(ctx, recordSet, current)
 	}
 	batch := cloudflareDNSRecordBatchFromOperations(operations)
+	if err := r.authorizeCloudflareRecordSetMutation(ctx, recordSet, ctxData.RecordSetSource); err != nil {
+		return ctrl.Result{}, err
+	}
 	applied, err := provider.BatchDNSRecords(ctx, ctxData.ZoneID, batch)
 	if err != nil {
 		return r.failProgrammedForProviderError(ctx, recordSet, err)
@@ -534,164 +618,6 @@ func (r *recordSetReconciler) identityForZoneClass(ctx context.Context, recordSe
 	return &identity, true, nil
 }
 
-func (r *recordSetReconciler) setReady(ctx context.Context, recordSet *dnsv1alpha1.RecordSet, observed []CloudflareDNSRecord) error {
-	if err := validateCloudflareDNSRecordIDs(observed, "Cloudflare DNS record id"); err != nil {
-		return r.setProgrammed(ctx, recordSet, metav1.ConditionFalse, "ProviderInvalidRequest", err.Error())
-	}
-	if err := r.patchCloudflareRecordSetStatus(ctx, recordSet, func(data *cloudflarev1alpha1.CloudflareRecordSetStatusData, state *cloudflarev1alpha1.CloudflareRecordSetState) {
-		data.Records = cloudflareDNSRecordStatuses(observed)
-		state.Records = cloudflareDNSRecordStates(observed)
-	}); err != nil {
-		return err
-	}
-	if err := r.setAccepted(ctx, recordSet, metav1.ConditionTrue, "Accepted", "RecordSet is accepted by Cloudflare policy"); err != nil {
-		return err
-	}
-	return r.setProgrammed(ctx, recordSet, metav1.ConditionTrue, "Programmed", "Cloudflare DNS records match desired state")
-}
-
-func (r *recordSetReconciler) setAccepted(ctx context.Context, recordSet *dnsv1alpha1.RecordSet, status metav1.ConditionStatus, reason, message string) error {
-	return r.patchStatus(ctx, recordSet, func(recordSetStatus *dnsv1alpha1.RecordSetStatus) {
-		recordSetStatus.ObservedGeneration = recordSet.Generation
-		setCondition(&recordSetStatus.Conditions, string(dnsv1alpha1.ConditionAccepted), status, reason, message, recordSet.Generation)
-	})
-}
-
-func (r *recordSetReconciler) setProgrammed(ctx context.Context, recordSet *dnsv1alpha1.RecordSet, status metav1.ConditionStatus, reason, message string) error {
-	return r.patchStatus(ctx, recordSet, func(recordSetStatus *dnsv1alpha1.RecordSetStatus) {
-		recordSetStatus.ObservedGeneration = recordSet.Generation
-		setCondition(&recordSetStatus.Conditions, string(dnsv1alpha1.ConditionProgrammed), status, reason, message, recordSet.Generation)
-	})
-}
-
-func (r *recordSetReconciler) patchStatus(ctx context.Context, recordSet *dnsv1alpha1.RecordSet, mutate func(*dnsv1alpha1.RecordSetStatus)) error {
-	base := recordSet.DeepCopy()
-	mutate(&recordSet.Status)
-	if equality.Semantic.DeepEqual(base.Status, recordSet.Status) {
-		return nil
-	}
-
-	zoneNamespace, zoneName := recordSetZoneKey(recordSet)
-	var unit dnsv1alpha1.ZoneUnit
-	if err := r.Get(ctx, client.ObjectKey{Namespace: zoneNamespace, Name: zoneName}, &unit); err != nil {
-		return client.IgnoreNotFound(err)
-	}
-	unitBase := unit.DeepCopy()
-	index := slices.IndexFunc(unit.Status.RecordSets, func(status dnsv1alpha1.ZoneUnitRecordSetStatus) bool {
-		return status.RecordSetNamespace == recordSet.Namespace && status.RecordSetName == recordSet.Name
-	})
-	next := dnsv1alpha1.ZoneUnitRecordSetStatus{
-		RecordSetNamespace: recordSet.Namespace,
-		RecordSetName:      recordSet.Name,
-		ObservedGeneration: recordSet.Status.ObservedGeneration,
-		Provider:           recordSet.Status.Provider,
-		Conditions:         slices.Clone(recordSet.Status.Conditions),
-	}
-	if recordSet.DeletionTimestamp != nil {
-		programmed := meta.FindStatusCondition(recordSet.Status.Conditions, string(dnsv1alpha1.ConditionProgrammed))
-		next.DeletionCompleted = programmed != nil && programmed.Status == metav1.ConditionTrue
-	}
-	if index >= 0 {
-		unit.Status.RecordSets[index] = next
-	} else {
-		unit.Status.RecordSets = append(unit.Status.RecordSets, next)
-	}
-	unit.Status.ObservedGeneration = unit.Generation
-	setZoneUnitProgrammedCondition(&unit)
-	if equality.Semantic.DeepEqual(unitBase.Status, unit.Status) {
-		return nil
-	}
-	return client.IgnoreNotFound(r.Status().Patch(ctx, &unit, client.MergeFrom(unitBase)))
-}
-
-func setZoneUnitProgrammedCondition(unit *dnsv1alpha1.ZoneUnit) {
-	status, reason, message := zoneUnitProgrammedCondition(unit)
-	setCondition(&unit.Status.Conditions, string(dnsv1alpha1.ConditionProgrammed), status, reason, message, unit.Generation)
-}
-
-func zoneUnitProgrammedCondition(unit *dnsv1alpha1.ZoneUnit) (metav1.ConditionStatus, string, string) {
-	if unit.Status.Zone == nil {
-		return metav1.ConditionUnknown, "Reconciling", "ZoneUnit zone status is not observed"
-	}
-	status := metav1.ConditionTrue
-	reason := "Programmed"
-	message := "ZoneUnit is programmed"
-	if condition := meta.FindStatusCondition(unit.Status.Zone.Conditions, string(dnsv1alpha1.ConditionProgrammed)); condition == nil {
-		status = metav1.ConditionUnknown
-		reason = "Reconciling"
-		message = "ZoneUnit zone Programmed condition is not observed"
-	} else if condition.Status == metav1.ConditionFalse {
-		return condition.Status, condition.Reason, condition.Message
-	} else if condition.Status == metav1.ConditionUnknown {
-		status = metav1.ConditionUnknown
-		reason = condition.Reason
-		message = condition.Message
-	}
-	for _, item := range unit.Spec.RecordSets {
-		if !item.IsAllowed() && !item.DeletionRequested {
-			continue
-		}
-		condition := zoneUnitRecordSetProgrammedCondition(unit, item)
-		if condition == nil {
-			if status != metav1.ConditionFalse {
-				status = metav1.ConditionUnknown
-				reason = "Reconciling"
-				message = "ZoneUnit record set Programmed condition is not observed"
-			}
-			continue
-		}
-		if condition.Status == metav1.ConditionFalse {
-			return condition.Status, condition.Reason, condition.Message
-		}
-		if condition.Status == metav1.ConditionUnknown && status != metav1.ConditionFalse {
-			status = metav1.ConditionUnknown
-			reason = condition.Reason
-			message = condition.Message
-		}
-	}
-	return status, reason, message
-}
-
-func zoneUnitRecordSetProgrammedCondition(unit *dnsv1alpha1.ZoneUnit, item dnsv1alpha1.ZoneUnitRecordSetSpec) *metav1.Condition {
-	index := slices.IndexFunc(unit.Status.RecordSets, func(status dnsv1alpha1.ZoneUnitRecordSetStatus) bool {
-		return status.RecordSetNamespace == item.RecordSetNamespace && status.RecordSetName == item.RecordSetName
-	})
-	if index < 0 {
-		return nil
-	}
-	return meta.FindStatusCondition(unit.Status.RecordSets[index].Conditions, string(dnsv1alpha1.ConditionProgrammed))
-}
-
-func (r *recordSetReconciler) patchCloudflareRecordSetStatus(ctx context.Context, recordSet *dnsv1alpha1.RecordSet, mutate func(*cloudflarev1alpha1.CloudflareRecordSetStatusData, *cloudflarev1alpha1.CloudflareRecordSetState)) error {
-	statusData, err := cloudflareRecordSetStatusData(recordSet)
-	if err != nil {
-		return err
-	}
-	statusState, err := cloudflareRecordSetState(recordSet)
-	if err != nil {
-		return err
-	}
-	mutate(&statusData, &statusState)
-	rawData, err := json.Marshal(statusData)
-	if err != nil {
-		return err
-	}
-	var rawState []byte
-	if len(statusState.Records) > 0 {
-		rawState, err = json.Marshal(statusState)
-		if err != nil {
-			return err
-		}
-	}
-	return r.patchStatus(ctx, recordSet, func(status *dnsv1alpha1.RecordSetStatus) {
-		status.ObservedGeneration = recordSet.Generation
-		status.Provider = &dnsv1alpha1.ProviderStatus{Data: runtime.RawExtension{Raw: rawData}}
-		if len(rawState) > 0 {
-			status.Provider.State = runtime.RawExtension{Raw: rawState}
-		}
-	})
-}
-
 func (r *recordSetReconciler) upsertRecordStatus(ctx context.Context, recordSet *dnsv1alpha1.RecordSet, record CloudflareDNSRecord) error {
 	return r.patchCloudflareRecordSetStatus(ctx, recordSet, func(data *cloudflarev1alpha1.CloudflareRecordSetStatusData, state *cloudflarev1alpha1.CloudflareRecordSetState) {
 		status := cloudflareDNSRecordStatus(record)
@@ -734,9 +660,10 @@ func (r *recordSetReconciler) ensureFinalizer(ctx context.Context, recordSet *dn
 }
 
 func (r *recordSetReconciler) removeFinalizer(ctx context.Context, recordSet *dnsv1alpha1.RecordSet) error {
-	return r.patchStatus(ctx, recordSet, func(status *dnsv1alpha1.RecordSetStatus) {
+	return r.patchStatus(ctx, recordSet, true, func(status *dnsv1alpha1.RecordSetStatus) error {
 		status.ObservedGeneration = recordSet.Generation
 		setCondition(&status.Conditions, string(dnsv1alpha1.ConditionProgrammed), metav1.ConditionTrue, "Programmed", "Cloudflare DNS record deletion is complete", recordSet.Generation)
+		return nil
 	})
 }
 
@@ -807,469 +734,4 @@ func (r *recordSetReconciler) controllerName() string {
 
 func (r *recordSetReconciler) providerReference() dnsv1alpha1.ProviderReference {
 	return cloudflareProviderReference(r.ProviderName, r.ProviderVersion)
-}
-
-func cloudflareRecordSetOptions(recordSet *dnsv1alpha1.RecordSet) (cloudflarev1alpha1.CloudflareRecordSetOptions, error) {
-	if len(recordSet.Spec.Options.Raw) == 0 {
-		return cloudflarev1alpha1.CloudflareRecordSetOptions{}, nil
-	}
-	var options cloudflarev1alpha1.CloudflareRecordSetOptions
-	if err := json.Unmarshal(recordSet.Spec.Options.Raw, &options); err != nil {
-		return cloudflarev1alpha1.CloudflareRecordSetOptions{}, fmt.Errorf("options must match Cloudflare RecordSet schema: %w", err)
-	}
-	return options, nil
-}
-
-func validateCloudflareRecordSetOptions(recordSet *dnsv1alpha1.RecordSet, options cloudflarev1alpha1.CloudflareRecordSetOptions) string {
-	if options.TTL != "" && options.TTL != cloudflarev1alpha1.CloudflareRecordSetTTLModeAuto {
-		return "options.ttl must be Auto"
-	}
-	if options.TTL != "" && recordSet.Spec.TTL != nil {
-		return "ttl must not be specified when cloudflare automatic ttl is used"
-	}
-	if options.TTL != cloudflarev1alpha1.CloudflareRecordSetTTLModeAuto {
-		if recordSet.Spec.TTL == nil {
-			return "ttl is required for Cloudflare records unless options.ttl is Auto"
-		}
-		if !cloudflareFixedTTLAllowed(*recordSet.Spec.TTL) {
-			return "cloudflare fixed ttl must be between 60 and 86400 seconds"
-		}
-	}
-	if options.Proxied != nil && *options.Proxied {
-		if recordSet.Spec.Type != dnsv1alpha1.RecordTypeA && recordSet.Spec.Type != dnsv1alpha1.RecordTypeAAAA && recordSet.Spec.Type != dnsv1alpha1.RecordTypeCNAME {
-			return "cloudflare proxied is supported only for A, AAAA, and CNAME records"
-		}
-		if options.TTL != cloudflarev1alpha1.CloudflareRecordSetTTLModeAuto || recordSet.Spec.TTL != nil {
-			return "cloudflare proxied records must use automatic ttl"
-		}
-	}
-	for _, tag := range options.Tags {
-		matches := cloudflareTagPattern.FindStringSubmatch(tag)
-		if matches == nil || strings.ContainsAny(matches[2], "\r\n") || len(matches[2]) > 100 {
-			return "cloudflare tags must use name:value format"
-		}
-		if strings.HasPrefix(strings.ToLower(matches[1]), "cf-") {
-			return "cloudflare tag names starting with cf- are reserved"
-		}
-	}
-	seenTags := map[string]struct{}{}
-	for _, tag := range options.Tags {
-		matches := cloudflareTagPattern.FindStringSubmatch(tag)
-		if matches == nil {
-			continue
-		}
-		key := strings.ToLower(matches[1]) + ":" + matches[2]
-		if _, ok := seenTags[key]; ok {
-			return "cloudflare tags must not contain duplicate name:value pairs"
-		}
-		seenTags[key] = struct{}{}
-	}
-	return ""
-}
-
-func desiredCloudflareDNSRecords(recordSet *dnsv1alpha1.RecordSet, fullName string, options cloudflarev1alpha1.CloudflareRecordSetOptions) ([]CloudflareDNSRecord, error) {
-	ttl := int32(1)
-	if options.TTL != cloudflarev1alpha1.CloudflareRecordSetTTLModeAuto {
-		if recordSet.Spec.TTL == nil {
-			return nil, errors.New("ttl is required for Cloudflare records unless options.ttl is Auto")
-		}
-		if !cloudflareFixedTTLAllowed(*recordSet.Spec.TTL) {
-			return nil, errors.New("cloudflare fixed ttl must be between 60 and 86400 seconds")
-		}
-		ttl = *recordSet.Spec.TTL
-	}
-	base := CloudflareDNSRecord{
-		Type:    string(recordSet.Spec.Type),
-		Name:    fullName,
-		TTL:     &ttl,
-		Comment: options.Comment,
-		Tags:    slices.Clone(options.Tags),
-	}
-	if recordSet.Spec.Type == dnsv1alpha1.RecordTypeA || recordSet.Spec.Type == dnsv1alpha1.RecordTypeAAAA || recordSet.Spec.Type == dnsv1alpha1.RecordTypeCNAME {
-		proxied := false
-		if options.Proxied != nil {
-			proxied = *options.Proxied
-		}
-		base.Proxied = &proxied
-	}
-	var records []CloudflareDNSRecord
-	switch recordSet.Spec.Type {
-	case dnsv1alpha1.RecordTypeA:
-		for _, address := range recordSet.Spec.A.Addresses {
-			record := base
-			record.Content = address
-			records = append(records, record)
-		}
-	case dnsv1alpha1.RecordTypeAAAA:
-		for _, address := range recordSet.Spec.AAAA.Addresses {
-			record := base
-			record.Content = address
-			records = append(records, record)
-		}
-	case dnsv1alpha1.RecordTypeTXT:
-		for _, value := range recordSet.Spec.TXT.Values {
-			record := base
-			record.Content = value
-			records = append(records, record)
-		}
-	case dnsv1alpha1.RecordTypeCNAME:
-		record := base
-		record.Content = recordSet.Spec.CNAME.Target
-		records = append(records, record)
-	case dnsv1alpha1.RecordTypeMX:
-		for _, item := range recordSet.Spec.MX.Records {
-			record := base
-			record.Content = item.Exchange
-			record.Priority = &item.Preference
-			records = append(records, record)
-		}
-	case dnsv1alpha1.RecordTypeCAA:
-		for _, item := range recordSet.Spec.CAA.Records {
-			record := base
-			record.Content = item.Value
-			record.CAA = &CloudflareCAAData{Flags: item.Flags, Tag: item.Tag, Value: item.Value}
-			records = append(records, record)
-		}
-	case dnsv1alpha1.RecordTypeNS:
-		for _, nameServer := range recordSet.Spec.NS.NameServers {
-			record := base
-			record.Content = nameServer
-			records = append(records, record)
-		}
-	default:
-		return nil, errors.New("Cloudflare supports A, AAAA, TXT, CNAME, MX, CAA, and delegated NS records")
-	}
-	slices.SortFunc(records, compareCloudflareDNSRecord)
-	return records, nil
-}
-
-func cloudflareFixedTTLAllowed(ttl int32) bool {
-	return ttl >= cloudflareFixedTTLMin && ttl <= cloudflareFixedTTLMax
-}
-
-func cloudflareDNSRecordSetEqual(a, b []CloudflareDNSRecord) bool {
-	left := slices.Clone(a)
-	right := slices.Clone(b)
-	slices.SortFunc(left, compareCloudflareDNSRecord)
-	slices.SortFunc(right, compareCloudflareDNSRecord)
-	if len(left) != len(right) {
-		return false
-	}
-	for index := range left {
-		if !cloudflareDNSRecordEqual(left[index], right[index]) {
-			return false
-		}
-	}
-	return true
-}
-
-func cloudflareDNSRecordEqual(a, b CloudflareDNSRecord) bool {
-	return a.Type == b.Type &&
-		normalizeCloudflareName(a.Name) == normalizeCloudflareName(b.Name) &&
-		(a.Type == string(dnsv1alpha1.RecordTypeCAA) || a.Content == b.Content) &&
-		int32PtrValue(a.Priority) == int32PtrValue(b.Priority) &&
-		int32PtrValue(a.TTL) == int32PtrValue(b.TTL) &&
-		boolPtrValue(a.Proxied) == boolPtrValue(b.Proxied) &&
-		a.Comment == b.Comment &&
-		slices.Equal(cloudflareSortedTags(a.Tags), cloudflareSortedTags(b.Tags)) &&
-		cloudflareCAAEqual(a.CAA, b.CAA)
-}
-
-func compareCloudflareDNSRecord(a, b CloudflareDNSRecord) int {
-	for _, pair := range [][2]string{
-		{a.Type, b.Type},
-		{normalizeCloudflareName(a.Name), normalizeCloudflareName(b.Name)},
-		{a.Content, b.Content},
-		{fmt.Sprintf("%05d", int32PtrValue(a.Priority)), fmt.Sprintf("%05d", int32PtrValue(b.Priority))},
-		{cloudflareCAAKey(a.CAA), cloudflareCAAKey(b.CAA)},
-	} {
-		if pair[0] < pair[1] {
-			return -1
-		}
-		if pair[0] > pair[1] {
-			return 1
-		}
-	}
-	return 0
-}
-
-func cloudflareCAAEqual(a, b *CloudflareCAAData) bool {
-	return cloudflareCAAKey(a) == cloudflareCAAKey(b)
-}
-
-func cloudflareCAAKey(value *CloudflareCAAData) string {
-	if value == nil {
-		return ""
-	}
-	return fmt.Sprintf("%d\x00%s\x00%s", value.Flags, value.Tag, value.Value)
-}
-
-func cloudflareSortedTags(tags []string) []string {
-	out := slices.Clone(tags)
-	slices.Sort(out)
-	return out
-}
-
-func cloudflareSameNameConflict(recordType dnsv1alpha1.RecordType, records []CloudflareDNSRecord) string {
-	for _, record := range records {
-		currentType := dnsv1alpha1.RecordType(record.Type)
-		if currentType == recordType {
-			continue
-		}
-		if recordType == dnsv1alpha1.RecordTypeCNAME || currentType == dnsv1alpha1.RecordTypeCNAME {
-			return "Cloudflare DNS record conflicts with same-name CNAME exclusivity"
-		}
-		if recordType == dnsv1alpha1.RecordTypeNS || currentType == dnsv1alpha1.RecordTypeNS {
-			return "Cloudflare DNS record conflicts with same-name delegated NS exclusivity"
-		}
-	}
-	return ""
-}
-
-func cloudflareRecordsByType(records []CloudflareDNSRecord, recordType string) []CloudflareDNSRecord {
-	var out []CloudflareDNSRecord
-	for _, record := range records {
-		if record.Type == recordType {
-			out = append(out, record)
-		}
-	}
-	return out
-}
-
-func cloudflareRecordsByIDs(records []CloudflareDNSRecord, ids map[string]struct{}) ([]CloudflareDNSRecord, []string) {
-	var out []CloudflareDNSRecord
-	found := make(map[string]struct{}, len(ids))
-	for _, record := range records {
-		if _, ok := ids[record.ID]; ok {
-			out = append(out, record)
-			found[record.ID] = struct{}{}
-		}
-	}
-	var missing []string
-	for id := range ids {
-		if _, ok := found[id]; !ok {
-			missing = append(missing, id)
-		}
-	}
-	return out, missing
-}
-
-func cloudflareRecordsExcludingIDs(records []CloudflareDNSRecord, ids map[string]struct{}) []CloudflareDNSRecord {
-	var out []CloudflareDNSRecord
-	for _, record := range records {
-		if _, ok := ids[record.ID]; !ok {
-			out = append(out, record)
-		}
-	}
-	return out
-}
-
-func cloudflareRecordsHaveIDs(records []CloudflareDNSRecord, ids map[string]struct{}) bool {
-	if len(records) != len(ids) {
-		return false
-	}
-	for _, record := range records {
-		if _, ok := ids[record.ID]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
-func cloudflareStatusRecordIDs(recordSet *dnsv1alpha1.RecordSet) map[string]struct{} {
-	statusData, err := cloudflareRecordSetStatusData(recordSet)
-	if err != nil {
-		return nil
-	}
-	out := make(map[string]struct{}, len(statusData.Records))
-	for _, record := range statusData.Records {
-		if record.ID != "" {
-			out[record.ID] = struct{}{}
-		}
-	}
-	return out
-}
-
-func cloudflareDNSRecordStatuses(records []CloudflareDNSRecord) []cloudflarev1alpha1.CloudflareDNSRecordStatus {
-	statuses := make([]cloudflarev1alpha1.CloudflareDNSRecordStatus, 0, len(records))
-	for _, record := range records {
-		statuses = append(statuses, cloudflareDNSRecordStatus(record))
-	}
-	return statuses
-}
-
-func cloudflareDNSRecordStatus(record CloudflareDNSRecord) cloudflarev1alpha1.CloudflareDNSRecordStatus {
-	return cloudflarev1alpha1.CloudflareDNSRecordStatus{
-		ID: record.ID,
-	}
-}
-
-func cloudflareDNSRecordStates(records []CloudflareDNSRecord) []cloudflarev1alpha1.CloudflareDNSRecordState {
-	states := make([]cloudflarev1alpha1.CloudflareDNSRecordState, 0, len(records))
-	for _, record := range records {
-		states = append(states, cloudflareDNSRecordState(record))
-	}
-	return states
-}
-
-func cloudflareDNSRecordState(record CloudflareDNSRecord) cloudflarev1alpha1.CloudflareDNSRecordState {
-	return cloudflarev1alpha1.CloudflareDNSRecordState{
-		ID:        record.ID,
-		Type:      record.Type,
-		Name:      record.Name,
-		Content:   record.Content,
-		Priority:  record.Priority,
-		TTL:       record.TTL,
-		Proxied:   record.Proxied,
-		Proxiable: record.Proxiable,
-		Comment:   record.Comment,
-		Tags:      slices.Clone(record.Tags),
-	}
-}
-
-func cloudflareRecordStatusIDs(records []cloudflarev1alpha1.CloudflareDNSRecordStatus) []string {
-	ids := make([]string, 0, len(records))
-	for _, record := range records {
-		if record.ID != "" {
-			ids = append(ids, record.ID)
-		}
-	}
-	return ids
-}
-
-func cloudflareRecordStatusIDsMatchAdoption(statuses []cloudflarev1alpha1.CloudflareDNSRecordStatus, adoptionIDs []string) bool {
-	statusIDs := cloudflareRecordStatusIDs(statuses)
-	if len(statusIDs) != len(adoptionIDs) {
-		return false
-	}
-	expected := make(map[string]struct{}, len(adoptionIDs))
-	for _, id := range adoptionIDs {
-		expected[id] = struct{}{}
-	}
-	for _, id := range statusIDs {
-		if _, ok := expected[id]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
-func cloudflareRecordMatchesDeletingRecordSet(record CloudflareDNSRecord, recordSet *dnsv1alpha1.RecordSet, fullName string) bool {
-	return record.Type == string(recordSet.Spec.Type) &&
-		normalizeCloudflareName(record.Name) == normalizeCloudflareName(fullName)
-}
-
-func cloudflareRecordSetStatusData(recordSet *dnsv1alpha1.RecordSet) (cloudflarev1alpha1.CloudflareRecordSetStatusData, error) {
-	if recordSet.Status.Provider == nil || len(recordSet.Status.Provider.Data.Raw) == 0 {
-		return cloudflarev1alpha1.CloudflareRecordSetStatusData{}, nil
-	}
-	var data cloudflarev1alpha1.CloudflareRecordSetStatusData
-	if err := json.Unmarshal(recordSet.Status.Provider.Data.Raw, &data); err != nil {
-		return cloudflarev1alpha1.CloudflareRecordSetStatusData{}, fmt.Errorf("RecordSet status.provider.data must match Cloudflare schema: %w", err)
-	}
-	if len(data.Records) > 0 {
-		if err := validateCloudflareRecordStatusIDs(data.Records, "RecordSet status.provider.data.records.id"); err != nil {
-			return cloudflarev1alpha1.CloudflareRecordSetStatusData{}, err
-		}
-	}
-	return data, nil
-}
-
-func cloudflareRecordSetState(recordSet *dnsv1alpha1.RecordSet) (cloudflarev1alpha1.CloudflareRecordSetState, error) {
-	if recordSet.Status.Provider == nil || len(recordSet.Status.Provider.State.Raw) == 0 {
-		return cloudflarev1alpha1.CloudflareRecordSetState{}, nil
-	}
-	var state cloudflarev1alpha1.CloudflareRecordSetState
-	if err := json.Unmarshal(recordSet.Status.Provider.State.Raw, &state); err != nil {
-		return cloudflarev1alpha1.CloudflareRecordSetState{}, fmt.Errorf("RecordSet status.provider.state must match Cloudflare schema: %w", err)
-	}
-	return state, nil
-}
-
-func cloudflareRecordSetAdoptionRef(recordSet *dnsv1alpha1.RecordSet) (cloudflarev1alpha1.CloudflareRecordSetAdoption, bool, error) {
-	if len(recordSet.Spec.Adoption.Raw) == 0 {
-		return cloudflarev1alpha1.CloudflareRecordSetAdoption{}, false, nil
-	}
-	var externalRef cloudflarev1alpha1.CloudflareRecordSetAdoption
-	if err := json.Unmarshal(recordSet.Spec.Adoption.Raw, &externalRef); err != nil {
-		return cloudflarev1alpha1.CloudflareRecordSetAdoption{}, true, fmt.Errorf("adoption must be an object with recordIDs: %w", err)
-	}
-	if len(externalRef.RecordIDs) == 0 {
-		return cloudflarev1alpha1.CloudflareRecordSetAdoption{}, true, errors.New("adoption.recordIDs must not be empty")
-	}
-	if err := validateCloudflareUniqueIDs(externalRef.RecordIDs, "adoption.recordIDs"); err != nil {
-		return cloudflarev1alpha1.CloudflareRecordSetAdoption{}, true, err
-	}
-	return externalRef, true, nil
-}
-
-func cloudflareFullRecordName(ownerName, domainName string) string {
-	switch ownerName {
-	case "@":
-		return domainName
-	case "*":
-		return "*." + domainName
-	default:
-		return ownerName + "." + domainName
-	}
-}
-
-func cloudflareZoneUnitOwnsRecordSet(recordSet *dnsv1alpha1.RecordSet, unit *dnsv1alpha1.ZoneUnit) (bool, bool) {
-	if unit == nil {
-		return false, false
-	}
-	refKey := cloudflareRecordSetClaimKey(recordSet.Namespace, recordSet.Name)
-	for _, item := range unit.Spec.RecordSets {
-		if cloudflareRecordSetClaimKey(item.RecordSetNamespace, item.RecordSetName) == refKey {
-			if item.Name == recordSet.Spec.Name && item.Type == recordSet.Spec.Type {
-				return true, false
-			}
-			return false, true
-		}
-	}
-	for _, item := range unit.Spec.RecordSets {
-		if item.Name != recordSet.Spec.Name {
-			continue
-		}
-		if item.Type == recordSet.Spec.Type || item.Type == dnsv1alpha1.RecordTypeCNAME || recordSet.Spec.Type == dnsv1alpha1.RecordTypeCNAME {
-			return false, true
-		}
-	}
-	return false, false
-}
-
-func cloudflareRecordSetClaimKey(namespace, name string) string {
-	return namespace + "\x00" + name
-}
-
-func normalizeCloudflareName(value string) string {
-	return strings.TrimSuffix(value, ".")
-}
-
-func recordSetZoneKey(recordSet *dnsv1alpha1.RecordSet) (string, string) {
-	namespace := recordSet.Namespace
-	if recordSet.Spec.ZoneRef.Namespace != nil && *recordSet.Spec.ZoneRef.Namespace != "" {
-		namespace = *recordSet.Spec.ZoneRef.Namespace
-	}
-	return namespace, recordSet.Spec.ZoneRef.Name
-}
-
-func fullRecordNamePatternMatch(pattern, recordName string) (bool, error) {
-	compiled, err := regexp.Compile(pattern)
-	if err != nil {
-		return false, err
-	}
-	match := compiled.FindStringIndex(recordName)
-	return match != nil && match[0] == 0 && match[1] == len(recordName), nil
-}
-
-func int32PtrValue(value *int32) int32 {
-	if value == nil {
-		return 0
-	}
-	return *value
-}
-
-func boolPtrValue(value *bool) bool {
-	return value != nil && *value
 }

@@ -11,16 +11,13 @@ import (
 	"github.com/appthrust/dns-api/internal/go/core/providercontract"
 	dnsv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/dns/v1alpha1"
 	"github.com/google/cel-go/cel"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 const (
@@ -172,10 +169,12 @@ func (r *ZoneUnitCompositionReconciler) Reconcile(ctx context.Context, req ctrl.
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	pendingPredecessorItems := pendingPredecessorRecordSetItems(recordSets, existing.Spec.RecordSets, providerStatusesByRef)
 	retainedItems, err := r.retainedNotAllowedRecordSetItems(ctx, policyRejected, existing.Spec.RecordSets, providerStatusesByRef)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	items = append(pendingPredecessorItems, items...)
 	items = append(items, retainedItems...)
 	zoneStatus := recordSetZoneStatus(&zone, zoneClass)
 	rejected := append(policyRejected, providerMismatchRejected...)
@@ -268,18 +267,6 @@ func (r *ZoneUnitCompositionReconciler) Reconcile(ctx context.Context, req ctrl.
 		}
 	}
 	return ctrl.Result{}, nil
-}
-
-func (r *ZoneUnitCompositionReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		Named("zoneunit-composition").
-		For(&dnsv1alpha1.Zone{}).
-		Watches(&dnsv1alpha1.RecordSet{}, handler.EnqueueRequestsFromMapFunc(r.mapRecordSetToZone)).
-		Watches(&dnsv1alpha1.ZoneUnit{}, handler.EnqueueRequestsFromMapFunc(r.mapZoneUnitToZone)).
-		Watches(&dnsv1alpha1.ZoneClass{}, handler.EnqueueRequestsFromMapFunc(r.mapZoneClassToZones)).
-		Watches(&dnsv1alpha1.Provider{}, handler.EnqueueRequestsFromMapFunc(r.mapProviderToZones)).
-		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.mapNamespaceToZones)).
-		Complete(r)
 }
 
 func (r *ZoneUnitCompositionReconciler) recordSetsForZoneKey(ctx context.Context, key client.ObjectKey) ([]dnsv1alpha1.RecordSet, error) {
@@ -400,6 +387,7 @@ func recordSetsSupportedByProvider(recordSets []dnsv1alpha1.RecordSet, provider 
 }
 
 func (r *ZoneUnitCompositionReconciler) acceptedRecordSetItems(ctx context.Context, recordSets []dnsv1alpha1.RecordSet, existingItems []dnsv1alpha1.ZoneUnitRecordSetSpec, providerStatusesByRef map[string]dnsv1alpha1.ZoneUnitRecordSetStatus, provider *dnsv1alpha1.Provider, storageVersion *dnsv1alpha1.ProviderVersion, zone *dnsv1alpha1.Zone) ([]dnsv1alpha1.ZoneUnitRecordSetSpec, []rejectedRecordSet, error) {
+	existingItems = retainedExistingRecordSetItems(recordSets, existingItems, providerStatusesByRef)
 	existingByRef := map[string]dnsv1alpha1.ZoneUnitRecordSetSpec{}
 	for _, item := range existingItems {
 		existingByRef[zoneUnitRecordSetItemKey(item)] = item
@@ -466,8 +454,10 @@ func (r *ZoneUnitCompositionReconciler) acceptedRecordSetItems(ctx context.Conte
 		}
 		item := zoneUnitRecordSetItem(recordSet, convertedPayload)
 		refKey := recordSetClaimKey(recordSet.Namespace, recordSet.Name)
+		existing, existingFound := existingByRef[refKey]
+		predecessorDeletionPending := existingFound && zoneUnitRecordSetItemIsPendingPredecessor(existing, recordSet)
 		if !recordSet.DeletionTimestamp.IsZero() {
-			if providerRecordSetDeletionCompleted(providerStatusesByRef[refKey]) {
+			if providerRecordSetDeletionCompleted(providerStatusesByRef[refKey], recordSet.UID) {
 				if err := r.removeFinalizer(ctx, recordSet, coreRecordSetFinalizer); err != nil {
 					return nil, nil, err
 				}
@@ -475,6 +465,15 @@ func (r *ZoneUnitCompositionReconciler) acceptedRecordSetItems(ctx context.Conte
 			}
 		} else if err := r.ensureFinalizer(ctx, recordSet, coreRecordSetFinalizer); err != nil {
 			return nil, nil, err
+		}
+		if predecessorDeletionPending {
+			rejected = append(rejected, rejectedRecordSet{
+				recordSet: recordSet,
+				status:    metav1.ConditionFalse,
+				reason:    "RecordSetConflict",
+				message:   recordSetConflictMessage(zone, item, zoneUnitRecordSetItemKey(existing)),
+			})
+			continue
 		}
 		if recordSet.DeletionTimestamp.IsZero() {
 			if existing, ok := existingByRef[refKey]; ok && !zoneUnitRecordSetSpecEqual(existing, item) {
@@ -513,6 +512,43 @@ func (r *ZoneUnitCompositionReconciler) acceptedRecordSetItems(ctx context.Conte
 	return items, rejected, nil
 }
 
+func retainedExistingRecordSetItems(recordSets []dnsv1alpha1.RecordSet, existingItems []dnsv1alpha1.ZoneUnitRecordSetSpec, providerStatusesByRef map[string]dnsv1alpha1.ZoneUnitRecordSetStatus) []dnsv1alpha1.ZoneUnitRecordSetSpec {
+	recordSetsByRef := map[string]*dnsv1alpha1.RecordSet{}
+	for index := range recordSets {
+		recordSet := &recordSets[index]
+		recordSetsByRef[recordSetClaimKey(recordSet.Namespace, recordSet.Name)] = recordSet
+	}
+	items := make([]dnsv1alpha1.ZoneUnitRecordSetSpec, 0, len(existingItems))
+	for _, item := range existingItems {
+		refKey := zoneUnitRecordSetItemKey(item)
+		if item.DeletionRequested && providerRecordSetDeletionCompleted(providerStatusesByRef[refKey], item.RecordSetUID) {
+			continue
+		}
+		recordSet, currentClaim := recordSetsByRef[refKey]
+		if currentClaim && !zoneUnitRecordSetItemMatchesRecordSet(item, recordSet) && (!item.DeletionRequested || item.RecordSetUID == "") {
+			continue
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func pendingPredecessorRecordSetItems(recordSets []dnsv1alpha1.RecordSet, existingItems []dnsv1alpha1.ZoneUnitRecordSetSpec, providerStatusesByRef map[string]dnsv1alpha1.ZoneUnitRecordSetStatus) []dnsv1alpha1.ZoneUnitRecordSetSpec {
+	recordSetsByRef := map[string]*dnsv1alpha1.RecordSet{}
+	for index := range recordSets {
+		recordSet := &recordSets[index]
+		recordSetsByRef[recordSetClaimKey(recordSet.Namespace, recordSet.Name)] = recordSet
+	}
+	items := make([]dnsv1alpha1.ZoneUnitRecordSetSpec, 0)
+	for _, item := range existingItems {
+		recordSet, currentClaim := recordSetsByRef[zoneUnitRecordSetItemKey(item)]
+		if currentClaim && zoneUnitRecordSetItemIsPendingPredecessor(item, recordSet) && !providerRecordSetDeletionCompleted(providerStatusesByRef[zoneUnitRecordSetItemKey(item)], item.RecordSetUID) {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
 func (r *ZoneUnitCompositionReconciler) retainedNotAllowedRecordSetItems(ctx context.Context, rejected []rejectedRecordSet, existingItems []dnsv1alpha1.ZoneUnitRecordSetSpec, providerStatusesByRef map[string]dnsv1alpha1.ZoneUnitRecordSetStatus) ([]dnsv1alpha1.ZoneUnitRecordSetSpec, error) {
 	existingByRef := map[string]dnsv1alpha1.ZoneUnitRecordSetSpec{}
 	for _, item := range existingItems {
@@ -526,7 +562,7 @@ func (r *ZoneUnitCompositionReconciler) retainedNotAllowedRecordSetItems(ctx con
 		if !ok {
 			continue
 		}
-		if !recordSet.DeletionTimestamp.IsZero() && providerRecordSetDeletionCompleted(providerStatusesByRef[refKey]) {
+		if !recordSet.DeletionTimestamp.IsZero() && providerRecordSetDeletionCompleted(providerStatusesByRef[refKey], recordSet.UID) {
 			if err := r.removeFinalizer(ctx, recordSet, coreRecordSetFinalizer); err != nil {
 				return nil, err
 			}
@@ -536,6 +572,17 @@ func (r *ZoneUnitCompositionReconciler) retainedNotAllowedRecordSetItems(ctx con
 			if err := r.ensureFinalizer(ctx, recordSet, coreRecordSetFinalizer); err != nil {
 				return nil, err
 			}
+		}
+		if !zoneUnitRecordSetItemMatchesRecordSet(existing, recordSet) {
+			if zoneUnitRecordSetItemIsPendingPredecessor(existing, recordSet) && !providerRecordSetDeletionCompleted(providerStatusesByRef[refKey], existing.RecordSetUID) {
+				continue
+			}
+			if !recordSet.DeletionTimestamp.IsZero() {
+				item := zoneUnitRecordSetItem(recordSet, providercontract.Payload{})
+				item.Allowed = boolPtr(false)
+				items = append(items, item)
+			}
+			continue
 		}
 		item := existing
 		item.Allowed = boolPtr(false)
@@ -557,13 +604,15 @@ func pendingRecordSetDeletionItems(recordSets []dnsv1alpha1.RecordSet, existingB
 			continue
 		}
 		refKey := recordSetClaimKey(recordSet.Namespace, recordSet.Name)
-		if existing, ok := existingByRef[refKey]; ok {
+		if existing, ok := existingByRef[refKey]; ok && zoneUnitRecordSetItemMatchesRecordSet(existing, recordSet) {
 			items = append(items, existing)
 			continue
 		}
 		items = append(items, dnsv1alpha1.ZoneUnitRecordSetSpec{
 			RecordSetNamespace: recordSet.Namespace,
 			RecordSetName:      recordSet.Name,
+			RecordSetUID:       recordSet.UID,
+			ObservedGeneration: recordSet.Generation,
 			Name:               recordSet.Spec.Name,
 			Type:               recordSet.Spec.Type,
 		})
@@ -575,7 +624,7 @@ func pendingRecordSetDeletion(recordSet *dnsv1alpha1.RecordSet, providerStatuses
 	if recordSet.DeletionTimestamp.IsZero() {
 		return false
 	}
-	return !providerRecordSetDeletionCompleted(providerStatusesByRef[recordSetClaimKey(recordSet.Namespace, recordSet.Name)])
+	return !providerRecordSetDeletionCompleted(providerStatusesByRef[recordSetClaimKey(recordSet.Namespace, recordSet.Name)], recordSet.UID)
 }
 
 func zoneUnitItemOwnedByPendingDeletion(item dnsv1alpha1.ZoneUnitRecordSetSpec, refKey string, pendingItems []dnsv1alpha1.ZoneUnitRecordSetSpec, providerVersion *dnsv1alpha1.ProviderVersion, zone *dnsv1alpha1.Zone, provider *dnsv1alpha1.Provider) bool {
@@ -678,6 +727,7 @@ func zoneUnitRecordSetItem(recordSet *dnsv1alpha1.RecordSet, payload providercon
 	item := dnsv1alpha1.ZoneUnitRecordSetSpec{
 		RecordSetNamespace: recordSet.Namespace,
 		RecordSetName:      recordSet.Name,
+		RecordSetUID:       recordSet.UID,
 		ObservedGeneration: recordSet.Generation,
 		Name:               recordSet.Spec.Name,
 		Type:               recordSet.Spec.Type,
@@ -698,6 +748,22 @@ func zoneUnitRecordSetItem(recordSet *dnsv1alpha1.RecordSet, payload providercon
 	return item
 }
 
+func zoneUnitRecordSetItemMatchesRecordSet(item dnsv1alpha1.ZoneUnitRecordSetSpec, recordSet *dnsv1alpha1.RecordSet) bool {
+	return recordSetUIDsMatch(item.RecordSetUID, recordSet.UID)
+}
+
+func zoneUnitRecordSetItemIsPendingPredecessor(item dnsv1alpha1.ZoneUnitRecordSetSpec, recordSet *dnsv1alpha1.RecordSet) bool {
+	return item.DeletionRequested && item.RecordSetUID != "" && recordSet.UID != "" && item.RecordSetUID != recordSet.UID
+}
+
+func zoneUnitRecordSetStatusMatchesItem(status dnsv1alpha1.ZoneUnitRecordSetStatus, item dnsv1alpha1.ZoneUnitRecordSetSpec) bool {
+	return recordSetUIDsMatch(status.RecordSetUID, item.RecordSetUID)
+}
+
+func recordSetUIDsMatch(a, b types.UID) bool {
+	return a != "" && b != "" && a == b
+}
+
 func zoneUnitRecordSetSpecEqual(a, b dnsv1alpha1.ZoneUnitRecordSetSpec) bool {
 	a.ObservedGeneration = b.ObservedGeneration
 	a.Allowed = b.Allowed
@@ -710,362 +776,4 @@ func conversionObject(value interface{}) map[string]interface{} {
 		return map[string]interface{}{}
 	}
 	return object
-}
-
-func (r *ZoneUnitCompositionReconciler) applyZoneUnitDesired(ctx context.Context, desired *dnsv1alpha1.ZoneUnit, create bool) error {
-	if create {
-		desired.TypeMeta = metav1.TypeMeta{APIVersion: dnsv1alpha1.SchemeGroupVersion.String(), Kind: "ZoneUnit"}
-		return client.IgnoreAlreadyExists(r.Create(ctx, desired, client.FieldOwner(coreZoneUnitFieldOwner)))
-	}
-	var current dnsv1alpha1.ZoneUnit
-	if err := r.Get(ctx, client.ObjectKeyFromObject(desired), &current); err != nil {
-		return err
-	}
-	base := current.DeepCopy()
-	current.Spec = desired.Spec
-	if !slices.Contains(current.Finalizers, coreZoneUnitFinalizer) && current.DeletionTimestamp.IsZero() {
-		current.Finalizers = append(current.Finalizers, coreZoneUnitFinalizer)
-	}
-	syncZoneUnitReconcileRequestAnnotation(&current, desired)
-	if equality.Semantic.DeepEqual(base.Spec, current.Spec) &&
-		equality.Semantic.DeepEqual(base.Annotations, current.Annotations) &&
-		equality.Semantic.DeepEqual(base.Finalizers, current.Finalizers) {
-		return nil
-	}
-	return r.Patch(ctx, &current, client.MergeFrom(base), client.FieldOwner(coreZoneUnitFieldOwner))
-}
-
-func (r *ZoneUnitCompositionReconciler) ensureFinalizer(ctx context.Context, obj client.Object, finalizer string) error {
-	if slices.Contains(obj.GetFinalizers(), finalizer) || !obj.GetDeletionTimestamp().IsZero() {
-		return nil
-	}
-	base := obj.DeepCopyObject().(client.Object)
-	obj.SetFinalizers(append(obj.GetFinalizers(), finalizer))
-	return r.Patch(ctx, obj, client.MergeFrom(base))
-}
-
-func (r *ZoneUnitCompositionReconciler) removeFinalizer(ctx context.Context, obj client.Object, finalizer string) error {
-	if !slices.Contains(obj.GetFinalizers(), finalizer) {
-		return nil
-	}
-	base := obj.DeepCopyObject().(client.Object)
-	obj.SetFinalizers(slices.DeleteFunc(obj.GetFinalizers(), func(value string) bool {
-		return value == finalizer
-	}))
-	return client.IgnoreNotFound(r.Patch(ctx, obj, client.MergeFrom(base)))
-}
-
-func (r *ZoneUnitCompositionReconciler) removeZoneUnitCoreFinalizer(ctx context.Context, unit *dnsv1alpha1.ZoneUnit) error {
-	return r.removeFinalizer(ctx, unit, coreZoneUnitFinalizer)
-}
-
-func providerZoneCleanupCompleted(unit *dnsv1alpha1.ZoneUnit) bool {
-	for _, finalizer := range unit.Finalizers {
-		if finalizer != coreZoneUnitFinalizer {
-			return false
-		}
-	}
-	return true
-}
-
-func providerRecordSetDeletionCompleted(status dnsv1alpha1.ZoneUnitRecordSetStatus) bool {
-	return status.DeletionCompleted
-}
-
-func syncZoneUnitReconcileRequestAnnotation(unit *dnsv1alpha1.ZoneUnit, source client.Object) {
-	sourceAnnotations := source.GetAnnotations()
-	value, ok := sourceAnnotations[reconcileRequestAnnotation]
-	if !ok {
-		if unit.Annotations != nil {
-			delete(unit.Annotations, reconcileRequestAnnotation)
-			if len(unit.Annotations) == 0 {
-				unit.Annotations = nil
-			}
-		}
-		return
-	}
-	if unit.Annotations == nil {
-		unit.Annotations = map[string]string{}
-	}
-	unit.Annotations[reconcileRequestAnnotation] = value
-}
-
-func (r *ZoneUnitCompositionReconciler) projectZoneUnitStatus(ctx context.Context, zone *dnsv1alpha1.Zone, zoneClass *dnsv1alpha1.ZoneClass, recordSets []dnsv1alpha1.RecordSet, unit *dnsv1alpha1.ZoneUnit) error {
-	if unit.Status.Zone != nil {
-		accepted := projectedAccepted(zone.Status.Conditions, unit.Status.Zone.Conditions)
-		programmed := projectedProgrammed(accepted.Status, unit.Status.Zone.Conditions)
-		if err := r.setZoneClaimStatus(ctx, zone, accepted.Status, accepted.Reason, programmed.Status, programmed.Reason, unit.Status.Zone); err != nil {
-			return err
-		}
-	}
-	statusByRef := map[string]dnsv1alpha1.ZoneUnitRecordSetStatus{}
-	desiredByRef := map[string]dnsv1alpha1.ZoneUnitRecordSetSpec{}
-	for _, item := range unit.Spec.RecordSets {
-		desiredByRef[zoneUnitRecordSetItemKey(item)] = item
-	}
-	for _, item := range unit.Status.RecordSets {
-		refKey := zoneUnitRecordSetStatusKey(item)
-		desiredItem, ok := desiredByRef[refKey]
-		if !ok || retainedNotAllowedRecordSetItem(desiredItem) || staleCompletedDeletionStatusForActiveItem(item, desiredItem) {
-			continue
-		}
-		statusByRef[refKey] = item
-	}
-	for index := range recordSets {
-		recordSet := &recordSets[index]
-		providerStatus, ok := statusByRef[recordSetClaimKey(recordSet.Namespace, recordSet.Name)]
-		if !ok {
-			continue
-		}
-		accepted := projectedAccepted(recordSet.Status.Conditions, providerStatus.Conditions)
-		programmed := projectedProgrammed(accepted.Status, providerStatus.Conditions)
-		if err := r.setRecordSetClaimStatusWithZone(ctx, recordSet, accepted.Status, accepted.Reason, programmed.Status, programmed.Reason, recordSetZoneStatus(zone, zoneClass), &providerStatus); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func staleCompletedDeletionStatusForActiveItem(status dnsv1alpha1.ZoneUnitRecordSetStatus, item dnsv1alpha1.ZoneUnitRecordSetSpec) bool {
-	return status.DeletionCompleted && !item.DeletionRequested
-}
-
-func retainedNotAllowedRecordSetItem(item dnsv1alpha1.ZoneUnitRecordSetSpec) bool {
-	return !item.IsAllowed() && !item.DeletionRequested
-}
-
-type projectedCondition struct {
-	Status metav1.ConditionStatus
-	Reason string
-}
-
-func projectedAccepted(compositionConditions, providerConditions []metav1.Condition) projectedCondition {
-	provider := meta.FindStatusCondition(providerConditions, string(dnsv1alpha1.ConditionAccepted))
-	if provider != nil {
-		return projectedCondition{Status: provider.Status, Reason: provider.Reason}
-	}
-	composition := meta.FindStatusCondition(compositionConditions, string(dnsv1alpha1.ConditionAccepted))
-	if composition != nil && composition.Status != metav1.ConditionTrue {
-		return projectedCondition{Status: composition.Status, Reason: composition.Reason}
-	}
-	return projectedCondition{Status: metav1.ConditionUnknown, Reason: "OwnerStateNotResolved"}
-}
-
-func projectedProgrammed(accepted metav1.ConditionStatus, providerConditions []metav1.Condition) projectedCondition {
-	if accepted != metav1.ConditionTrue {
-		return projectedCondition{Status: metav1.ConditionUnknown, Reason: "Reconciling"}
-	}
-	provider := meta.FindStatusCondition(providerConditions, string(dnsv1alpha1.ConditionProgrammed))
-	if provider == nil {
-		return projectedCondition{Status: metav1.ConditionUnknown, Reason: "Reconciling"}
-	}
-	return projectedCondition{Status: provider.Status, Reason: provider.Reason}
-}
-
-func (r *ZoneUnitCompositionReconciler) writeRecordSetsWaiting(ctx context.Context, recordSets []dnsv1alpha1.RecordSet, reason string) error {
-	for index := range recordSets {
-		if err := r.setRecordSetClaimStatus(ctx, &recordSets[index], metav1.ConditionUnknown, reason, metav1.ConditionUnknown, "Reconciling", nil); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (r *ZoneUnitCompositionReconciler) writeRecordSetsNotAccepted(ctx context.Context, recordSets []dnsv1alpha1.RecordSet, reason string) error {
-	for index := range recordSets {
-		if err := r.setRecordSetClaimStatus(ctx, &recordSets[index], metav1.ConditionFalse, reason, metav1.ConditionUnknown, "Reconciling", nil); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (r *ZoneUnitCompositionReconciler) setZoneClaimStatus(ctx context.Context, zone *dnsv1alpha1.Zone, acceptedStatus metav1.ConditionStatus, acceptedReason string, programmedStatus metav1.ConditionStatus, programmedReason string, providerStatus *dnsv1alpha1.ZoneUnitZoneStatus) error {
-	return r.setZoneClaimStatusWithMessages(ctx, zone, acceptedStatus, acceptedReason, acceptedReason, programmedStatus, programmedReason, programmedReason, providerStatus)
-}
-
-func (r *ZoneUnitCompositionReconciler) setZoneClaimStatusWithMessages(ctx context.Context, zone *dnsv1alpha1.Zone, acceptedStatus metav1.ConditionStatus, acceptedReason, acceptedMessage string, programmedStatus metav1.ConditionStatus, programmedReason, programmedMessage string, providerStatus *dnsv1alpha1.ZoneUnitZoneStatus) error {
-	base := zone.DeepCopy()
-	zone.Status.ObservedGeneration = zone.Generation
-	meta.SetStatusCondition(&zone.Status.Conditions, metav1.Condition{Type: string(dnsv1alpha1.ConditionAccepted), Status: acceptedStatus, Reason: acceptedReason, Message: acceptedMessage, ObservedGeneration: zone.Generation})
-	meta.SetStatusCondition(&zone.Status.Conditions, metav1.Condition{Type: string(dnsv1alpha1.ConditionProgrammed), Status: programmedStatus, Reason: programmedReason, Message: programmedMessage, ObservedGeneration: zone.Generation})
-	if providerStatus != nil {
-		zone.Status.NameServers = slices.Clone(providerStatus.NameServers)
-		if providerStatus.Provider != nil && len(providerStatus.Provider.Data.Raw) > 0 {
-			zone.Status.Provider = &dnsv1alpha1.ProviderStatus{Data: providerStatus.Provider.Data}
-		} else {
-			zone.Status.Provider = nil
-		}
-	}
-	if equality.Semantic.DeepEqual(base.Status, zone.Status) {
-		return nil
-	}
-	return client.IgnoreNotFound(r.Status().Patch(ctx, zone, client.MergeFrom(base)))
-}
-
-func (r *ZoneUnitCompositionReconciler) setRecordSetClaimStatus(ctx context.Context, recordSet *dnsv1alpha1.RecordSet, acceptedStatus metav1.ConditionStatus, acceptedReason string, programmedStatus metav1.ConditionStatus, programmedReason string, providerStatus *dnsv1alpha1.ZoneUnitRecordSetStatus) error {
-	return r.setRecordSetClaimStatusWithMessages(ctx, recordSet, acceptedStatus, acceptedReason, acceptedReason, programmedStatus, programmedReason, programmedReason, providerStatus)
-}
-
-func (r *ZoneUnitCompositionReconciler) setRecordSetClaimStatusWithZone(ctx context.Context, recordSet *dnsv1alpha1.RecordSet, acceptedStatus metav1.ConditionStatus, acceptedReason string, programmedStatus metav1.ConditionStatus, programmedReason string, zoneStatus *dnsv1alpha1.RecordSetZoneStatus, providerStatus *dnsv1alpha1.ZoneUnitRecordSetStatus) error {
-	return r.setRecordSetClaimStatusWithZoneAndMessages(ctx, recordSet, acceptedStatus, acceptedReason, acceptedReason, programmedStatus, programmedReason, programmedReason, zoneStatus, providerStatus)
-}
-
-func (r *ZoneUnitCompositionReconciler) setRecordSetClaimStatusWithMessages(ctx context.Context, recordSet *dnsv1alpha1.RecordSet, acceptedStatus metav1.ConditionStatus, acceptedReason, acceptedMessage string, programmedStatus metav1.ConditionStatus, programmedReason, programmedMessage string, providerStatus *dnsv1alpha1.ZoneUnitRecordSetStatus) error {
-	return r.setRecordSetClaimStatusWithZoneAndMessages(ctx, recordSet, acceptedStatus, acceptedReason, acceptedMessage, programmedStatus, programmedReason, programmedMessage, nil, providerStatus)
-}
-
-func (r *ZoneUnitCompositionReconciler) setRecordSetClaimStatusWithZoneAndMessages(ctx context.Context, recordSet *dnsv1alpha1.RecordSet, acceptedStatus metav1.ConditionStatus, acceptedReason, acceptedMessage string, programmedStatus metav1.ConditionStatus, programmedReason, programmedMessage string, zoneStatus *dnsv1alpha1.RecordSetZoneStatus, providerStatus *dnsv1alpha1.ZoneUnitRecordSetStatus) error {
-	base := recordSet.DeepCopy()
-	recordSet.Status.ObservedGeneration = recordSet.Generation
-	if zoneStatus != nil {
-		recordSet.Status.Zone = zoneStatus
-	}
-	meta.SetStatusCondition(&recordSet.Status.Conditions, metav1.Condition{Type: string(dnsv1alpha1.ConditionAccepted), Status: acceptedStatus, Reason: acceptedReason, Message: acceptedMessage, ObservedGeneration: recordSet.Generation})
-	meta.SetStatusCondition(&recordSet.Status.Conditions, metav1.Condition{Type: string(dnsv1alpha1.ConditionProgrammed), Status: programmedStatus, Reason: programmedReason, Message: programmedMessage, ObservedGeneration: recordSet.Generation})
-	if providerStatus != nil && providerStatus.Provider != nil && len(providerStatus.Provider.Data.Raw) > 0 {
-		recordSet.Status.Provider = &dnsv1alpha1.ProviderStatus{Data: providerStatus.Provider.Data}
-	} else if providerStatus != nil {
-		recordSet.Status.Provider = nil
-	}
-	if equality.Semantic.DeepEqual(base.Status, recordSet.Status) {
-		return nil
-	}
-	return client.IgnoreNotFound(r.Status().Patch(ctx, recordSet, client.MergeFrom(base)))
-}
-
-func recordSetZoneStatus(zone *dnsv1alpha1.Zone, zoneClass *dnsv1alpha1.ZoneClass) *dnsv1alpha1.RecordSetZoneStatus {
-	if zone == nil {
-		return nil
-	}
-	return &dnsv1alpha1.RecordSetZoneStatus{
-		Ref: dnsv1alpha1.ObjectReference{Namespace: zone.Namespace, Name: zone.Name},
-	}
-}
-
-func (r *ZoneUnitCompositionReconciler) mapRecordSetToZone(_ context.Context, obj client.Object) []reconcile.Request {
-	recordSet, ok := obj.(*dnsv1alpha1.RecordSet)
-	if !ok {
-		return nil
-	}
-	namespace, name := recordSetZoneKey(recordSet)
-	return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: namespace, Name: name}}}
-}
-
-func (r *ZoneUnitCompositionReconciler) mapZoneUnitToZone(_ context.Context, obj client.Object) []reconcile.Request {
-	unit, ok := obj.(*dnsv1alpha1.ZoneUnit)
-	if !ok {
-		return nil
-	}
-	return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: unit.Spec.Zone.Ref.Namespace, Name: unit.Spec.Zone.Ref.Name}}}
-}
-
-func (r *ZoneUnitCompositionReconciler) mapZoneClassToZones(ctx context.Context, obj client.Object) []reconcile.Request {
-	zoneClass, ok := obj.(*dnsv1alpha1.ZoneClass)
-	if !ok {
-		return nil
-	}
-	var zones dnsv1alpha1.ZoneList
-	if err := r.List(ctx, &zones); err != nil {
-		return nil
-	}
-	requests := make([]reconcile.Request, 0)
-	for _, zone := range zones.Items {
-		namespace := zone.Namespace
-		if zone.Spec.ZoneClassRef.Namespace != nil && *zone.Spec.ZoneClassRef.Namespace != "" {
-			namespace = *zone.Spec.ZoneClassRef.Namespace
-		}
-		if namespace == zoneClass.Namespace && zone.Spec.ZoneClassRef.Name == zoneClass.Name {
-			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&zone)})
-		}
-	}
-	return requests
-}
-
-func (r *ZoneUnitCompositionReconciler) mapProviderToZones(ctx context.Context, obj client.Object) []reconcile.Request {
-	provider, ok := obj.(*dnsv1alpha1.Provider)
-	if !ok {
-		return nil
-	}
-	var zones dnsv1alpha1.ZoneList
-	if err := r.List(ctx, &zones); err != nil {
-		return nil
-	}
-	requests := make([]reconcile.Request, 0)
-	for _, zone := range zones.Items {
-		if zone.Spec.Provider.Name == provider.Name {
-			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&zone)})
-		}
-	}
-	return requests
-}
-
-func (r *ZoneUnitCompositionReconciler) mapNamespaceToZones(ctx context.Context, obj client.Object) []reconcile.Request {
-	namespace, ok := obj.(*corev1.Namespace)
-	if !ok {
-		return nil
-	}
-	seen := map[client.ObjectKey]struct{}{}
-	var requests []reconcile.Request
-	appendRequest := func(key client.ObjectKey) {
-		if _, ok := seen[key]; ok {
-			return
-		}
-		seen[key] = struct{}{}
-		requests = append(requests, reconcile.Request{NamespacedName: key})
-	}
-
-	var zones dnsv1alpha1.ZoneList
-	if err := r.List(ctx, &zones); err != nil {
-		return nil
-	}
-	for _, zone := range zones.Items {
-		if zone.Namespace == namespace.Name {
-			appendRequest(client.ObjectKeyFromObject(&zone))
-		}
-	}
-
-	var recordSets dnsv1alpha1.RecordSetList
-	if err := r.List(ctx, &recordSets); err != nil {
-		return requests
-	}
-	for _, recordSet := range recordSets.Items {
-		if recordSet.Namespace != namespace.Name {
-			continue
-		}
-		zoneNamespace, zoneName := recordSetZoneKey(&recordSet)
-		appendRequest(client.ObjectKey{Namespace: zoneNamespace, Name: zoneName})
-	}
-	return requests
-}
-
-func recordSetClaimKey(namespace, name string) string {
-	return namespace + "\x00" + name
-}
-
-func recordSetZoneKey(recordSet *dnsv1alpha1.RecordSet) (string, string) {
-	namespace := recordSet.Namespace
-	if recordSet.Spec.ZoneRef.Namespace != nil && *recordSet.Spec.ZoneRef.Namespace != "" {
-		namespace = *recordSet.Spec.ZoneRef.Namespace
-	}
-	return namespace, recordSet.Spec.ZoneRef.Name
-}
-
-func zoneUnitRecordSetItemKey(item dnsv1alpha1.ZoneUnitRecordSetSpec) string {
-	return recordSetClaimKey(item.RecordSetNamespace, item.RecordSetName)
-}
-
-func zoneUnitRecordSetStatusKey(item dnsv1alpha1.ZoneUnitRecordSetStatus) string {
-	return recordSetClaimKey(item.RecordSetNamespace, item.RecordSetName)
-}
-
-func compareString(a, b string) int {
-	switch {
-	case a < b:
-		return -1
-	case a > b:
-		return 1
-	default:
-		return 0
-	}
 }

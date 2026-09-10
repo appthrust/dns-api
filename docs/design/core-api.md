@@ -699,6 +699,7 @@ spec:
 - `recordSets`: accepted desired state for owner `RecordSet` claims.
 - `recordSets[].recordSetNamespace`: owner `RecordSet` namespace. This is part of the list-map key.
 - `recordSets[].recordSetName`: owner `RecordSet` name. This is part of the list-map key.
+- `recordSets[].recordSetUID`: actual owner `RecordSet.metadata.uid`, supplied by core. A nonempty UID is required for provider mutation authority; namespace/name and generation alone do not identify an incarnation.
 - `recordSets[].observedGeneration`: `RecordSet.metadata.generation` used to build this item.
 - `recordSets[].name`: `RecordSet.spec.name` as a zone-relative DNS name, not an FQDN.
 - `recordSets[].type`: `RecordSet.spec.type`.
@@ -706,7 +707,7 @@ spec:
 - `recordSets[].allowed`: omitted or `true` when the item is allowed by current composition policy. `false` means the item is retained only as an ownership and cleanup ledger after `Zone.spec.allowedRecordSets` changed. Provider controllers must not create or update provider-side records for `allowed: false` items unless `deletionRequested` is true.
 - `recordSets[].deletionRequested`: set by core when the owner `RecordSet` is deleting and provider-side cleanup is still needed.
 
-`recordSets` is a Kubernetes `listType=map` keyed by scalar fields `recordSetNamespace` and `recordSetName`. `recordSetRef` is not used inside the list item because nested-object list-map keys are not a CRD-safe shape across Kubernetes versions. UID is not a key because provider controllers do not read `RecordSet` claims and therefore cannot rely on `RecordSet.metadata.uid`. When a `RecordSet` has not yet been restored during GitOps recovery, no new item is created for it. If an item already exists in a pre-applied `ZoneUnit`, core preserves it until the matching claim returns or provider cleanup completes.
+`recordSets` is a Kubernetes `listType=map` keyed by scalar fields `recordSetNamespace` and `recordSetName`. `recordSetRef` is not used inside the list item because nested-object list-map keys are not a CRD-safe shape across Kubernetes versions. `recordSetUID` is an incarnation fence, not an additional list key: only one owner incarnation occupies a claim key at a time. Provider controllers do not read `RecordSet` claims; core supplies the UID from the actual claim. A pending predecessor remains its own cleanup item until its UID-bound cleanup completes. A recreated same-name claim cannot inherit the predecessor's provider payload or completion.
 
 `ZoneUnit.spec.zone` does not contain `Zone.metadata.uid`. Kubernetes assigns `metadata.uid`, so a `ZoneUnit` pre-applied for GitOps recovery cannot know the UID of a `Zone` claim that will be restored later. Provider controllers must not require the `Zone` UID as desired input.
 
@@ -728,12 +729,28 @@ If multiple `RecordSet` claims target the same record identity, core keeps the e
 - `recordSets`: provider result for accepted owner `RecordSet` claims.
 - `recordSets[].recordSetNamespace`: owner `RecordSet` namespace matching `spec.recordSets[]`.
 - `recordSets[].recordSetName`: owner `RecordSet` name matching `spec.recordSets[]`.
+- `recordSets[].recordSetUID`: exact nonempty UID of the observed spec item. Missing or different UIDs do not establish ownership or authorize claim finalization.
 - `recordSets[].observedGeneration`: owner `RecordSet` generation observed in `ZoneUnit.spec`.
 - `recordSets[].conditions`: provider acceptance and programming result for that `RecordSet` claim.
 - `recordSets[].provider.data`: public provider data to project to `RecordSet.status.provider.data`.
 - `recordSets[].provider.state`: optional provider-controller internal state for that record target.
+- `recordSets[].deletionCompleted`: provider-confirmed cleanup completion for that exact UID, not a value derived from a previously positive `Programmed` condition.
 
 Provider controllers write `ZoneUnit.status` only. The Core ZoneUnit Controller projects `ZoneUnit.status.zone` to `Zone.status` and `ZoneUnit.status.recordSets[]` to each owner `RecordSet.status`. Claim status has `status.provider.data` for public provider data, but it does not expose `provider.state`.
+
+Ownership and observation freshness are separate. A same-UID provider receipt survives an ordinary desired-generation update, so an owned record can be updated without adoption. Its old conditions do not become fresh: projection and aggregate readiness require both the receipt's `observedGeneration` and the individual condition's `observedGeneration` to match the desired item. Incompatible UID data is not projected to a recreated claim.
+
+Record-set status writers preserve unrelated entries and use optimistic resource-version preconditions instead of replaying cached whole arrays. Immediately before an external record mutation, providers also validate the complete current source and its Kubernetes resource version. A cached source that predates a replacement, generation update, or policy revocation cannot authorize that mutation. This pre-dispatch fence is not an atomic transaction spanning Kubernetes and the external DNS API; normal no-op observations do not issue provider writes or mutation-fence patches.
+
+Route 53 pending affected-record entries include the claim UID. A legacy or predecessor pending change may still be polled and cleared, but cannot attest a successor. `INSYNC` confirms the submitted batch, not a newer desired generation; the controller lists and plans current provider state before publishing a current positive observation.
+
+**UID cutover and legacy state.**
+
+The UID fields are optional on the wire so existing ledgers remain readable. Explicit empty strings are invalid in the CRD; omitted or mismatched UIDs still fail closed in controllers. There is no namespace/name/generation fallback and no automatic relabeling of old provider state.
+
+This is not a transparent in-place upgrade for existing UID-less ownership receipts. Apply the updated CRDs before adopting the corresponding controllers; Helm does not update existing CRDs from a chart's `crds/` directory during a normal upgrade. Qualify the coordinated controller/schema cutover and recovery of existing claims separately.
+
+Already-present external records with unbound ownership remain conflicts. Recovery uses separately authorized, provider-validated explicit `RecordSet.spec.adoption`, or a fresh provider observation establishing absence before normal creation or cleanup. Desired-value equality alone does not adopt a foreign Cloudflare record ID. Do not patch UIDs, provider status, or finalizers to manufacture ownership, and do not enable zone-wide adoption as an automatic fallback. The source correction neither restores already-lost live authority nor authorizes release or deployment.
 
 Provider-specific status follows a public-data boundary:
 

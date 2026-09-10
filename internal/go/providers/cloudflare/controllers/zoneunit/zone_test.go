@@ -558,7 +558,8 @@ func cloudflareZoneUnit(namespace, name string) *dnsv1alpha1.ZoneUnit {
 					Namespace: namespace,
 					Name:      name,
 				},
-				DomainName: "apps.example.com",
+				ObservedGeneration: 1,
+				DomainName:         "apps.example.com",
 				ZoneClassRef: dnsv1alpha1.ObjectReference{
 					Namespace: "platform",
 					Name:      "cloudflare-public",

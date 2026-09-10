@@ -212,6 +212,7 @@ export const zoneUnits: ZoneUnit[] = [
         {
           recordSetNamespace: 'apps',
           recordSetName: 'www-a',
+          recordSetUID: 'mock-record-uid',
           observedGeneration: 1,
           name: 'www',
           type: 'A',

@@ -223,12 +223,18 @@ func zoneUnitProgrammedCondition(unit *dnsv1alpha1.ZoneUnit) (metav1.ConditionSt
 
 func zoneUnitRecordSetProgrammedCondition(unit *dnsv1alpha1.ZoneUnit, item dnsv1alpha1.ZoneUnitRecordSetSpec) *metav1.Condition {
 	index := slices.IndexFunc(unit.Status.RecordSets, func(status dnsv1alpha1.ZoneUnitRecordSetStatus) bool {
-		return status.RecordSetNamespace == item.RecordSetNamespace && status.RecordSetName == item.RecordSetName
+		return zoneUnitRecordSetStatusMatchesItem(status, item)
 	})
 	if index < 0 {
 		return nil
 	}
-	return meta.FindStatusCondition(unit.Status.RecordSets[index].Conditions, string(dnsv1alpha1.ConditionProgrammed))
+	status := unit.Status.RecordSets[index]
+	condition := meta.FindStatusCondition(status.Conditions, string(dnsv1alpha1.ConditionProgrammed))
+	if status.ObservedGeneration != item.ObservedGeneration || condition == nil ||
+		condition.ObservedGeneration != item.ObservedGeneration {
+		return nil
+	}
+	return condition
 }
 
 func (r *ZoneReconciler) patchRoute53ZoneStatus(ctx context.Context, zone *dnsv1alpha1.Zone, mutate func(*route53v1alpha1.Route53ZoneStatusData)) error {

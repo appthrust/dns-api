@@ -67,6 +67,7 @@ func TestZoneUnitProgrammedConditionAggregatesCloudflareTargets(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			unit := cloudflareZoneUnitWithRecordSetItem("app", "apps-example-com", "app", "www-a", "www", dnsv1alpha1.RecordTypeA)
 			unit.Generation = 7
+			unit.Spec.RecordSets[0].ObservedGeneration = 1
 			unit.Status.Zone = &dnsv1alpha1.ZoneUnitZoneStatus{
 				Conditions: []metav1.Condition{
 					{Type: string(dnsv1alpha1.ConditionProgrammed), Status: tt.zoneStatus, Reason: tt.zoneReason, ObservedGeneration: 1},
@@ -77,6 +78,8 @@ func TestZoneUnitProgrammedConditionAggregatesCloudflareTargets(t *testing.T) {
 					{
 						RecordSetNamespace: "app",
 						RecordSetName:      "www-a",
+						RecordSetUID:       unit.Spec.RecordSets[0].RecordSetUID,
+						ObservedGeneration: unit.Spec.RecordSets[0].ObservedGeneration,
 						Conditions: []metav1.Condition{
 							{Type: string(dnsv1alpha1.ConditionProgrammed), Status: tt.recordSetStatus, Reason: tt.recordSetReason, ObservedGeneration: 1},
 						},
@@ -89,4 +92,27 @@ func TestZoneUnitProgrammedConditionAggregatesCloudflareTargets(t *testing.T) {
 			assertCloudflareCondition(t, unit.Status.Conditions, string(dnsv1alpha1.ConditionProgrammed), tt.wantStatus, tt.wantReason)
 		})
 	}
+}
+
+func TestZoneUnitProgrammedConditionIgnoresDifferentRecordSetUID(t *testing.T) {
+	unit := cloudflareZoneUnitWithRecordSetItem("app", "apps-example-com", "app", "www-a", "www", dnsv1alpha1.RecordTypeA)
+	unit.Status.Zone = &dnsv1alpha1.ZoneUnitZoneStatus{
+		Conditions: []metav1.Condition{
+			{Type: string(dnsv1alpha1.ConditionProgrammed), Status: metav1.ConditionTrue, Reason: "Programmed", ObservedGeneration: 1},
+		},
+	}
+	unit.Status.RecordSets = []dnsv1alpha1.ZoneUnitRecordSetStatus{
+		{
+			RecordSetNamespace: "app",
+			RecordSetName:      "www-a",
+			RecordSetUID:       "386cde02-3890-4ee6-a01a-037ed8354b5d",
+			Conditions: []metav1.Condition{
+				{Type: string(dnsv1alpha1.ConditionProgrammed), Status: metav1.ConditionTrue, Reason: "Programmed", ObservedGeneration: 1},
+			},
+		},
+	}
+
+	setZoneUnitProgrammedCondition(unit)
+
+	assertCloudflareCondition(t, unit.Status.Conditions, string(dnsv1alpha1.ConditionProgrammed), metav1.ConditionUnknown, "Reconciling")
 }

@@ -3,13 +3,8 @@ package route53
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net/netip"
-	"regexp"
 	"slices"
-	"strconv"
-	"strings"
 
 	dnsv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/dns/v1alpha1"
 	route53v1alpha1 "github.com/appthrust/dns-api/pkg/go/api/route53/v1alpha1"
@@ -26,15 +21,9 @@ import (
 
 const RecordSetFinalizer = "route53.dns.appthrust.io/recordset-finalizer"
 
-var (
-	cnameTargetPattern  = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?|_[a-z0-9]([a-z0-9-]{0,60}[a-z0-9])?)(\.([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?|_[a-z0-9]([a-z0-9-]{0,60}[a-z0-9])?))*$`)
-	aliasDNSNamePattern = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?))*\.$`)
-	mxExchangePattern   = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?))*$`)
-	caaTagPattern       = regexp.MustCompile(`^[a-z0-9]+$`)
-)
-
 type plannedRecordSetChange struct {
 	recordSet *dnsv1alpha1.RecordSet
+	source    *dnsv1alpha1.RecordSet
 	change    RecordSetChange
 }
 
@@ -66,6 +55,7 @@ func (r *ZoneReconciler) reconcileZoneRecordSets(ctx context.Context, provider P
 	batchCost := 0
 	for index := range recordSets {
 		recordSet := &recordSets[index]
+		source := recordSet.DeepCopy()
 		change, ok, err := r.planRecordSet(ctx, zone, zoneClass, hostedZone, recordSet, ownership, current)
 		if err != nil {
 			return ctrl.Result{}, err
@@ -84,6 +74,7 @@ func (r *ZoneReconciler) reconcileZoneRecordSets(ctx context.Context, provider P
 		batchCost += cost
 		planned = append(planned, plannedRecordSetChange{
 			recordSet: recordSet,
+			source:    source,
 			change:    change,
 		})
 	}
@@ -98,6 +89,10 @@ func (r *ZoneReconciler) reconcileZoneRecordSets(ctx context.Context, provider P
 	changes := make([]RecordSetChange, 0, len(planned))
 	for _, item := range planned {
 		changes = append(changes, item.change)
+	}
+
+	if err := r.fenceRecordSetChangeDispatch(ctx, zone, planned...); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	change, err := provider.ChangeRecordSets(ctx, hostedZone.ID, changes)
@@ -136,6 +131,10 @@ func (r *ZoneReconciler) reconcileZoneRecordSets(ctx context.Context, provider P
 func (r *ZoneReconciler) reconcileInvalidRecordSetBatch(ctx context.Context, provider Provider, zone *dnsv1alpha1.Zone, hostedZoneID string, planned []plannedRecordSetChange, batchErr error) (ctrl.Result, error) {
 	handled := false
 	for index, item := range planned {
+		if err := r.fenceRecordSetChangeDispatch(ctx, zone, item); err != nil {
+			return ctrl.Result{}, err
+		}
+
 		change, err := provider.ChangeRecordSets(ctx, hostedZoneID, []RecordSetChange{item.change})
 		if err != nil {
 			if statusErr := r.setRecordSetProviderError(ctx, item.recordSet, err); statusErr != nil {
@@ -177,6 +176,28 @@ func (r *ZoneReconciler) reconcileInvalidRecordSetBatch(ctx context.Context, pro
 		}
 	}
 	return r.resultForProviderError(batchErr), nil
+}
+
+// fenceRecordSetChangeDispatch proves that the API object which authorized a
+// provider mutation still owns every planned source. The status patch carries
+// a resource-version precondition even when it has no status delta, so a
+// cached observation cannot authorize an external mutation.
+func (r *ZoneReconciler) fenceRecordSetChangeDispatch(ctx context.Context, zone *dnsv1alpha1.Zone, planned ...plannedRecordSetChange) error {
+	var unit dnsv1alpha1.ZoneUnit
+	key := client.ObjectKey{Namespace: zone.Namespace, Name: zone.Name}
+	if err := r.Get(ctx, key, &unit); err != nil {
+		if apierrors.IsNotFound(err) {
+			return apierrors.NewConflict(dnsv1alpha1.Resource("zoneunits"), zone.Name, fmt.Errorf("ZoneUnit was deleted before RecordSet change could be submitted"))
+		}
+		return err
+	}
+	for _, item := range planned {
+		if item.source == nil || !zoneUnitRecordSetSourceCurrent(&unit, item.source) {
+			return apierrors.NewConflict(dnsv1alpha1.Resource("zoneunits"), zone.Name, fmt.Errorf("ZoneUnit RecordSet source changed before provider mutation"))
+		}
+	}
+	base := unit.DeepCopy()
+	return r.Status().Patch(ctx, &unit, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 }
 
 func (r *ZoneReconciler) planRecordSet(
@@ -228,7 +249,7 @@ func (r *ZoneReconciler) planRecordSet(
 	}
 	desired := desiredRoute53RecordSet(recordSet, hostedZone.ID, identity.recordName, options)
 	existing, exists := current[identity.key()]
-	managed := route53RecordSetStatusMatches(statusData, desired) || slices.Contains(recordSet.Finalizers, RecordSetFinalizer)
+	managed := providerStatusHasPayload(recordSet.Status.Provider)
 
 	if adopting, err := route53RecordSetAdoptionEnabled(recordSet); err != nil {
 		return RecordSetChange{}, false, r.setRecordSetAccepted(ctx, recordSet, metav1.ConditionFalse, "InvalidAdoption", err.Error())
@@ -266,12 +287,25 @@ func (r *ZoneReconciler) planRecordSetDelete(ctx context.Context, recordSet *dns
 	}
 	if accepted, conflict := ownership.acceptedOwner(recordSet); !accepted {
 		if conflict {
-			return RecordSetChange{}, false, r.setRecordSetAccepted(ctx, recordSet, metav1.ConditionFalse, "RecordSetConflict", "record identity is owned by another RecordSet")
+			return RecordSetChange{}, false, r.setRecordSetDeletionConflict(ctx, recordSet)
 		}
-		return RecordSetChange{}, false, r.removeRecordSetFinalizer(ctx, recordSet)
+		if existing.Name == "" {
+			return RecordSetChange{}, false, r.removeRecordSetFinalizer(ctx, recordSet)
+		}
+		return RecordSetChange{}, false, r.setRecordSetProgrammed(ctx, recordSet, metav1.ConditionFalse, "ProviderConflict", "same Route 53 record set exists without current RecordSet ownership")
 	}
 	if existing.Name == "" {
 		return RecordSetChange{}, false, r.removeRecordSetFinalizer(ctx, recordSet)
+	}
+	adopting, err := route53RecordSetAdoptionEnabled(recordSet)
+	if err != nil {
+		return RecordSetChange{}, false, r.setRecordSetAccepted(ctx, recordSet, metav1.ConditionFalse, "InvalidAdoption", err.Error())
+	}
+	if _, err := route53RecordSetStatusData(recordSet); err != nil {
+		return RecordSetChange{}, false, r.setRecordSetProgrammed(ctx, recordSet, metav1.ConditionFalse, "ReconcileError", err.Error())
+	}
+	if !adopting && !providerStatusHasPayload(recordSet.Status.Provider) {
+		return RecordSetChange{}, false, r.setRecordSetProgrammed(ctx, recordSet, metav1.ConditionFalse, "ProviderConflict", "same Route 53 record set exists without current RecordSet ownership")
 	}
 	return RecordSetChange{Action: RecordSetChangeActionDelete, RecordSet: existing}, true, nil
 }
@@ -356,25 +390,16 @@ func (r *ZoneReconciler) refreshPendingRecordSetChange(ctx context.Context, prov
 	for index := range recordSets {
 		if affectedRecordSetIncludes(pending.AffectedRecordSets, &recordSets[index]) {
 			r.recordEvent(&recordSets[index], corev1.EventTypeNormal, "Route53RecordSetChangeInSync", fmt.Sprintf("Route 53 record set change %s is INSYNC for type=%s name=%s", pending.ID, recordSets[index].Spec.Type, recordSets[index].Spec.Name))
-			if pending.Operation != "DELETE_BATCH" {
-				options, optionsErr := route53RecordSetOptions(&recordSets[index])
-				if optionsErr != nil {
-					return ctrl.Result{}, true, optionsErr
-				}
-				identity := recordSetIdentity(recordSets[index].Spec.Type, canonicalRecordName(recordSets[index].Spec.Name, zone.Spec.DomainName))
-				desired := desiredRoute53RecordSet(&recordSets[index], statusData.HostedZoneID, identity.recordName, options)
-				if statusErr := r.setRecordSetReady(ctx, &recordSets[index], desired); statusErr != nil {
-					return ctrl.Result{}, true, statusErr
-				}
-			}
 		}
 	}
+	// INSYNC confirms the submitted batch, not the current desired generation.
+	// Clear it and use the normal provider list/plan path before attesting Ready.
 	if err := r.patchRoute53ZoneStatus(ctx, zone, func(data *route53v1alpha1.Route53ZoneStatusData) {
 		data.PendingRecordSetChange = nil
 	}); err != nil {
 		return ctrl.Result{}, true, err
 	}
-	return ctrl.Result{Requeue: true}, true, nil
+	return ctrl.Result{}, false, nil
 }
 
 func (r *ZoneReconciler) recordSetsForZone(ctx context.Context, zone *dnsv1alpha1.Zone) ([]dnsv1alpha1.RecordSet, error) {
@@ -385,17 +410,19 @@ func (r *ZoneReconciler) recordSetsForZone(ctx context.Context, zone *dnsv1alpha
 		}
 		return nil, err
 	}
-	statusByRef := map[string]dnsv1alpha1.ZoneUnitRecordSetStatus{}
+	statusByClaim := make(map[string]dnsv1alpha1.ZoneUnitRecordSetStatus, len(unit.Status.RecordSets))
 	for _, status := range unit.Status.RecordSets {
-		statusByRef[zoneUnitRecordSetStatusKey(status)] = status
+		if status.RecordSetUID != "" {
+			statusByClaim[zoneUnitRecordSetStatusKey(status)] = status
+		}
 	}
 	recordSets := make([]dnsv1alpha1.RecordSet, 0, len(unit.Spec.RecordSets))
 	for _, item := range unit.Spec.RecordSets {
 		if !item.IsAllowed() && !item.DeletionRequested {
 			continue
 		}
-		status := statusByRef[zoneUnitRecordSetItemKey(item)]
-		if status.DeletionCompleted && !item.DeletionRequested {
+		status := statusByClaim[zoneUnitRecordSetItemKey(item)]
+		if !zoneUnitRecordSetStatusMatchesItem(status, item) || (status.DeletionCompleted && !item.DeletionRequested) {
 			status = dnsv1alpha1.ZoneUnitRecordSetStatus{}
 		}
 		recordSets = append(recordSets, route53RecordSetFromZoneUnitItem(&unit, item, status))
@@ -408,6 +435,7 @@ func route53RecordSetFromZoneUnitItem(unit *dnsv1alpha1.ZoneUnit, item dnsv1alph
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:  item.RecordSetNamespace,
 			Name:       item.RecordSetName,
+			UID:        item.RecordSetUID,
 			Generation: item.ObservedGeneration,
 		},
 		Spec: dnsv1alpha1.RecordSetSpec{
@@ -512,7 +540,7 @@ func (r *ZoneReconciler) ensureRecordSetFinalizer(ctx context.Context, recordSet
 }
 
 func (r *ZoneReconciler) removeRecordSetFinalizer(ctx context.Context, recordSet *dnsv1alpha1.RecordSet) error {
-	return r.patchRecordSetStatus(ctx, recordSet, func(status *dnsv1alpha1.RecordSetStatus) {
+	return r.patchRecordSetDeletionCompleted(ctx, recordSet, func(status *dnsv1alpha1.RecordSetStatus) {
 		status.ObservedGeneration = recordSet.Generation
 		setRecordSetCondition(&status.Conditions, string(dnsv1alpha1.ConditionProgrammed), metav1.ConditionTrue, "Programmed", "Route 53 record set deletion is complete", recordSet.Generation)
 	})
@@ -544,6 +572,14 @@ func (r *ZoneReconciler) setRecordSetProviderError(ctx context.Context, recordSe
 	return r.setRecordSetProgrammed(ctx, recordSet, metav1.ConditionFalse, reason, message)
 }
 
+func (r *ZoneReconciler) setRecordSetDeletionConflict(ctx context.Context, recordSet *dnsv1alpha1.RecordSet) error {
+	return r.patchRecordSetStatus(ctx, recordSet, func(recordSetStatus *dnsv1alpha1.RecordSetStatus) {
+		recordSetStatus.ObservedGeneration = recordSet.Generation
+		setRecordSetCondition(&recordSetStatus.Conditions, string(dnsv1alpha1.ConditionAccepted), metav1.ConditionFalse, "RecordSetConflict", "record identity is owned by another RecordSet", recordSet.Generation)
+		setRecordSetCondition(&recordSetStatus.Conditions, string(dnsv1alpha1.ConditionProgrammed), metav1.ConditionFalse, "RecordSetConflict", "record identity is owned by another RecordSet", recordSet.Generation)
+	})
+}
+
 func (r *ZoneReconciler) setRecordSetAccepted(ctx context.Context, recordSet *dnsv1alpha1.RecordSet, status metav1.ConditionStatus, reason, message string) error {
 	return r.patchRecordSetStatus(ctx, recordSet, func(recordSetStatus *dnsv1alpha1.RecordSetStatus) {
 		recordSetStatus.ObservedGeneration = recordSet.Generation
@@ -559,31 +595,66 @@ func (r *ZoneReconciler) setRecordSetProgrammed(ctx context.Context, recordSet *
 }
 
 func (r *ZoneReconciler) patchRecordSetStatus(ctx context.Context, recordSet *dnsv1alpha1.RecordSet, mutate func(*dnsv1alpha1.RecordSetStatus)) error {
-	base := recordSet.DeepCopy()
+	return r.patchRecordSetStatusWithDeletionCompletion(ctx, recordSet, false, mutate)
+}
+
+// patchRecordSetDeletionCompleted is reserved for the provider-confirmed
+// deletion completion path.
+func (r *ZoneReconciler) patchRecordSetDeletionCompleted(ctx context.Context, recordSet *dnsv1alpha1.RecordSet, mutate func(*dnsv1alpha1.RecordSetStatus)) error {
+	return r.patchRecordSetStatusWithDeletionCompletion(ctx, recordSet, true, mutate)
+}
+
+func (r *ZoneReconciler) patchRecordSetStatusWithDeletionCompletion(ctx context.Context, recordSet *dnsv1alpha1.RecordSet, deletionCompleted bool, mutate func(*dnsv1alpha1.RecordSetStatus)) error {
+	before := recordSet.DeepCopy()
 	mutate(&recordSet.Status)
-	if equality.Semantic.DeepEqual(base.Status, recordSet.Status) {
-		return nil
-	}
 
 	namespace, name := recordSetZoneKey(recordSet)
 	var unit dnsv1alpha1.ZoneUnit
 	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &unit); err != nil {
-		return client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			return apierrors.NewConflict(dnsv1alpha1.Resource("zoneunits"), name, fmt.Errorf("ZoneUnit was deleted before RecordSet status could be written"))
+		}
+		return err
 	}
+	if !zoneUnitRecordSetSourceCurrent(&unit, recordSet) {
+		return apierrors.NewConflict(dnsv1alpha1.Resource("zoneunits"), name, fmt.Errorf("ZoneUnit RecordSet source changed before status could be written"))
+	}
+	if !deletionCompleted && equality.Semantic.DeepEqual(before.Status, recordSet.Status) {
+		return nil
+	}
+
+	// RecordSet is synthesized from a prior ZoneUnit observation. Rebase only
+	// the fields this writer changed onto a receipt for the same claim, so
+	// condition writes cannot replay stale provider state from another UID.
 	unitBase := unit.DeepCopy()
-	index := slices.IndexFunc(unit.Status.RecordSets, func(status dnsv1alpha1.ZoneUnitRecordSetStatus) bool {
-		return status.RecordSetNamespace == recordSet.Namespace && status.RecordSetName == recordSet.Name
-	})
+	index := -1
+	for candidateIndex, status := range unit.Status.RecordSets {
+		if status.RecordSetNamespace != recordSet.Namespace || status.RecordSetName != recordSet.Name {
+			continue
+		}
+		if index < 0 {
+			index = candidateIndex
+		}
+		if status.RecordSetUID != "" && status.RecordSetUID == recordSet.UID {
+			index = candidateIndex
+			break
+		}
+	}
 	next := dnsv1alpha1.ZoneUnitRecordSetStatus{
 		RecordSetNamespace: recordSet.Namespace,
 		RecordSetName:      recordSet.Name,
-		ObservedGeneration: recordSet.Status.ObservedGeneration,
-		Provider:           recordSet.Status.Provider,
-		Conditions:         slices.Clone(recordSet.Status.Conditions),
+		RecordSetUID:       recordSet.UID,
 	}
-	if recordSet.DeletionTimestamp != nil {
-		programmed := meta.FindStatusCondition(recordSet.Status.Conditions, string(dnsv1alpha1.ConditionProgrammed))
-		next.DeletionCompleted = programmed != nil && programmed.Status == metav1.ConditionTrue
+	if index >= 0 &&
+		unit.Status.RecordSets[index].RecordSetUID != "" &&
+		unit.Status.RecordSets[index].RecordSetUID == recordSet.UID {
+		next = unit.Status.RecordSets[index]
+	}
+	mergeRecordSetStatus(&next, &before.Status, &recordSet.Status)
+	next.ObservedGeneration = recordSet.Generation
+	next.RecordSetUID = recordSet.UID
+	if deletionCompleted {
+		next.DeletionCompleted = true
 	}
 	if index >= 0 {
 		unit.Status.RecordSets[index] = next
@@ -595,7 +666,63 @@ func (r *ZoneReconciler) patchRecordSetStatus(ctx context.Context, recordSet *dn
 	if equality.Semantic.DeepEqual(unitBase.Status, unit.Status) {
 		return nil
 	}
-	return client.IgnoreNotFound(r.Status().Patch(ctx, &unit, client.MergeFrom(unitBase)))
+	// Merge patches replace arrays. The resource-version precondition turns a
+	// stale recordSets snapshot into a reconcile conflict instead of replacing
+	// sibling claims.
+	return r.Status().Patch(ctx, &unit, client.MergeFromWithOptions(unitBase, client.MergeFromWithOptimisticLock{}))
+}
+
+func zoneUnitRecordSetSourceCurrent(unit *dnsv1alpha1.ZoneUnit, recordSet *dnsv1alpha1.RecordSet) bool {
+	index := slices.IndexFunc(unit.Spec.RecordSets, func(item dnsv1alpha1.ZoneUnitRecordSetSpec) bool {
+		return item.RecordSetNamespace == recordSet.Namespace && item.RecordSetName == recordSet.Name
+	})
+	if index < 0 {
+		return false
+	}
+	item := unit.Spec.RecordSets[index]
+	if !item.IsAllowed() && !item.DeletionRequested {
+		return false
+	}
+	if item.RecordSetUID == "" ||
+		recordSet.UID == "" ||
+		item.RecordSetUID != recordSet.UID ||
+		item.ObservedGeneration != recordSet.Generation ||
+		item.DeletionRequested != !recordSet.DeletionTimestamp.IsZero() {
+		return false
+	}
+	expected := route53RecordSetFromZoneUnitItem(unit, item, dnsv1alpha1.ZoneUnitRecordSetStatus{})
+	return equality.Semantic.DeepEqual(expected.Spec, recordSet.Spec)
+}
+
+func mergeRecordSetStatus(current *dnsv1alpha1.ZoneUnitRecordSetStatus, before, after *dnsv1alpha1.RecordSetStatus) {
+	if !equality.Semantic.DeepEqual(before.Provider, after.Provider) {
+		current.Provider = after.Provider
+	}
+	mergeRecordSetConditions(&current.Conditions, before.Conditions, after.Conditions)
+}
+
+func mergeRecordSetConditions(current *[]metav1.Condition, before, after []metav1.Condition) {
+	for _, beforeCondition := range before {
+		if meta.FindStatusCondition(after, beforeCondition.Type) == nil {
+			*current = slices.DeleteFunc(*current, func(condition metav1.Condition) bool {
+				return condition.Type == beforeCondition.Type
+			})
+		}
+	}
+	for _, afterCondition := range after {
+		beforeCondition := meta.FindStatusCondition(before, afterCondition.Type)
+		if beforeCondition != nil && equality.Semantic.DeepEqual(*beforeCondition, afterCondition) {
+			continue
+		}
+		index := slices.IndexFunc(*current, func(condition metav1.Condition) bool {
+			return condition.Type == afterCondition.Type
+		})
+		if index >= 0 {
+			(*current)[index] = afterCondition
+		} else {
+			*current = append(*current, afterCondition)
+		}
+	}
 }
 
 func (r *ZoneReconciler) patchRoute53RecordSetStatus(ctx context.Context, recordSet *dnsv1alpha1.RecordSet, mutate func(*route53v1alpha1.Route53RecordSetStatusData)) error {
@@ -615,1038 +742,4 @@ func (r *ZoneReconciler) patchRoute53RecordSetStatus(ctx context.Context, record
 			status.Provider = &dnsv1alpha1.ProviderStatus{State: runtime.RawExtension{Raw: raw}}
 		}
 	})
-}
-
-type route53RecordSetIdentity struct {
-	recordType dnsv1alpha1.RecordType
-	recordName string
-}
-
-func recordSetIdentity(recordType dnsv1alpha1.RecordType, recordName string) route53RecordSetIdentity {
-	return route53RecordSetIdentity{
-		recordType: recordType,
-		recordName: normalizeRoute53RecordName(recordName),
-	}
-}
-
-func (i route53RecordSetIdentity) key() string {
-	return string(i.recordType) + "\x00" + i.recordName
-}
-
-func indexRecordSets(recordSets []RecordSetResource) map[string]RecordSetResource {
-	index := make(map[string]RecordSetResource, len(recordSets))
-	for _, recordSet := range recordSets {
-		identity := recordSetIdentity(recordSet.Type, recordSet.Name)
-		index[identity.key()] = recordSet
-	}
-	return index
-}
-
-func desiredRoute53RecordSet(recordSet *dnsv1alpha1.RecordSet, hostedZoneID, recordName string, options route53v1alpha1.Route53RecordSetOptions) RecordSetResource {
-	desired := RecordSetResource{
-		HostedZoneID: normalizeHostedZoneID(hostedZoneID),
-		Name:         normalizeRoute53RecordName(recordName),
-		Type:         recordSet.Spec.Type,
-	}
-	if options.Alias != nil {
-		desired.Alias = options.Alias
-		return desired
-	}
-	ttl := int64(*recordSet.Spec.TTL)
-	desired.TTL = &ttl
-	switch recordSet.Spec.Type {
-	case dnsv1alpha1.RecordTypeA:
-		desired.Values = slices.Clone(recordSet.Spec.A.Addresses)
-	case dnsv1alpha1.RecordTypeAAAA:
-		desired.Values = slices.Clone(recordSet.Spec.AAAA.Addresses)
-	case dnsv1alpha1.RecordTypeTXT:
-		for _, value := range recordSet.Spec.TXT.Values {
-			desired.Values = append(desired.Values, quoteRoute53TXTValue(value))
-		}
-	case dnsv1alpha1.RecordTypeCNAME:
-		desired.Values = []string{normalizeRoute53RecordName(recordSet.Spec.CNAME.Target)}
-	case dnsv1alpha1.RecordTypeMX:
-		for _, record := range recordSet.Spec.MX.Records {
-			desired.Values = append(desired.Values, formatRoute53MXValue(record))
-		}
-	case dnsv1alpha1.RecordTypeCAA:
-		for _, record := range recordSet.Spec.CAA.Records {
-			desired.Values = append(desired.Values, formatRoute53CAAValue(record))
-		}
-	case dnsv1alpha1.RecordTypeNS:
-		for _, nameServer := range recordSet.Spec.NS.NameServers {
-			desired.Values = append(desired.Values, normalizeRoute53RecordName(nameServer))
-		}
-	}
-	slices.Sort(desired.Values)
-	return desired
-}
-
-func route53RecordSetEqual(a, b RecordSetResource) bool {
-	if normalizeHostedZoneID(a.HostedZoneID) != normalizeHostedZoneID(b.HostedZoneID) ||
-		normalizeRoute53RecordName(a.Name) != normalizeRoute53RecordName(b.Name) ||
-		a.Type != b.Type {
-		return false
-	}
-	if (a.TTL == nil) != (b.TTL == nil) {
-		return false
-	}
-	if a.TTL != nil && b.TTL != nil && *a.TTL != *b.TTL {
-		return false
-	}
-	if (a.Alias == nil) != (b.Alias == nil) {
-		return false
-	}
-	if a.Alias != nil && b.Alias != nil {
-		if normalizeRoute53AliasDNSNameForCompare(a.Alias.DNSName) != normalizeRoute53AliasDNSNameForCompare(b.Alias.DNSName) ||
-			normalizeHostedZoneID(a.Alias.HostedZoneID) != normalizeHostedZoneID(b.Alias.HostedZoneID) ||
-			a.Alias.EvaluateTargetHealth != b.Alias.EvaluateTargetHealth {
-			return false
-		}
-	}
-	aValues, ok := canonicalRecordSetValues(a.Type, a.Values)
-	if !ok {
-		return false
-	}
-	bValues, ok := canonicalRecordSetValues(b.Type, b.Values)
-	if !ok {
-		return false
-	}
-	slices.Sort(aValues)
-	slices.Sort(bValues)
-	return slices.Equal(aValues, bValues)
-}
-
-func normalizeRoute53AliasDNSNameForCompare(name string) string {
-	normalized := normalizeRoute53RecordName(name)
-	withoutDualstack := strings.TrimPrefix(normalized, "dualstack.")
-	if withoutDualstack != normalized && isRoute53ELBAliasDNSName(withoutDualstack) {
-		return withoutDualstack
-	}
-	return normalized
-}
-
-func isRoute53ELBAliasDNSName(name string) bool {
-	trimmed := strings.TrimSuffix(name, ".")
-	return strings.HasSuffix(trimmed, ".elb.amazonaws.com") ||
-		strings.Contains(trimmed, ".elb.") && strings.HasSuffix(trimmed, ".amazonaws.com") ||
-		strings.HasSuffix(trimmed, ".elb.amazonaws.com.cn") ||
-		strings.Contains(trimmed, ".elb.") && strings.HasSuffix(trimmed, ".amazonaws.com.cn")
-}
-
-func route53RecordSetOptions(recordSet *dnsv1alpha1.RecordSet) (route53v1alpha1.Route53RecordSetOptions, error) {
-	if len(recordSet.Spec.Options.Raw) == 0 {
-		return route53v1alpha1.Route53RecordSetOptions{}, nil
-	}
-	var options route53v1alpha1.Route53RecordSetOptions
-	if err := json.Unmarshal(recordSet.Spec.Options.Raw, &options); err != nil {
-		return route53v1alpha1.Route53RecordSetOptions{}, fmt.Errorf("options must match Route 53 RecordSet schema: %w", err)
-	}
-	return options, nil
-}
-
-func validateRoute53RecordSetBody(recordSet *dnsv1alpha1.RecordSet, options route53v1alpha1.Route53RecordSetOptions) string {
-	if options.Alias != nil {
-		if recordSet.Spec.Type != dnsv1alpha1.RecordTypeA && recordSet.Spec.Type != dnsv1alpha1.RecordTypeAAAA {
-			return "Route 53 alias supports only A and AAAA record types"
-		}
-		if recordSet.Spec.TTL != nil {
-			return "ttl must not be specified when route53 alias is used"
-		}
-		if recordSet.Spec.A != nil && len(recordSet.Spec.A.Addresses) > 0 {
-			return "a.addresses must not be specified when route53 alias is used"
-		}
-		if recordSet.Spec.AAAA != nil && len(recordSet.Spec.AAAA.Addresses) > 0 {
-			return "aaaa.addresses must not be specified when route53 alias is used"
-		}
-		if recordSet.Spec.TXT != nil && len(recordSet.Spec.TXT.Values) > 0 {
-			return "txt.values must not be specified when route53 alias is used"
-		}
-		if recordSet.Spec.CNAME != nil && recordSet.Spec.CNAME.Target != "" {
-			return "cname.target must not be specified when route53 alias is used"
-		}
-		if recordSet.Spec.MX != nil && len(recordSet.Spec.MX.Records) > 0 {
-			return "mx.records must not be specified when route53 alias is used"
-		}
-		if recordSet.Spec.CAA != nil && len(recordSet.Spec.CAA.Records) > 0 {
-			return "caa.records must not be specified when route53 alias is used"
-		}
-		if recordSet.Spec.NS != nil && len(recordSet.Spec.NS.NameServers) > 0 {
-			return "ns.nameServers must not be specified when route53 alias is used"
-		}
-		if options.Alias.DNSName == "" || options.Alias.HostedZoneID == "" {
-			return "options.alias.dnsName and options.alias.hostedZoneID are required"
-		}
-		if err := validateAliasDNSName(options.Alias.DNSName); err != nil {
-			return "options.alias.dnsName " + err.Error()
-		}
-		return ""
-	}
-	if recordSet.Spec.TTL == nil {
-		return "ttl is required for standard records"
-	}
-	switch recordSet.Spec.Type {
-	case dnsv1alpha1.RecordTypeA:
-		if recordSet.Spec.A == nil || len(recordSet.Spec.A.Addresses) == 0 {
-			return "a.addresses is required for standard A records"
-		}
-		if err := validateRecordSetIPAddresses(recordSet.Spec.A.Addresses, false); err != nil {
-			return "a.addresses " + err.Error()
-		}
-		if recordSet.Spec.AAAA != nil {
-			return "aaaa must not be specified for standard A records"
-		}
-		if recordSet.Spec.TXT != nil {
-			return "txt must not be specified for standard A records"
-		}
-		if recordSet.Spec.CNAME != nil {
-			return "cname must not be specified for standard A records"
-		}
-		if recordSet.Spec.MX != nil {
-			return "mx must not be specified for standard A records"
-		}
-		if recordSet.Spec.CAA != nil {
-			return "caa must not be specified for standard A records"
-		}
-		if recordSet.Spec.NS != nil {
-			return "ns must not be specified for standard A records"
-		}
-	case dnsv1alpha1.RecordTypeAAAA:
-		if recordSet.Spec.AAAA == nil || len(recordSet.Spec.AAAA.Addresses) == 0 {
-			return "aaaa.addresses is required for standard AAAA records"
-		}
-		if err := validateRecordSetIPAddresses(recordSet.Spec.AAAA.Addresses, true); err != nil {
-			return "aaaa.addresses " + err.Error()
-		}
-		if recordSet.Spec.A != nil {
-			return "a must not be specified for standard AAAA records"
-		}
-		if recordSet.Spec.TXT != nil {
-			return "txt must not be specified for standard AAAA records"
-		}
-		if recordSet.Spec.CNAME != nil {
-			return "cname must not be specified for standard AAAA records"
-		}
-		if recordSet.Spec.MX != nil {
-			return "mx must not be specified for standard AAAA records"
-		}
-		if recordSet.Spec.CAA != nil {
-			return "caa must not be specified for standard AAAA records"
-		}
-		if recordSet.Spec.NS != nil {
-			return "ns must not be specified for standard AAAA records"
-		}
-	case dnsv1alpha1.RecordTypeTXT:
-		if recordSet.Spec.TXT == nil || len(recordSet.Spec.TXT.Values) == 0 {
-			return "txt.values is required for standard TXT records"
-		}
-		if err := validateRecordSetTXTValues(recordSet.Spec.TXT.Values); err != nil {
-			return "txt.values " + err.Error()
-		}
-		if recordSet.Spec.A != nil {
-			return "a must not be specified for standard TXT records"
-		}
-		if recordSet.Spec.AAAA != nil {
-			return "aaaa must not be specified for standard TXT records"
-		}
-		if recordSet.Spec.CNAME != nil {
-			return "cname must not be specified for standard TXT records"
-		}
-		if recordSet.Spec.MX != nil {
-			return "mx must not be specified for standard TXT records"
-		}
-		if recordSet.Spec.CAA != nil {
-			return "caa must not be specified for standard TXT records"
-		}
-		if recordSet.Spec.NS != nil {
-			return "ns must not be specified for standard TXT records"
-		}
-	case dnsv1alpha1.RecordTypeCNAME:
-		if recordSet.Spec.CNAME == nil || recordSet.Spec.CNAME.Target == "" {
-			return "cname.target is required for standard CNAME records"
-		}
-		if err := validateCNAMETarget(recordSet.Spec.CNAME.Target); err != nil {
-			return "cname.target " + err.Error()
-		}
-		if recordSet.Spec.A != nil {
-			return "a must not be specified for standard CNAME records"
-		}
-		if recordSet.Spec.AAAA != nil {
-			return "aaaa must not be specified for standard CNAME records"
-		}
-		if recordSet.Spec.TXT != nil {
-			return "txt must not be specified for standard CNAME records"
-		}
-		if recordSet.Spec.MX != nil {
-			return "mx must not be specified for standard CNAME records"
-		}
-		if recordSet.Spec.CAA != nil {
-			return "caa must not be specified for standard CNAME records"
-		}
-		if recordSet.Spec.NS != nil {
-			return "ns must not be specified for standard CNAME records"
-		}
-	case dnsv1alpha1.RecordTypeMX:
-		if recordSet.Spec.MX == nil || len(recordSet.Spec.MX.Records) == 0 {
-			return "mx.records is required for standard MX records"
-		}
-		if err := validateRecordSetMXRecords(recordSet.Spec.MX.Records); err != nil {
-			return "mx.records " + err.Error()
-		}
-		if recordSet.Spec.A != nil {
-			return "a must not be specified for standard MX records"
-		}
-		if recordSet.Spec.AAAA != nil {
-			return "aaaa must not be specified for standard MX records"
-		}
-		if recordSet.Spec.TXT != nil {
-			return "txt must not be specified for standard MX records"
-		}
-		if recordSet.Spec.CNAME != nil {
-			return "cname must not be specified for standard MX records"
-		}
-		if recordSet.Spec.CAA != nil {
-			return "caa must not be specified for standard MX records"
-		}
-		if recordSet.Spec.NS != nil {
-			return "ns must not be specified for standard MX records"
-		}
-	case dnsv1alpha1.RecordTypeCAA:
-		if recordSet.Spec.CAA == nil || len(recordSet.Spec.CAA.Records) == 0 {
-			return "caa.records is required for standard CAA records"
-		}
-		if err := validateRecordSetCAARecords(recordSet.Spec.CAA.Records); err != nil {
-			return "caa.records " + err.Error()
-		}
-		if recordSet.Spec.A != nil {
-			return "a must not be specified for standard CAA records"
-		}
-		if recordSet.Spec.AAAA != nil {
-			return "aaaa must not be specified for standard CAA records"
-		}
-		if recordSet.Spec.TXT != nil {
-			return "txt must not be specified for standard CAA records"
-		}
-		if recordSet.Spec.CNAME != nil {
-			return "cname must not be specified for standard CAA records"
-		}
-		if recordSet.Spec.MX != nil {
-			return "mx must not be specified for standard CAA records"
-		}
-		if recordSet.Spec.NS != nil {
-			return "ns must not be specified for standard CAA records"
-		}
-	case dnsv1alpha1.RecordTypeNS:
-		if recordSet.Spec.Name == "@" {
-			return "record name @ is not allowed for delegated NS records"
-		}
-		if strings.HasPrefix(recordSet.Spec.Name, "*") {
-			return "wildcard record names are not allowed for delegated NS records"
-		}
-		if recordSet.Spec.NS == nil || len(recordSet.Spec.NS.NameServers) == 0 {
-			return "ns.nameServers is required for standard NS records"
-		}
-		if err := validateRecordSetNSNameServers(recordSet.Spec.NS.NameServers); err != nil {
-			return "ns.nameServers " + err.Error()
-		}
-		if recordSet.Spec.A != nil {
-			return "a must not be specified for standard NS records"
-		}
-		if recordSet.Spec.AAAA != nil {
-			return "aaaa must not be specified for standard NS records"
-		}
-		if recordSet.Spec.TXT != nil {
-			return "txt must not be specified for standard NS records"
-		}
-		if recordSet.Spec.CNAME != nil {
-			return "cname must not be specified for standard NS records"
-		}
-		if recordSet.Spec.MX != nil {
-			return "mx must not be specified for standard NS records"
-		}
-		if recordSet.Spec.CAA != nil {
-			return "caa must not be specified for standard NS records"
-		}
-	default:
-		return "only A, AAAA, TXT, CNAME, MX, CAA, and delegated NS records are supported without a Route 53 alias option"
-	}
-	return ""
-}
-
-type route53RecordSetAdoption struct {
-	Enabled bool `json:"enabled"`
-}
-
-func route53RecordSetAdoptionEnabled(recordSet *dnsv1alpha1.RecordSet) (bool, error) {
-	if len(recordSet.Spec.Adoption.Raw) == 0 {
-		return false, nil
-	}
-	var adoption route53RecordSetAdoption
-	if err := json.Unmarshal(recordSet.Spec.Adoption.Raw, &adoption); err != nil {
-		return true, fmt.Errorf("adoption must be an object with enabled: %w", err)
-	}
-	if !adoption.Enabled {
-		return true, errors.New("adoption.enabled must be true")
-	}
-	return true, nil
-}
-
-func route53RecordSetManagedResourceMismatch(recordSet *dnsv1alpha1.RecordSet, statusData route53v1alpha1.Route53RecordSetStatusData) (string, bool, error) {
-	adopting, err := route53RecordSetAdoptionEnabled(recordSet)
-	if err != nil || !adopting {
-		return "", false, err
-	}
-	statusZoneID := normalizeHostedZoneID(statusData.HostedZoneID)
-	statusRecordName := normalizeRoute53RecordName(statusData.RecordName)
-	if statusZoneID == "" || statusRecordName == "" || statusData.RecordType == "" {
-		return "", false, nil
-	}
-	return "", false, nil
-}
-
-func route53RecordSetStatusData(recordSet *dnsv1alpha1.RecordSet) (route53v1alpha1.Route53RecordSetStatusData, error) {
-	if recordSet.Status.Provider != nil && len(recordSet.Status.Provider.State.Raw) > 0 {
-		var data route53v1alpha1.Route53RecordSetStatusData
-		if err := json.Unmarshal(recordSet.Status.Provider.State.Raw, &data); err != nil {
-			return route53v1alpha1.Route53RecordSetStatusData{}, fmt.Errorf("RecordSet status.provider.state must match Route 53 schema: %w", err)
-		}
-		return data, nil
-	}
-	if recordSet.Status.Provider != nil && len(recordSet.Status.Provider.Data.Raw) > 0 {
-		var data route53v1alpha1.Route53RecordSetStatusData
-		if err := json.Unmarshal(recordSet.Status.Provider.Data.Raw, &data); err != nil {
-			return route53v1alpha1.Route53RecordSetStatusData{}, fmt.Errorf("RecordSet status.provider.data must match Route 53 schema: %w", err)
-		}
-		return data, nil
-	}
-	return route53v1alpha1.Route53RecordSetStatusData{}, nil
-}
-
-func providerStatusHasPayload(provider *dnsv1alpha1.ProviderStatus) bool {
-	return provider != nil && (len(provider.Data.Raw) > 0 || len(provider.State.Raw) > 0)
-}
-
-func setRoute53RecordSetStatusData(data *route53v1alpha1.Route53RecordSetStatusData, recordSet RecordSetResource) {
-	data.HostedZoneID = normalizeHostedZoneID(recordSet.HostedZoneID)
-	data.RecordName = normalizeRoute53RecordName(recordSet.Name)
-	data.RecordType = string(recordSet.Type)
-}
-
-func route53RecordSetStatusMatches(data route53v1alpha1.Route53RecordSetStatusData, recordSet RecordSetResource) bool {
-	return normalizeHostedZoneID(data.HostedZoneID) == normalizeHostedZoneID(recordSet.HostedZoneID) &&
-		normalizeRoute53RecordName(data.RecordName) == normalizeRoute53RecordName(recordSet.Name) &&
-		data.RecordType == string(recordSet.Type)
-}
-
-func recordSetZoneKey(recordSet *dnsv1alpha1.RecordSet) (string, string) {
-	namespace := recordSet.Namespace
-	if recordSet.Spec.ZoneRef.Namespace != nil && *recordSet.Spec.ZoneRef.Namespace != "" {
-		namespace = *recordSet.Spec.ZoneRef.Namespace
-	}
-	return namespace, recordSet.Spec.ZoneRef.Name
-}
-
-type zoneUnitRecordSetOwnership struct {
-	byRef      map[string]dnsv1alpha1.ZoneUnitRecordSetSpec
-	byIdentity map[string]dnsv1alpha1.ZoneUnitRecordSetSpec
-}
-
-func newZoneUnitRecordSetOwnership(items []dnsv1alpha1.ZoneUnitRecordSetSpec) *zoneUnitRecordSetOwnership {
-	ownership := &zoneUnitRecordSetOwnership{
-		byRef:      make(map[string]dnsv1alpha1.ZoneUnitRecordSetSpec, len(items)),
-		byIdentity: make(map[string]dnsv1alpha1.ZoneUnitRecordSetSpec, len(items)),
-	}
-	for _, item := range items {
-		refKey := recordSetClaimKey(item.RecordSetNamespace, item.RecordSetName)
-		ownership.byRef[refKey] = item
-		ownership.byIdentity[recordIdentityKey(item.Name, item.Type)] = item
-		if item.Type == dnsv1alpha1.RecordTypeCNAME {
-			ownership.byIdentity[cnameExclusionKey(item.Name)] = item
-		}
-	}
-	return ownership
-}
-
-func (o *zoneUnitRecordSetOwnership) acceptedOwner(recordSet *dnsv1alpha1.RecordSet) (bool, bool) {
-	refKey := recordSetClaimKey(recordSet.Namespace, recordSet.Name)
-	if item, ok := o.byRef[refKey]; ok {
-		if item.Name == recordSet.Spec.Name && item.Type == recordSet.Spec.Type {
-			return true, false
-		}
-		return false, true
-	}
-	for _, identityKey := range zoneUnitRecordSetIdentityKeys(recordSet.Spec.Name, recordSet.Spec.Type) {
-		if owner, ok := o.byIdentity[identityKey]; ok && recordSetClaimKey(owner.RecordSetNamespace, owner.RecordSetName) != refKey {
-			return false, true
-		}
-	}
-	return false, false
-}
-
-func zoneUnitRecordSetIdentityKeys(recordName string, recordType dnsv1alpha1.RecordType) []string {
-	keys := []string{recordIdentityKey(recordName, recordType)}
-	keys = append(keys, cnameExclusionKey(recordName))
-	return keys
-}
-
-func recordSetClaimKey(namespace, name string) string {
-	return namespace + "\x00" + name
-}
-
-func zoneUnitRecordSetItemKey(item dnsv1alpha1.ZoneUnitRecordSetSpec) string {
-	return recordSetClaimKey(item.RecordSetNamespace, item.RecordSetName)
-}
-
-func zoneUnitRecordSetStatusKey(status dnsv1alpha1.ZoneUnitRecordSetStatus) string {
-	return recordSetClaimKey(status.RecordSetNamespace, status.RecordSetName)
-}
-
-func recordIdentityKey(name string, recordType dnsv1alpha1.RecordType) string {
-	return name + "\x00" + string(recordType)
-}
-
-func cnameExclusionKey(name string) string {
-	return name + "\x00" + string(dnsv1alpha1.RecordTypeCNAME) + "\x00exclusive"
-}
-
-func canonicalRecordName(ownerName, domainName string) string {
-	switch ownerName {
-	case "@":
-		return domainName + "."
-	case "*":
-		return "*." + domainName + "."
-	default:
-		return ownerName + "." + domainName + "."
-	}
-}
-
-func providerVersionSupportsType(providerVersion *dnsv1alpha1.ProviderVersion, recordType dnsv1alpha1.RecordType) bool {
-	return providerVersion != nil && slices.Contains(providerVersion.RecordSet.SupportedTypes, recordType)
-}
-
-func fullRecordNamePatternMatch(pattern, recordName string) (bool, error) {
-	compiled, err := regexp.Compile(pattern)
-	if err != nil {
-		return false, err
-	}
-	match := compiled.FindStringIndex(recordName)
-	return match != nil && match[0] == 0 && match[1] == len(recordName), nil
-}
-
-func validateRecordSetIPAddresses(values []string, wantIPv6 bool) error {
-	seen := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		address, err := netip.ParseAddr(value)
-		if err != nil {
-			return errors.New("must contain valid IP addresses")
-		}
-		if address.Is6() != wantIPv6 {
-			if wantIPv6 {
-				return errors.New("must contain only IPv6 addresses")
-			}
-			return errors.New("must contain only IPv4 addresses")
-		}
-		key := address.String()
-		if _, ok := seen[key]; ok {
-			return errors.New("must not contain duplicate IP addresses")
-		}
-		seen[key] = struct{}{}
-	}
-	return nil
-}
-
-func validateRecordSetTXTValues(values []string) error {
-	seen := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		valueLen := len([]byte(value))
-		if valueLen == 0 {
-			return errors.New("must not contain empty values")
-		}
-		if valueLen > 4000 {
-			return errors.New("must contain values of 4000 UTF-8 octets or fewer")
-		}
-		if !isPrintableASCII(value) {
-			return errors.New("must contain only printable ASCII characters")
-		}
-		if _, ok := seen[value]; ok {
-			return errors.New("must not contain duplicate values")
-		}
-		seen[value] = struct{}{}
-	}
-	return nil
-}
-
-func isPrintableASCII(value string) bool {
-	for index := 0; index < len(value); index++ {
-		if value[index] < 0x20 || value[index] > 0x7e {
-			return false
-		}
-	}
-	return true
-}
-
-func validateCNAMETarget(target string) error {
-	if target == "" {
-		return errors.New("must not be empty")
-	}
-	if len(target) > 253 {
-		return errors.New("must be 253 octets or fewer")
-	}
-	if _, err := netip.ParseAddr(target); err == nil {
-		return errors.New("must be a DNS name, not an IP address")
-	}
-	if !cnameTargetPattern.MatchString(target) {
-		return errors.New("must be normalized lowercase ASCII without a trailing root dot")
-	}
-	return nil
-}
-
-func validateAliasDNSName(name string) error {
-	if name == "" {
-		return errors.New("must not be empty")
-	}
-	if len(name) > 254 {
-		return errors.New("must be 254 octets or fewer")
-	}
-	if _, err := netip.ParseAddr(strings.TrimSuffix(name, ".")); err == nil {
-		return errors.New("must be a DNS name, not an IP address")
-	}
-	if !aliasDNSNamePattern.MatchString(name) {
-		return errors.New("must be normalized lowercase ASCII with a trailing root dot")
-	}
-	return nil
-}
-
-func validateRecordSetMXRecords(records []dnsv1alpha1.MXRecord) error {
-	if len(records) == 0 {
-		return errors.New("is required")
-	}
-	seen := make(map[string]struct{}, len(records))
-	nullMXIndex := -1
-	for index, record := range records {
-		if record.Preference < 0 || record.Preference > 65535 {
-			return fmt.Errorf("[%d].preference must be in range 0..65535", index)
-		}
-		if record.Exchange == "" {
-			return fmt.Errorf("[%d].exchange is required", index)
-		}
-		if record.Exchange == "." {
-			nullMXIndex = index
-		} else if err := validateMXExchange(record.Exchange); err != nil {
-			return fmt.Errorf("[%d].exchange %w", index, err)
-		}
-		key := fmt.Sprintf("%d\x00%s", record.Preference, record.Exchange)
-		if _, ok := seen[key]; ok {
-			return errors.New("must not contain duplicate preference and exchange pairs")
-		}
-		seen[key] = struct{}{}
-	}
-	if nullMXIndex >= 0 {
-		if len(records) != 1 {
-			return errors.New("must contain only one record when exchange is \".\"")
-		}
-		if records[nullMXIndex].Preference != 0 {
-			return fmt.Errorf("[%d].preference must be 0 when exchange is \".\"", nullMXIndex)
-		}
-	}
-	return nil
-}
-
-func validateRecordSetCAARecords(records []dnsv1alpha1.CAARecord) error {
-	if len(records) == 0 {
-		return errors.New("is required")
-	}
-	seen := make(map[string]struct{}, len(records))
-	for index, record := range records {
-		if record.Flags < 0 || record.Flags > 255 {
-			return fmt.Errorf("[%d].flags must be in range 0..255", index)
-		}
-		if record.Tag == "" {
-			return fmt.Errorf("[%d].tag is required", index)
-		}
-		if !caaTagPattern.MatchString(record.Tag) {
-			return fmt.Errorf("[%d].tag must be lowercase ASCII alphanumeric", index)
-		}
-		if record.Value == "" {
-			return fmt.Errorf("[%d].value is required", index)
-		}
-		key := fmt.Sprintf("%d\x00%s\x00%s", record.Flags, record.Tag, record.Value)
-		if _, ok := seen[key]; ok {
-			return errors.New("must not contain duplicate flags, tag, and value tuples")
-		}
-		seen[key] = struct{}{}
-	}
-	return nil
-}
-
-func validateRecordSetNSNameServers(nameServers []string) error {
-	if len(nameServers) == 0 {
-		return errors.New("is required")
-	}
-	seen := make(map[string]struct{}, len(nameServers))
-	for index, nameServer := range nameServers {
-		if err := validateNSNameServer(nameServer); err != nil {
-			return fmt.Errorf("[%d] %w", index, err)
-		}
-		if _, ok := seen[nameServer]; ok {
-			return errors.New("must not contain duplicate name servers")
-		}
-		seen[nameServer] = struct{}{}
-	}
-	return nil
-}
-
-func validateNSNameServer(nameServer string) error {
-	if nameServer == "" {
-		return errors.New("must not be empty")
-	}
-	if len(nameServer) > 253 {
-		return errors.New("must be 253 octets or fewer")
-	}
-	if _, err := netip.ParseAddr(nameServer); err == nil {
-		return errors.New("must be a DNS name, not an IP address")
-	}
-	if !mxExchangePattern.MatchString(nameServer) {
-		return errors.New("must be normalized lowercase ASCII without a trailing root dot")
-	}
-	return nil
-}
-
-func validateMXExchange(exchange string) error {
-	if exchange == "" {
-		return errors.New("must not be empty")
-	}
-	if len(exchange) > 253 {
-		return errors.New("must be 253 octets or fewer")
-	}
-	if _, err := netip.ParseAddr(exchange); err == nil {
-		return errors.New("must be a DNS name, not an IP address")
-	}
-	if !mxExchangePattern.MatchString(exchange) {
-		return errors.New("must be normalized lowercase ASCII without a trailing root dot")
-	}
-	return nil
-}
-
-func canonicalRecordSetValues(recordType dnsv1alpha1.RecordType, values []string) ([]string, bool) {
-	switch recordType {
-	case dnsv1alpha1.RecordTypeA, dnsv1alpha1.RecordTypeAAAA:
-		canonical := make([]string, 0, len(values))
-		for _, value := range values {
-			address, err := netip.ParseAddr(value)
-			if err != nil {
-				return nil, false
-			}
-			if recordType == dnsv1alpha1.RecordTypeA && !address.Is4() {
-				return nil, false
-			}
-			if recordType == dnsv1alpha1.RecordTypeAAAA && !address.Is6() {
-				return nil, false
-			}
-			canonical = append(canonical, address.String())
-		}
-		return canonical, true
-	case dnsv1alpha1.RecordTypeTXT:
-		canonical := make([]string, 0, len(values))
-		for _, value := range values {
-			parsed, ok := parseRoute53TXTValue(value)
-			if !ok {
-				return nil, false
-			}
-			canonical = append(canonical, parsed)
-		}
-		return canonical, true
-	case dnsv1alpha1.RecordTypeCNAME:
-		canonical := make([]string, 0, len(values))
-		for _, value := range values {
-			canonical = append(canonical, normalizeRoute53RecordName(value))
-		}
-		return canonical, true
-	case dnsv1alpha1.RecordTypeMX:
-		canonical := make([]string, 0, len(values))
-		for _, value := range values {
-			record, ok := parseRoute53MXValue(value)
-			if !ok {
-				return nil, false
-			}
-			canonical = append(canonical, canonicalMXValue(record))
-		}
-		return canonical, true
-	case dnsv1alpha1.RecordTypeCAA:
-		canonical := make([]string, 0, len(values))
-		for _, value := range values {
-			record, ok := parseRoute53CAAValue(value)
-			if !ok {
-				return nil, false
-			}
-			canonical = append(canonical, canonicalCAAValue(record))
-		}
-		return canonical, true
-	case dnsv1alpha1.RecordTypeNS:
-		canonical := make([]string, 0, len(values))
-		for _, value := range values {
-			nameServer := strings.TrimSuffix(normalizeRoute53RecordName(value), ".")
-			if err := validateNSNameServer(nameServer); err != nil {
-				return nil, false
-			}
-			canonical = append(canonical, nameServer)
-		}
-		return canonical, true
-	default:
-		return slices.Clone(values), true
-	}
-}
-
-func formatRoute53MXValue(record dnsv1alpha1.MXRecord) string {
-	if record.Exchange == "." {
-		return fmt.Sprintf("%d .", record.Preference)
-	}
-	return fmt.Sprintf("%d %s", record.Preference, normalizeRoute53RecordName(record.Exchange))
-}
-
-func canonicalMXValue(record dnsv1alpha1.MXRecord) string {
-	if record.Exchange == "." {
-		return fmt.Sprintf("%d .", record.Preference)
-	}
-	return fmt.Sprintf("%d %s", record.Preference, strings.TrimSuffix(normalizeRoute53RecordName(record.Exchange), "."))
-}
-
-func parseRoute53MXValue(value string) (dnsv1alpha1.MXRecord, bool) {
-	parts := strings.Fields(value)
-	if len(parts) != 2 {
-		return dnsv1alpha1.MXRecord{}, false
-	}
-	preference, err := strconv.ParseInt(parts[0], 10, 32)
-	if err != nil || preference < 0 || preference > 65535 {
-		return dnsv1alpha1.MXRecord{}, false
-	}
-	exchange := parts[1]
-	if exchange == "." {
-		if preference != 0 {
-			return dnsv1alpha1.MXRecord{}, false
-		}
-		return dnsv1alpha1.MXRecord{Preference: int32(preference), Exchange: "."}, true
-	}
-	normalized := strings.TrimSuffix(normalizeRoute53RecordName(exchange), ".")
-	if err := validateMXExchange(normalized); err != nil {
-		return dnsv1alpha1.MXRecord{}, false
-	}
-	return dnsv1alpha1.MXRecord{Preference: int32(preference), Exchange: normalized}, true
-}
-
-func formatRoute53CAAValue(record dnsv1alpha1.CAARecord) string {
-	return fmt.Sprintf("%d %s %s", record.Flags, record.Tag, quoteRoute53TXTChunk(record.Value))
-}
-
-func canonicalCAAValue(record dnsv1alpha1.CAARecord) string {
-	return fmt.Sprintf("%d %s %s", record.Flags, record.Tag, record.Value)
-}
-
-func parseRoute53CAAValue(value string) (dnsv1alpha1.CAARecord, bool) {
-	parts := strings.Fields(value)
-	if len(parts) < 3 {
-		return dnsv1alpha1.CAARecord{}, false
-	}
-	flags, err := strconv.ParseInt(parts[0], 10, 32)
-	if err != nil || flags < 0 || flags > 255 {
-		return dnsv1alpha1.CAARecord{}, false
-	}
-	tag := parts[1]
-	if !caaTagPattern.MatchString(tag) {
-		return dnsv1alpha1.CAARecord{}, false
-	}
-	parsedValue, ok := parseRoute53TXTValue(strings.Join(parts[2:], " "))
-	if !ok || parsedValue == "" {
-		return dnsv1alpha1.CAARecord{}, false
-	}
-	return dnsv1alpha1.CAARecord{Flags: int32(flags), Tag: tag, Value: parsedValue}, true
-}
-
-func quoteRoute53TXTValue(value string) string {
-	if value == "" {
-		return `""`
-	}
-	chunks := make([]string, 0, len(value)/255+1)
-	for len(value) > 0 {
-		chunkLen := route53TXTChunkLen(value, 255)
-		chunks = append(chunks, quoteRoute53TXTChunk(value[:chunkLen]))
-		value = value[chunkLen:]
-	}
-	return strings.Join(chunks, " ")
-}
-
-func route53TXTChunkLen(value string, maxBytes int) int {
-	if len(value) <= maxBytes {
-		return len(value)
-	}
-	last := 0
-	for index := range value {
-		if index > maxBytes {
-			break
-		}
-		last = index
-	}
-	if last == 0 {
-		return maxBytes
-	}
-	return last
-}
-
-func quoteRoute53TXTChunk(chunk string) string {
-	var out strings.Builder
-	out.Grow(len(chunk) + 2)
-	out.WriteByte('"')
-	for _, r := range chunk {
-		if r == '"' || r == '\\' {
-			out.WriteByte('\\')
-		}
-		out.WriteRune(r)
-	}
-	out.WriteByte('"')
-	return out.String()
-}
-
-func parseRoute53TXTValue(value string) (string, bool) {
-	var out strings.Builder
-	for index := 0; index < len(value); {
-		for index < len(value) && (value[index] == ' ' || value[index] == '\t') {
-			index++
-		}
-		if index >= len(value) {
-			break
-		}
-		if value[index] != '"' {
-			return "", false
-		}
-		index++
-		for {
-			if index >= len(value) {
-				return "", false
-			}
-			if value[index] == '"' {
-				index++
-				break
-			}
-			if value[index] == '\\' {
-				if index+3 < len(value) && isDecimalDigit(value[index+1]) && isDecimalDigit(value[index+2]) && isDecimalDigit(value[index+3]) {
-					escaped := int(value[index+1]-'0')*100 + int(value[index+2]-'0')*10 + int(value[index+3]-'0')
-					if escaped > 255 {
-						return "", false
-					}
-					out.WriteByte(byte(escaped))
-					index += 4
-					continue
-				}
-				if index+1 >= len(value) {
-					return "", false
-				}
-				index++
-			}
-			out.WriteByte(value[index])
-			index++
-		}
-	}
-	return out.String(), true
-}
-
-func isDecimalDigit(value byte) bool {
-	return value >= '0' && value <= '9'
-}
-
-func setRecordSetCondition(conditions *[]metav1.Condition, conditionType string, status metav1.ConditionStatus, reason, message string, observedGeneration int64) {
-	meta.SetStatusCondition(conditions, metav1.Condition{
-		Type:               conditionType,
-		Status:             status,
-		Reason:             reason,
-		Message:            message,
-		ObservedGeneration: observedGeneration,
-	})
-}
-
-func route53ChangeCost(change RecordSetChange) int {
-	cost := 1
-	if len(change.RecordSet.Values) > 0 {
-		cost = len(change.RecordSet.Values)
-	}
-	if change.Action == RecordSetChangeActionUpsert {
-		cost *= 2
-	}
-	return cost
-}
-
-func route53BatchOperation(planned []plannedRecordSetChange) string {
-	for _, item := range planned {
-		if item.change.Action == RecordSetChangeActionUpsert {
-			return "UPSERT_BATCH"
-		}
-	}
-	return "DELETE_BATCH"
-}
-
-func affectedRecordSets(planned []plannedRecordSetChange) []route53v1alpha1.Route53AffectedRecordSet {
-	affected := make([]route53v1alpha1.Route53AffectedRecordSet, 0, len(planned))
-	for _, item := range planned {
-		affected = append(affected, route53v1alpha1.Route53AffectedRecordSet{
-			Namespace: item.recordSet.Namespace,
-			Name:      item.recordSet.Name,
-		})
-	}
-	return affected
-}
-
-func affectedRecordSetIncludes(affected []route53v1alpha1.Route53AffectedRecordSet, recordSet *dnsv1alpha1.RecordSet) bool {
-	for _, item := range affected {
-		if item.Namespace == recordSet.Namespace && item.Name == recordSet.Name {
-			return true
-		}
-	}
-	return false
-}
-
-func pendingChangeFromChange(change *route53v1alpha1.Route53Change, operation string) *route53v1alpha1.Route53PendingChange {
-	if change == nil {
-		return nil
-	}
-	return &route53v1alpha1.Route53PendingChange{
-		ID:          change.ID,
-		Status:      change.Status,
-		Operation:   operation,
-		SubmittedAt: change.SubmittedAt,
-	}
-}
-
-func pendingRecordSetChangeFromChange(change *route53v1alpha1.Route53Change, operation string, affected []route53v1alpha1.Route53AffectedRecordSet) *route53v1alpha1.Route53PendingRecordSetChange {
-	if change == nil {
-		return nil
-	}
-	return &route53v1alpha1.Route53PendingRecordSetChange{
-		ID:                 change.ID,
-		Status:             change.Status,
-		Operation:          operation,
-		SubmittedAt:        change.SubmittedAt,
-		AffectedRecordSets: affected,
-	}
-}
-
-func compareString(a, b string) int {
-	switch {
-	case a < b:
-		return -1
-	case a > b:
-		return 1
-	default:
-		return 0
-	}
-}
-
-func (r *ZoneReconciler) resultForProviderError(err error) ctrl.Result {
-	if providerErrorReason(err) == "ProviderUnavailable" {
-		return ctrl.Result{RequeueAfter: r.changeCheckAfter()}
-	}
-	return ctrl.Result{RequeueAfter: r.requeueAfter()}
-}
-
-func providerErrorMessage(err error) string {
-	_, message := providerErrorCondition(err)
-	return message
 }
