@@ -24,11 +24,12 @@ The Gateway controller is a source controller. It reads Gateway API attachment s
 The Gateway controller:
 
 - watches `HTTPRoute`, `Gateway`, and generated `EndpointRecordSet` lifecycle and desired-state changes;
-- waits until all `HTTPRoute.spec.parentRefs` are accepted;
+- requires every `HTTPRoute.spec.parentRefs` entry to have a current `Accepted=True` condition before it creates a new hostname intent;
 - resolves hostnames from the route/listener relationship;
-- reads targets from `Gateway.status.addresses`;
-- creates one `EndpointRecordSet` for each Gateway with the union of hostnames from accepted routes and targets from `Gateway.status.addresses`;
-- updates or deletes generated `EndpointRecordSet` resources when routes or Gateways no longer produce them.
+- reads current targets from `Gateway.status.addresses`;
+- creates one `EndpointRecordSet` for each Gateway with the union of currently admitted route hostnames and Gateway targets;
+- preserves an already admitted hostname and its last targets only during transient status observation loss, using an internal ownership receipt on the managed `EndpointRecordSet`;
+- updates or deletes generated `EndpointRecordSet` resources when routes, listeners, Gateway identity, admission, or hostname ownership no longer produce them.
 
 The Gateway controller does not:
 
@@ -133,7 +134,14 @@ Wildcard intersection chooses the concrete hostname when one side is concrete an
 
 ## Target Resolution
 
-Targets come from `Gateway.status.addresses`.
+Targets normally come from the current `Gateway.status.addresses`.
+
+The controller does not create a new hostname intent without nonempty current
+addresses. A managed intent that was previously admitted may retain its
+last-known nonempty targets while addresses are temporarily absent, but only
+for hostnames whose internal receipt still matches the current route UID and
+generation, Gateway UID and class, and exact parent/listener binding. A
+Gateway deletion or replacement never reuses the former object's targets.
 
 Supported target types:
 
@@ -144,9 +152,41 @@ The Gateway controller preserves target type and value. It does not turn hostnam
 
 ## Parent Acceptance
 
-The initial behavior is conservative: DNS intent is generated only after every `HTTPRoute.spec.parentRefs[]` entry has an `Accepted=True` parent status.
+The controller distinguishes current admission from unavailable observation for
+each parent reference. A current `Accepted=True` condition has
+`observedGeneration` equal to the route generation and is the only state that
+can admit a hostname for a first publication. A current `Accepted=False`
+explicitly withdraws the affected binding. Missing, `Unknown`, and stale
+conditions are observation-unknown rather than denials: they may retain only
+an exact receipt from an earlier admitted reconcile, never authorize a new
+hostname.
 
-This avoids partial DNS publication for a route whose complete Gateway attachment is not settled.
+An explicit current Gateway `Accepted=False` condition, whose
+`observedGeneration` equals the Gateway generation, withdraws every hostname
+for that Gateway. Missing, `Unknown`, and stale Gateway conditions do not
+fabricate this revocation.
+
+A later normal reconcile may create a fresh intent from current route admission
+and current Gateway addresses after that withdrawal. It never carries the former
+Gateway's targets or receipt forward.
+
+
+An older managed `EndpointRecordSet` without a valid receipt fails closed during
+unknown observation. It receives a receipt only from a normal reconcile with
+complete current acceptance and nonempty current targets.
+
+
+The receipt also records the specific listener. Hostname or parent removal,
+listener removal or ownership change, route or Gateway identity replacement,
+and route/Gateway deletion remove the affected hostname immediately. A
+dynamic `allowedRoutes.namespaces.from: Selector` policy cannot be re-proved
+without a namespace read, so unknown observation under that policy is not
+retained. Independent sibling listener bindings are evaluated separately.
+
+The receipt records route namespace and name only so a parent-reference removal,
+change, deletion, or final not-found reconciliation can requeue the previously
+bound Gateway. That discovery only schedules recomputation; it does not grant
+authority or relax UID, generation, Gateway, listener, or hostname matching.
 
 ## Deletion and Recovery
 
