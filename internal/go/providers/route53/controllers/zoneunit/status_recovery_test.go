@@ -387,7 +387,7 @@ func TestRecordSetDeleteConflictDoesNotCompleteDeletion(t *testing.T) {
 	source := route53RecordSetFromZoneUnitItem(unit, item, unit.Status.RecordSets[0])
 	conflictingItem := item
 	conflictingItem.Type = dnsv1alpha1.RecordTypeCNAME
-	if _, planned, err := reconciler.planRecordSetDelete(ctx, &source, newZoneUnitRecordSetOwnership([]dnsv1alpha1.ZoneUnitRecordSetSpec{conflictingItem}), RecordSetResource{}); err != nil {
+	if _, planned, err := reconciler.planRecordSetDelete(ctx, HostedZone{ID: "Z000001"}, &source, newZoneUnitRecordSetOwnership([]dnsv1alpha1.ZoneUnitRecordSetSpec{conflictingItem}), RecordSetResource{}, "www.apps.example.com.", dnsv1alpha1.ZoneUnitRecordSetStatus{}, false); err != nil {
 		t.Fatal(err)
 	} else if planned {
 		t.Fatal("delete was planned despite conflicting owner")
@@ -453,61 +453,60 @@ func TestZoneReconcileBindsRecordSetReceiptAndPendingChangeToCurrentUID(t *testi
 	}
 }
 
+// A receipt bound to a different incarnation never transfers, even when the
+// live record equals desired. The UID-less pre-upgrade case is covered by
+// recordset_ledger_test.go, where evidence may bind it.
 func TestZoneReconcileDoesNotUseNoncurrentRecordSetReceipt(t *testing.T) {
-	for _, priorUID := range []types.UID{"", "11111111-2222-3333-4444-000000000002"} {
-		t.Run(string(priorUID), func(t *testing.T) {
-			ctx := t.Context()
-			recordSet := route53ARecordSet("app", "www")
-			recordSet.UID = types.UID("11111111-2222-3333-4444-000000000001")
-			unit := route53ZoneUnit("app", "apps-example-com", "app", "route53-public")
-			unit.Generation = 1
-			unit.Spec.RecordSets = []dnsv1alpha1.ZoneUnitRecordSetSpec{route53ZoneUnitRecordSetSpec(recordSet)}
-			setRoute53ReadyZoneUnitStatus(t, unit)
-			legacy := route53RecordSetStatusWithState(t, recordSet, "www.apps.example.com.")
-			legacy.RecordSetUID = priorUID
-			unit.Status.RecordSets = []dnsv1alpha1.ZoneUnitRecordSetStatus{legacy}
-			ttl := int64(300)
-			provider := newFakeProvider()
-			provider.zones["Z000001"] = HostedZone{
-				ID:              "Z000001",
-				Name:            "apps.example.com",
-				CallerReference: "dns-api:11111111-2222-3333-4444-555555555555",
-			}
-			provider.records[recordKey("Z000001", "www.apps.example.com.", dnsv1alpha1.RecordTypeA)] = RecordSetResource{
-				HostedZoneID: "Z000001",
-				Name:         "www.apps.example.com.",
-				Type:         dnsv1alpha1.RecordTypeA,
-				TTL:          &ttl,
-				Values:       []string{"192.0.2.10"},
-			}
-			k8sClient := fake.NewClientBuilder().
-				WithScheme(testScheme(t)).
-				WithObjects(route53Provider(), route53ZoneClass("app", "route53-public", nil), acceptedRoute53Identity("app", "route53-dev"), unit).
-				WithStatusSubresource(&dnsv1alpha1.ZoneUnit{}).
-				Build()
-			reconciler := &ZoneReconciler{Client: k8sClient, Provider: provider}
-
-			if _, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(unit)}); err != nil {
-				t.Fatalf("Reconcile returned error: %v", err)
-			}
-			if len(provider.upserted) != 0 || len(provider.deletedRRs) != 0 {
-				t.Fatalf("noncurrent receipt authorized a provider mutation: upserts=%#v deletes=%#v", provider.upserted, provider.deletedRRs)
-			}
-
-			var got dnsv1alpha1.ZoneUnit
-			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(unit), &got); err != nil {
-				t.Fatal(err)
-			}
-			status := zoneUnitRecordSetStatus(t, &got, recordSet.Namespace, recordSet.Name)
-			if status.RecordSetUID != recordSet.UID {
-				t.Fatalf("recordSet status UID = %q, want current %q", status.RecordSetUID, recordSet.UID)
-			}
-			if status.Provider != nil {
-				t.Fatalf("legacy provider receipt was rebound to current claim: %#v", status.Provider)
-			}
-			assertCondition(t, status.Conditions, string(dnsv1alpha1.ConditionProgrammed), metav1.ConditionFalse, "ProviderConflict")
-		})
+	ctx := t.Context()
+	recordSet := route53ARecordSet("app", "www")
+	recordSet.UID = types.UID("11111111-2222-3333-4444-000000000001")
+	unit := route53ZoneUnit("app", "apps-example-com", "app", "route53-public")
+	unit.Generation = 1
+	unit.Spec.RecordSets = []dnsv1alpha1.ZoneUnitRecordSetSpec{route53ZoneUnitRecordSetSpec(recordSet)}
+	setRoute53ReadyZoneUnitStatus(t, unit)
+	legacy := route53RecordSetStatusWithState(t, recordSet, "www.apps.example.com.")
+	legacy.RecordSetUID = types.UID("11111111-2222-3333-4444-000000000002")
+	unit.Status.RecordSets = []dnsv1alpha1.ZoneUnitRecordSetStatus{legacy}
+	ttl := int64(300)
+	provider := newFakeProvider()
+	provider.zones["Z000001"] = HostedZone{
+		ID:              "Z000001",
+		Name:            "apps.example.com",
+		CallerReference: "dns-api:11111111-2222-3333-4444-555555555555",
 	}
+	provider.records[recordKey("Z000001", "www.apps.example.com.", dnsv1alpha1.RecordTypeA)] = RecordSetResource{
+		HostedZoneID: "Z000001",
+		Name:         "www.apps.example.com.",
+		Type:         dnsv1alpha1.RecordTypeA,
+		TTL:          &ttl,
+		Values:       []string{"192.0.2.10"},
+	}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(testScheme(t)).
+		WithObjects(route53Provider(), route53ZoneClass("app", "route53-public", nil), acceptedRoute53Identity("app", "route53-dev"), unit).
+		WithStatusSubresource(&dnsv1alpha1.ZoneUnit{}).
+		Build()
+	reconciler := &ZoneReconciler{Client: k8sClient, Provider: provider}
+
+	if _, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(unit)}); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	if len(provider.upserted) != 0 || len(provider.deletedRRs) != 0 {
+		t.Fatalf("noncurrent receipt authorized a provider mutation: upserts=%#v deletes=%#v", provider.upserted, provider.deletedRRs)
+	}
+
+	var got dnsv1alpha1.ZoneUnit
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(unit), &got); err != nil {
+		t.Fatal(err)
+	}
+	status := zoneUnitRecordSetStatus(t, &got, recordSet.Namespace, recordSet.Name)
+	if status.RecordSetUID != recordSet.UID {
+		t.Fatalf("recordSet status UID = %q, want current %q", status.RecordSetUID, recordSet.UID)
+	}
+	if status.Provider != nil {
+		t.Fatalf("legacy provider receipt was rebound to current claim: %#v", status.Provider)
+	}
+	assertCondition(t, status.Conditions, string(dnsv1alpha1.ConditionProgrammed), metav1.ConditionFalse, "ProviderConflict")
 }
 
 func TestZoneReconcileDoesNotAttestCurrentClaimFromNoncurrentPendingChange(t *testing.T) {

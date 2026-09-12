@@ -28,10 +28,11 @@ type plannedRecordSetChange struct {
 }
 
 func (r *ZoneReconciler) reconcileZoneRecordSets(ctx context.Context, provider Provider, zone *dnsv1alpha1.Zone, zoneClass *dnsv1alpha1.ZoneClass, hostedZone HostedZone) (ctrl.Result, error) {
-	recordSets, err := r.recordSetsForZone(ctx, zone)
-	if err != nil {
-		return ctrl.Result{}, err
+	var unit dnsv1alpha1.ZoneUnit
+	if err := r.Get(ctx, client.ObjectKey{Namespace: zone.Namespace, Name: zone.Name}, &unit); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	recordSets, legacy := zoneUnitRecordSets(&unit)
 	ownership, err := r.zoneUnitOwnershipForZone(ctx, zone)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -49,6 +50,9 @@ func (r *ZoneReconciler) reconcileZoneRecordSets(ctx context.Context, provider P
 		return r.resultForProviderError(err), nil
 	}
 	current := indexRecordSets(currentRecords)
+	if pruned, err := r.pruneOrphanedRecordSetStatuses(ctx, &unit, current); err != nil || pruned {
+		return ctrl.Result{Requeue: pruned}, err
+	}
 
 	var planned []plannedRecordSetChange
 	deferred := false
@@ -56,7 +60,7 @@ func (r *ZoneReconciler) reconcileZoneRecordSets(ctx context.Context, provider P
 	for index := range recordSets {
 		recordSet := &recordSets[index]
 		source := recordSet.DeepCopy()
-		change, ok, err := r.planRecordSet(ctx, zone, zoneClass, hostedZone, recordSet, ownership, current)
+		change, ok, err := r.planRecordSet(ctx, zone, zoneClass, hostedZone, recordSet, ownership, current, legacy)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -208,11 +212,13 @@ func (r *ZoneReconciler) planRecordSet(
 	recordSet *dnsv1alpha1.RecordSet,
 	ownership *zoneUnitRecordSetOwnership,
 	current map[string]RecordSetResource,
+	legacy map[string]dnsv1alpha1.ZoneUnitRecordSetStatus,
 ) (RecordSetChange, bool, error) {
 	identity := recordSetIdentity(recordSet.Spec.Type, canonicalRecordName(recordSet.Spec.Name, zone.Spec.DomainName))
+	receipt, hasReceipt := legacy[recordSetClaimKey(recordSet.Namespace, recordSet.Name)]
 
 	if !recordSet.DeletionTimestamp.IsZero() {
-		return r.planRecordSetDelete(ctx, recordSet, ownership, current[identity.key()])
+		return r.planRecordSetDelete(ctx, hostedZone, recordSet, ownership, current[identity.key()], identity.recordName, receipt, hasReceipt)
 	}
 
 	statusData, err := route53RecordSetStatusData(recordSet)
@@ -264,6 +270,10 @@ func (r *ZoneReconciler) planRecordSet(
 	}
 
 	if exists && !managed {
+		if hasReceipt && legacyReceiptBindsRecordSet(receipt, desired, existing) {
+			r.recordEvent(recordSet, corev1.EventTypeNormal, "Route53RecordSetLegacyOwnershipBound", fmt.Sprintf("pre-upgrade Route 53 ownership receipt was bound to RecordSet %s for type=%s name=%s", recordSet.UID, recordSet.Spec.Type, recordSet.Spec.Name))
+			return RecordSetChange{}, false, r.setRecordSetReady(ctx, recordSet, desired)
+		}
 		return RecordSetChange{}, false, r.setRecordSetProgrammed(ctx, recordSet, metav1.ConditionFalse, "ProviderConflict", "same Route 53 record set already exists")
 	}
 	if exists && route53RecordSetEqual(existing, desired) {
@@ -281,7 +291,7 @@ func (r *ZoneReconciler) planRecordSet(
 	return RecordSetChange{Action: RecordSetChangeActionUpsert, RecordSet: desired}, true, nil
 }
 
-func (r *ZoneReconciler) planRecordSetDelete(ctx context.Context, recordSet *dnsv1alpha1.RecordSet, ownership *zoneUnitRecordSetOwnership, existing RecordSetResource) (RecordSetChange, bool, error) {
+func (r *ZoneReconciler) planRecordSetDelete(ctx context.Context, hostedZone HostedZone, recordSet *dnsv1alpha1.RecordSet, ownership *zoneUnitRecordSetOwnership, existing RecordSetResource, recordName string, receipt dnsv1alpha1.ZoneUnitRecordSetStatus, hasReceipt bool) (RecordSetChange, bool, error) {
 	if !slices.Contains(recordSet.Finalizers, RecordSetFinalizer) {
 		return RecordSetChange{}, false, nil
 	}
@@ -305,9 +315,41 @@ func (r *ZoneReconciler) planRecordSetDelete(ctx context.Context, recordSet *dns
 		return RecordSetChange{}, false, r.setRecordSetProgrammed(ctx, recordSet, metav1.ConditionFalse, "ReconcileError", err.Error())
 	}
 	if !adopting && !providerStatusHasPayload(recordSet.Status.Provider) {
-		return RecordSetChange{}, false, r.setRecordSetProgrammed(ctx, recordSet, metav1.ConditionFalse, "ProviderConflict", "same Route 53 record set exists without current RecordSet ownership")
+		bound := false
+		if hasReceipt {
+			bound, err = r.bindLegacyReceiptForDeletion(ctx, hostedZone, recordSet, existing, recordName, receipt)
+			if err != nil {
+				return RecordSetChange{}, false, err
+			}
+		}
+		if !bound {
+			return RecordSetChange{}, false, r.setRecordSetProgrammed(ctx, recordSet, metav1.ConditionFalse, "ProviderConflict", "same Route 53 record set exists without current RecordSet ownership")
+		}
 	}
 	return RecordSetChange{Action: RecordSetChangeActionDelete, RecordSet: existing}, true, nil
+}
+
+// bindLegacyReceiptForDeletion binds a pre-upgrade receipt to a deleting claim
+// when the retained desired values still match the live record. Deletion is
+// the one mutation a claim's own receipt must keep authorizing after the UID
+// cutover; otherwise every pre-upgrade claim would be stuck in deletion. A
+// minimal cleanup item without values cannot match and stays a conflict.
+func (r *ZoneReconciler) bindLegacyReceiptForDeletion(ctx context.Context, hostedZone HostedZone, recordSet *dnsv1alpha1.RecordSet, existing RecordSetResource, recordName string, receipt dnsv1alpha1.ZoneUnitRecordSetStatus) (bool, error) {
+	options, err := route53RecordSetOptions(recordSet)
+	if err != nil {
+		return false, nil
+	}
+	desired := desiredRoute53RecordSet(recordSet, hostedZone.ID, recordName, options)
+	if !legacyReceiptBindsRecordSet(receipt, desired, existing) {
+		return false, nil
+	}
+	if err := r.patchRoute53RecordSetStatus(ctx, recordSet, func(data *route53v1alpha1.Route53RecordSetStatusData) {
+		setRoute53RecordSetStatusData(data, desired)
+	}); err != nil {
+		return false, err
+	}
+	r.recordEvent(recordSet, corev1.EventTypeNormal, "Route53RecordSetLegacyOwnershipBound", fmt.Sprintf("pre-upgrade Route 53 ownership receipt was bound to deleting RecordSet %s for type=%s name=%s", recordSet.UID, recordSet.Spec.Type, recordSet.Spec.Name))
+	return true, nil
 }
 
 func (r *ZoneReconciler) acceptRecordSetForZone(ctx context.Context, zone *dnsv1alpha1.Zone, zoneClass *dnsv1alpha1.ZoneClass, recordSet *dnsv1alpha1.RecordSet) (bool, error) {
@@ -402,14 +444,11 @@ func (r *ZoneReconciler) refreshPendingRecordSetChange(ctx context.Context, prov
 	return ctrl.Result{}, false, nil
 }
 
-func (r *ZoneReconciler) recordSetsForZone(ctx context.Context, zone *dnsv1alpha1.Zone) ([]dnsv1alpha1.RecordSet, error) {
-	var unit dnsv1alpha1.ZoneUnit
-	if err := r.Get(ctx, client.ObjectKey{Namespace: zone.Namespace, Name: zone.Name}, &unit); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
+// zoneUnitRecordSets synthesizes the RecordSet claims from the ZoneUnit spec
+// and the UID-bound ledger. It also returns the UID-less pre-upgrade receipts,
+// which are deliberately not loaded into RecordSet status: they may only bind
+// through legacyReceiptBindsRecordSet evidence, never as ownership by name.
+func zoneUnitRecordSets(unit *dnsv1alpha1.ZoneUnit) ([]dnsv1alpha1.RecordSet, map[string]dnsv1alpha1.ZoneUnitRecordSetStatus) {
 	statusByClaim := make(map[string]dnsv1alpha1.ZoneUnitRecordSetStatus, len(unit.Status.RecordSets))
 	for _, status := range unit.Status.RecordSets {
 		if status.RecordSetUID != "" {
@@ -425,9 +464,9 @@ func (r *ZoneReconciler) recordSetsForZone(ctx context.Context, zone *dnsv1alpha
 		if !zoneUnitRecordSetStatusMatchesItem(status, item) || (status.DeletionCompleted && !item.DeletionRequested) {
 			status = dnsv1alpha1.ZoneUnitRecordSetStatus{}
 		}
-		recordSets = append(recordSets, route53RecordSetFromZoneUnitItem(&unit, item, status))
+		recordSets = append(recordSets, route53RecordSetFromZoneUnitItem(unit, item, status))
 	}
-	return recordSets, nil
+	return recordSets, legacyRecordSetReceipts(unit)
 }
 
 func route53RecordSetFromZoneUnitItem(unit *dnsv1alpha1.ZoneUnit, item dnsv1alpha1.ZoneUnitRecordSetSpec, status dnsv1alpha1.ZoneUnitRecordSetStatus) dnsv1alpha1.RecordSet {

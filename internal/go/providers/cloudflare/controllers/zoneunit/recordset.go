@@ -73,10 +73,14 @@ type recordSetReconciler struct {
 }
 
 func (r *recordSetReconciler) reconcileZoneUnitRecordSets(ctx context.Context, unit *dnsv1alpha1.ZoneUnit) (ctrl.Result, error) {
+	if pruned, err := r.pruneOrphanedRecordSetStatuses(ctx, unit); err != nil || pruned {
+		return ctrl.Result{Requeue: pruned}, err
+	}
 	statusByRef := map[string]dnsv1alpha1.ZoneUnitRecordSetStatus{}
 	for _, status := range unit.Status.RecordSets {
 		statusByRef[cloudflareRecordSetClaimKey(status.RecordSetNamespace, status.RecordSetName)] = status
 	}
+	legacy := legacyRecordSetReceipts(unit)
 
 	var aggregate ctrl.Result
 	for _, item := range unit.Spec.RecordSets {
@@ -87,9 +91,13 @@ func (r *recordSetReconciler) reconcileZoneUnitRecordSets(ctx context.Context, u
 			aggregate = mergeCloudflareRecordSetResult(aggregate, ctrl.Result{RequeueAfter: r.requeueAfter()})
 			continue
 		}
-		recordSet := cloudflareRecordSetFromZoneUnitItem(unit, item, statusByRef[cloudflareRecordSetClaimKey(item.RecordSetNamespace, item.RecordSetName)])
+		claimKey := cloudflareRecordSetClaimKey(item.RecordSetNamespace, item.RecordSetName)
+		recordSet := cloudflareRecordSetFromZoneUnitItem(unit, item, statusByRef[claimKey])
 		ctxData, accepted, err := r.acceptRecordSetFromZoneUnit(ctx, &recordSet, unit)
 		ctxData.RecordSetSource = item.DeepCopy()
+		if receipt, ok := legacy[claimKey]; ok {
+			ctxData.LegacyReceipt = &receipt
+		}
 		if err != nil || !accepted {
 			return aggregate, err
 		}
@@ -130,8 +138,11 @@ type cloudflareRecordSetContext struct {
 	Version         *dnsv1alpha1.ProviderVersion
 	ZoneUnit        *dnsv1alpha1.ZoneUnit
 	RecordSetSource *dnsv1alpha1.ZoneUnitRecordSetSpec
-	ZoneID          string
-	FullName        string
+	// LegacyReceipt is the UID-less pre-upgrade ledger entry for this claim,
+	// if any. It is never loaded into RecordSet status; see legacyReceiptRecords.
+	LegacyReceipt *dnsv1alpha1.ZoneUnitRecordSetStatus
+	ZoneID        string
+	FullName      string
 }
 
 func cloudflareRecordSetFromZoneUnitItem(unit *dnsv1alpha1.ZoneUnit, item dnsv1alpha1.ZoneUnitRecordSetSpec, status dnsv1alpha1.ZoneUnitRecordSetStatus) dnsv1alpha1.RecordSet {
@@ -369,6 +380,12 @@ func (r *recordSetReconciler) reconcileNormal(ctx context.Context, provider Reco
 	managedIDs := cloudflareStatusRecordIDs(recordSet)
 	if len(managedIDs) == 0 {
 		if len(sameType) > 0 {
+			if ctxData.LegacyReceipt != nil {
+				if bound, ok := legacyReceiptRecords(*ctxData.LegacyReceipt, recordSet, ctxData.FullName, current); ok {
+					r.recordEvent(recordSet, corev1.EventTypeNormal, "CloudflareRecordSetLegacyOwnershipBound", fmt.Sprintf("pre-upgrade Cloudflare ownership receipt was bound to RecordSet %s", recordSet.UID))
+					return ctrl.Result{}, r.setReady(ctx, recordSet, bound)
+				}
+			}
 			return ctrl.Result{}, r.setProgrammed(ctx, recordSet, metav1.ConditionFalse, "ProviderConflict", "same Cloudflare DNS records already exist")
 		}
 		return r.applyCloudflareRecordSetDiff(ctx, provider, recordSet, ctxData, nil, desired)
@@ -444,10 +461,22 @@ func (r *recordSetReconciler) reconcileDeleteWithContext(ctx context.Context, re
 		if err != nil {
 			return r.failProgrammedForProviderError(ctx, recordSet, err)
 		}
-		if len(observed) > 0 {
+		if len(observed) == 0 {
+			return ctrl.Result{}, r.removeFinalizer(ctx, recordSet)
+		}
+		bound, err := r.bindLegacyReceiptForDeletion(ctx, recordSet, ctxData, observed)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !bound {
 			return ctrl.Result{}, r.setProgrammed(ctx, recordSet, metav1.ConditionFalse, "ProviderOwnershipNotEstablished", "Cloudflare DNS records exist but are not owned by the current RecordSet UID")
 		}
-		return ctrl.Result{}, r.removeFinalizer(ctx, recordSet)
+		// patchStatus rebased recordSet.Status onto the bound ledger entry.
+		statusData, err = cloudflareRecordSetStatusData(recordSet)
+		if err != nil {
+			return ctrl.Result{}, r.setProgrammed(ctx, recordSet, metav1.ConditionFalse, "ReconcileError", err.Error())
+		}
+		ids = cloudflareRecordStatusIDs(statusData.Records)
 	}
 	var deletes []CloudflareDNSRecord
 	for _, id := range ids {

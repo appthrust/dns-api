@@ -729,7 +729,7 @@ If multiple `RecordSet` claims target the same record identity, core keeps the e
 - `recordSets`: provider result for accepted owner `RecordSet` claims.
 - `recordSets[].recordSetNamespace`: owner `RecordSet` namespace matching `spec.recordSets[]`.
 - `recordSets[].recordSetName`: owner `RecordSet` name matching `spec.recordSets[]`.
-- `recordSets[].recordSetUID`: exact nonempty UID of the observed spec item. Missing or different UIDs do not establish ownership or authorize claim finalization.
+- `recordSets[].recordSetUID`: exact nonempty UID of the observed spec item. A different UID never establishes ownership or authorizes claim finalization; a missing UID is a pre-upgrade receipt that binds only through the live evidence described under **UID cutover and legacy state**.
 - `recordSets[].observedGeneration`: owner `RecordSet` generation observed in `ZoneUnit.spec`.
 - `recordSets[].conditions`: provider acceptance and programming result for that `RecordSet` claim.
 - `recordSets[].provider.data`: public provider data to project to `RecordSet.status.provider.data`.
@@ -746,11 +746,15 @@ Route 53 pending affected-record entries include the claim UID. A legacy or pred
 
 **UID cutover and legacy state.**
 
-The UID fields are optional on the wire so existing ledgers remain readable. Explicit empty strings are invalid in the CRD; omitted or mismatched UIDs still fail closed in controllers. There is no namespace/name/generation fallback and no automatic relabeling of old provider state.
+The UID fields are optional on the wire so existing ledgers remain readable. Explicit empty strings are invalid in the CRD; a mismatched UID always fails closed in controllers. There is no namespace/name/generation fallback and no relabeling of old provider state by name alone.
 
-This is not a transparent in-place upgrade for existing UID-less ownership receipts. Apply the updated CRDs before adopting the corresponding controllers; Helm does not update existing CRDs from a chart's `crds/` directory during a normal upgrade. Qualify the coordinated controller/schema cutover and recovery of existing claims separately.
+A `status.recordSets[]` entry without `recordSetUID` is a pre-upgrade receipt: the provider's own record that it programmed the record for that claim name, without proof of which incarnation. Providers bind such a receipt to the current claim incarnation only from live evidence, in place and without a provider write: the receipt must name exactly the record identity the claim desires (Route 53 hosted zone, record name and type; Cloudflare record IDs covering every same-type record at that name) and the live record must already equal the claim's desired state. The binding then only records which incarnation owns the record; a live record that differs from desired stays `ProviderConflict`, because a pre-upgrade receipt cannot distinguish an ordinary desired-value update from a recreated claim inheriting a stranger's record. The same evidence authorizes deletion for a deleting claim whose retained desired values still match the live record; a minimal cleanup item without values cannot match. A receipt marked `deletionCompleted` never binds. Providers emit a `*LegacyOwnershipBound` event when a receipt is bound.
 
-Already-present external records with unbound ownership remain conflicts. Recovery uses separately authorized, provider-validated explicit `RecordSet.spec.adoption`, or a fresh provider observation establishing absence before normal creation or cleanup. Desired-value equality alone does not adopt a foreign Cloudflare record ID. Do not patch UIDs, provider status, or finalizers to manufacture ownership, and do not enable zone-wide adoption as an automatic fallback. The source correction neither restores already-lost live authority nor authorizes release or deployment.
+Apply the updated CRDs before adopting the corresponding controllers; Helm does not update existing CRDs from a chart's `crds/` directory during a normal upgrade, so the CRD delivery owner must apply them with the controller image (Argo CD renders `crds/` and upgrades them unless `skipCrds` is set). Until the CRD carries `recordSetUID`, the field is pruned from `ZoneUnit.spec` and every provider status write fails with a source-changed conflict.
+
+Providers also prune orphaned ledger entries whose claim namespace/name has no `spec.recordSets[]` item once the entry can no longer matter: `deletionCompleted` is set, or (Route 53) the record it names is absent from the hosted zone, or (Cloudflare) it records no IDs. An orphan that still names a live record is kept deliberately: core may drop a spec item transiently (a rejected claim whose generation changed) and re-add it later, and the retained entry is the only evidence of a leaked record. Cloudflare does not confirm absence per ID, so ID-bearing orphans stay until an operator removes the records.
+
+Already-present external records with unbound ownership and no matching receipt remain conflicts. Recovery uses separately authorized, provider-validated explicit `RecordSet.spec.adoption`, or a fresh provider observation establishing absence before normal creation or cleanup. Desired-value equality alone does not adopt a foreign Cloudflare record ID. Do not patch UIDs, provider status, or finalizers to manufacture ownership, and do not enable zone-wide adoption as an automatic fallback. The source correction neither restores already-lost live authority nor authorizes release or deployment.
 
 Provider-specific status follows a public-data boundary:
 

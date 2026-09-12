@@ -400,16 +400,20 @@ func route53RecordSetManagedResourceMismatch(recordSet *dnsv1alpha1.RecordSet, s
 }
 
 func route53RecordSetStatusData(recordSet *dnsv1alpha1.RecordSet) (route53v1alpha1.Route53RecordSetStatusData, error) {
-	if recordSet.Status.Provider != nil && len(recordSet.Status.Provider.State.Raw) > 0 {
+	return route53RecordSetStatusDataFromProvider(recordSet.Status.Provider)
+}
+
+func route53RecordSetStatusDataFromProvider(provider *dnsv1alpha1.ProviderStatus) (route53v1alpha1.Route53RecordSetStatusData, error) {
+	if provider != nil && len(provider.State.Raw) > 0 {
 		var data route53v1alpha1.Route53RecordSetStatusData
-		if err := json.Unmarshal(recordSet.Status.Provider.State.Raw, &data); err != nil {
+		if err := json.Unmarshal(provider.State.Raw, &data); err != nil {
 			return route53v1alpha1.Route53RecordSetStatusData{}, fmt.Errorf("RecordSet status.provider.state must match Route 53 schema: %w", err)
 		}
 		return data, nil
 	}
-	if recordSet.Status.Provider != nil && len(recordSet.Status.Provider.Data.Raw) > 0 {
+	if provider != nil && len(provider.Data.Raw) > 0 {
 		var data route53v1alpha1.Route53RecordSetStatusData
-		if err := json.Unmarshal(recordSet.Status.Provider.Data.Raw, &data); err != nil {
+		if err := json.Unmarshal(provider.Data.Raw, &data); err != nil {
 			return route53v1alpha1.Route53RecordSetStatusData{}, fmt.Errorf("RecordSet status.provider.data must match Route 53 schema: %w", err)
 		}
 		return data, nil
