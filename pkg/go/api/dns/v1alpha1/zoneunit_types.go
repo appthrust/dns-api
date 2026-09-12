@@ -189,8 +189,10 @@ type ZoneUnitRecordSetStatus struct {
 	RecordSetName string `json:"recordSetName"`
 
 	// RecordSetUID identifies the claim incarnation observed by the provider.
-	// Empty or mismatched UIDs cannot authorize cleanup or transfer provider
-	// ownership to a recreated claim, even when name and generation match.
+	// A mismatched UID cannot authorize cleanup or transfer provider ownership
+	// to a recreated claim, even when name and generation match. An empty UID
+	// is a pre-upgrade receipt: it binds to the current claim only when the
+	// provider observes the live record equal to the claim's desired state.
 	// +optional
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:MinLength=1

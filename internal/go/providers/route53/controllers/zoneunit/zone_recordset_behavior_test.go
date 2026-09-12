@@ -583,10 +583,6 @@ func TestZoneReconcilerDeletesRecordSetFromSpecIdentity(t *testing.T) {
 	if _, err := reconcileRoute53AndProject(t, ctx, k8sClient, reconciler, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "app", Name: "apps-example-com"}}); err != nil {
 		t.Fatalf("second Reconcile returned error: %v", err)
 	}
-	if _, err := reconcileRoute53AndProject(t, ctx, k8sClient, reconciler, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "app", Name: "apps-example-com"}}); err != nil {
-		t.Fatalf("third Reconcile returned error: %v", err)
-	}
-
 	var unit dnsv1alpha1.ZoneUnit
 	if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: "app", Name: "apps-example-com"}, &unit); err != nil {
 		t.Fatalf("ZoneUnit was not found: %v", err)
@@ -599,9 +595,23 @@ func TestZoneReconcilerDeletesRecordSetFromSpecIdentity(t *testing.T) {
 		unit.Status.RecordSets[statusIndex].RecordSetUID != recordSet.UID {
 		t.Fatalf("ZoneUnit recordSet deletion completion = %#v, want current UID completed", unit.Status.RecordSets)
 	}
+	if len(unit.Spec.RecordSets) != 0 {
+		t.Fatalf("core retained spec item after completed deletion: %#v", unit.Spec.RecordSets)
+	}
+
+	// Once core consumed the completion and dropped the spec item, the ledger
+	// entry is orphaned and the provider prunes it.
+	if _, err := reconcileRoute53AndProject(t, ctx, k8sClient, reconciler, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "app", Name: "apps-example-com"}}); err != nil {
+		t.Fatalf("third Reconcile returned error: %v", err)
+	}
+	if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: "app", Name: "apps-example-com"}, &unit); err != nil {
+		t.Fatalf("ZoneUnit was not found: %v", err)
+	}
+	if len(unit.Status.RecordSets) != 0 {
+		t.Fatalf("orphaned ledger entry was not pruned: %#v", unit.Status.RecordSets)
+	}
 }
 func TestZoneReconcilerIgnoresCompletedDeletionStatusForActiveZoneUnitItem(t *testing.T) {
-	ctx := context.Background()
 	recordSet := route53ARecordSet("app", "www-a")
 	unit := route53ZoneUnit("app", "apps-example-com", "app", "route53-public")
 	unit.Spec.RecordSets = []dnsv1alpha1.ZoneUnitRecordSetSpec{route53ZoneUnitRecordSetSpec(recordSet)}
@@ -621,16 +631,7 @@ func TestZoneReconcilerIgnoresCompletedDeletionStatusForActiveZoneUnitItem(t *te
 			},
 		},
 	}
-	k8sClient := fake.NewClientBuilder().
-		WithScheme(testScheme(t)).
-		WithObjects(unit).
-		Build()
-	reconciler := &ZoneReconciler{Client: k8sClient}
-
-	recordSets, err := reconciler.recordSetsForZone(ctx, route53ReadyZone(t, "app", "apps-example-com"))
-	if err != nil {
-		t.Fatalf("recordSetsForZone returned error: %v", err)
-	}
+	recordSets, _ := zoneUnitRecordSets(unit)
 	if len(recordSets) != 1 {
 		t.Fatalf("recordSets = %#v, want one record set", recordSets)
 	}
