@@ -278,10 +278,13 @@ func (r *Reconciler) endpointRecordSetsForGateway(ctx context.Context, gateway *
 						continue
 					}
 					hostnames[hostname] = struct{}{}
-					if len(targets) != 0 {
-						if current, ok := newAdmissionReceiptBinding(route, gateway, binding); ok {
-							addReceiptHostname(receiptBindings, current, hostname)
-						}
+					if current, ok := newAdmissionReceiptBinding(route, gateway, binding); ok &&
+						(len(targets) != 0 || hasReceipt) {
+						// Rebind an existing receipt after a route replacement
+						// even while the Gateway has temporarily lost its
+						// addresses. A new route without a receipt still may
+						// not mint ownership during that window.
+						addReceiptHostname(receiptBindings, current, hostname)
 					} else if hasReceipt {
 						addReceiptHostname(receiptBindings, match, hostname)
 					}

@@ -2,11 +2,13 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	endpointv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/endpoint/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -30,6 +32,102 @@ func TestGatewayEndpointRecordSetRetainsAdmittedSiblingDuringUnknownAndAddressLo
 	setGatewayAddresses(t, r, gatewayKey, []gatewayv1.GatewayStatusAddress{{Value: "192.0.2.2"}})
 	reconcileRetentionRoute(t, r, haKey)
 	assertRetentionRecord(t, r, recordKey, []string{"ha.example.com"}, "192.0.2.2")
+}
+
+func TestGatewayEndpointRecordSetRetainsReceiptAcrossObservedTransientStates(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T, r *Reconciler, routeKey, gatewayKey client.ObjectKey)
+	}{
+		{
+			name: "unknown gateway acceptance with empty addresses",
+			run: func(t *testing.T, r *Reconciler, routeKey, gatewayKey client.ObjectKey) {
+				setGatewayAcceptance(t, r, gatewayKey, metav1.ConditionUnknown)
+				setGatewayAddresses(t, r, gatewayKey, nil)
+				reconcileRetentionRoute(t, r, routeKey)
+			},
+		},
+		{
+			name: "missing route parent status",
+			run: func(t *testing.T, r *Reconciler, routeKey, gatewayKey client.ObjectKey) {
+				setGatewayAddresses(t, r, gatewayKey, nil)
+				var route gatewayv1.HTTPRoute
+				if err := r.Get(context.Background(), routeKey, &route); err != nil {
+					t.Fatal(err)
+				}
+				route.Status.Parents = nil
+				if err := r.Status().Update(context.Background(), &route); err != nil {
+					t.Fatal(err)
+				}
+				reconcileRetentionRoute(t, r, routeKey)
+			},
+		},
+		{
+			name: "route generation advanced before its status is current",
+			run: func(t *testing.T, r *Reconciler, routeKey, gatewayKey client.ObjectKey) {
+				setGatewayAddresses(t, r, gatewayKey, nil)
+				var route gatewayv1.HTTPRoute
+				if err := r.Get(context.Background(), routeKey, &route); err != nil {
+					t.Fatal(err)
+				}
+				// A spec change bumps the generation; the fake client does not
+				// re-evaluate status, so the parent conditions now carry a stale
+				// observedGeneration exactly as a leaf lagging its hub does.
+				route.Spec.Rules = append(route.Spec.Rules, gatewayv1.HTTPRouteRule{})
+				route.Generation++
+				if err := r.Update(context.Background(), &route); err != nil {
+					t.Fatal(err)
+				}
+				reconcileRetentionRoute(t, r, routeKey)
+			},
+		},
+		{
+			name: "route replacement with new UID",
+			run: func(t *testing.T, r *Reconciler, routeKey, gatewayKey client.ObjectKey) {
+				setGatewayAddresses(t, r, gatewayKey, nil)
+				var oldRoute gatewayv1.HTTPRoute
+				if err := r.Get(context.Background(), routeKey, &oldRoute); err != nil {
+					t.Fatal(err)
+				}
+				oldRoute.Finalizers = nil
+				if err := r.Update(context.Background(), &oldRoute); err != nil {
+					t.Fatal(err)
+				}
+				if err := r.Delete(context.Background(), &oldRoute); err != nil {
+					t.Fatal(err)
+				}
+				replacement := retentionRoute(
+					oldRoute.Namespace,
+					oldRoute.Name,
+					"replacement-route",
+					"ha.example.com",
+					metav1.ConditionTrue,
+				)
+				if err := r.Create(context.Background(), replacement); err != nil {
+					t.Fatal(err)
+				}
+				reconcileRetentionRoute(t, r, routeKey)
+				var record endpointv1alpha1.EndpointRecordSet
+				if err := r.Get(context.Background(), client.ObjectKey{
+					Namespace: "dns-system",
+					Name:      generatedGatewayEndpointRecordSetName("platform", "public"),
+				}, &record); err != nil {
+					t.Fatal(err)
+				}
+				receipt := existingAdmissionReceipt(&record)
+				if len(receipt.Bindings) != 1 || receipt.Bindings[0].RouteUID != "replacement-route" {
+					t.Fatalf("receipt was not rebound to replacement route: %#v", receipt.Bindings)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			r, _, routeKey, gatewayKey, recordKey := retentionFixture(t, false)
+			test.run(t, r, routeKey, gatewayKey)
+			assertRetentionRecord(t, r, recordKey, []string{"ha.example.com"}, "192.0.2.1")
+		})
+	}
 }
 
 func TestGatewayEndpointRecordSetRevokesExplicitFalseAndForeignGateway(t *testing.T) {
@@ -77,11 +175,13 @@ func TestGatewayEndpointRecordSetRevokesExplicitFalseAndForeignGateway(t *testin
 		reconcileRetentionRoute(t, r, haKey)
 
 		var record endpointv1alpha1.EndpointRecordSet
-		if err := r.Get(ctx, recordKey, &record); !apierrors.IsNotFound(err) {
-			t.Fatalf("replacement Gateway inherited old targets: %v", err)
+		if err := r.Get(ctx, recordKey, &record); err != nil {
+			t.Fatalf("replacement Gateway lost DNS intent: %v", err)
 		}
-		reconcileRetentionRoute(t, r, haKey)
-		assertRetentionRecord(t, r, recordKey, []string{"ha.example.com"}, "192.0.2.2")
+		if record.Spec.Hostnames[0] != "ha.example.com" ||
+			len(record.Spec.Targets) != 1 || record.Spec.Targets[0].Value != "192.0.2.2" {
+			t.Fatalf("replacement Gateway did not publish current DNS intent: %#v", record.Spec)
+		}
 	})
 	t.Run("changed listener ownership", func(t *testing.T) {
 		ctx := context.Background()
@@ -128,7 +228,42 @@ func TestGatewayEndpointRecordSetDoesNotPublishUnreceiptedHostnameDuringAddressL
 
 	setRouteAcceptance(t, r, haKey, metav1.ConditionTrue)
 	setGatewayAddresses(t, r, gatewayKey, []gatewayv1.GatewayStatusAddress{{Value: "192.0.2.2"}})
+
 	reconcileRetentionRoute(t, r, haKey)
+	assertRetentionRecord(t, r, recordKey, []string{"ha.example.com"}, "192.0.2.2")
+}
+
+type conflictOnceClient struct {
+	client.Client
+	fail bool
+}
+
+func (c *conflictOnceClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	if c.fail {
+		if _, ok := obj.(*endpointv1alpha1.EndpointRecordSet); ok {
+			c.fail = false
+			return apierrors.NewConflict(
+				schema.GroupResource{Group: "endpoint.dns.appthrust.io", Resource: "endpointrecordsets"},
+				obj.GetName(),
+				errors.New("simulated concurrent update"),
+			)
+		}
+	}
+	return c.Client.Update(ctx, obj, opts...)
+}
+
+func TestGatewayEndpointRecordSetRetainsReceiptAfterUpdateConflictRetry(t *testing.T) {
+	r, _, routeKey, gatewayKey, recordKey := retentionFixture(t, false)
+	conflicting := &conflictOnceClient{Client: r.Client, fail: true}
+	r.Client = conflicting
+	setGatewayAcceptance(t, r, gatewayKey, metav1.ConditionUnknown)
+	setGatewayAddresses(t, r, gatewayKey, []gatewayv1.GatewayStatusAddress{{Value: "192.0.2.2"}})
+
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: routeKey}); err == nil ||
+		!apierrors.IsConflict(err) {
+		t.Fatalf("first reconcile error = %v, want conflict", err)
+	}
+	reconcileRetentionRoute(t, r, routeKey)
 	assertRetentionRecord(t, r, recordKey, []string{"ha.example.com"}, "192.0.2.2")
 }
 

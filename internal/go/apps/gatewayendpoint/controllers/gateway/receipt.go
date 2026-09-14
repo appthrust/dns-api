@@ -97,11 +97,10 @@ func (receipt admissionReceipt) matchingBinding(route *gatewayv1.HTTPRoute, gate
 		return admissionReceiptBinding{}, false
 	}
 	parentRef := parentRefKey(route.Namespace, binding.ref)
+	var fallback admissionReceiptBinding
 	for _, candidate := range receipt.Bindings {
 		if candidate.RouteNamespace != route.Namespace ||
 			candidate.RouteName != route.Name ||
-			candidate.RouteUID != string(route.UID) ||
-			candidate.RouteGeneration != route.Generation ||
 			candidate.GatewayUID != string(gateway.UID) ||
 			candidate.GatewayClass != string(gateway.Spec.GatewayClassName) ||
 			candidate.ParentRef != parentRef ||
@@ -110,7 +109,30 @@ func (receipt admissionReceipt) matchingBinding(route *gatewayv1.HTTPRoute, gate
 			!receiptHasHostname(candidate, hostname) {
 			continue
 		}
-		return candidate, true
+		if candidate.RouteUID == string(route.UID) {
+			if candidate.RouteGeneration == route.Generation {
+				return candidate, true
+			}
+			// The same route object advanced its generation; its status
+			// may not be current yet. The receipt still proves ownership of
+			// this hostname, so a pending observation retains it.
+			if fallback.RouteUID == "" || candidate.RouteGeneration > fallback.RouteGeneration {
+				fallback = candidate
+			}
+			continue
+		}
+		if !allRouteParentRefsAccepted(route) {
+			continue
+		}
+		// A route replacement keeps the same namespaced name but receives a
+		// new UID. Only a currently accepted replacement may inherit the
+		// receipt; the caller rebinds it to the current route.
+		if fallback.RouteUID == "" || candidate.RouteGeneration > fallback.RouteGeneration {
+			fallback = candidate
+		}
+	}
+	if fallback.RouteUID != "" {
+		return fallback, true
 	}
 	return admissionReceiptBinding{}, false
 }
@@ -132,8 +154,13 @@ func (receipt admissionReceipt) conflictsCurrentBinding(route *gatewayv1.HTTPRou
 			!receiptHasHostname(candidate, hostname) {
 			continue
 		}
-		if candidate.GatewayUID == string(gateway.UID) &&
-			candidate.GatewayClass == string(gateway.Spec.GatewayClassName) &&
+		if candidate.GatewayUID != string(gateway.UID) {
+			// A replacement Gateway is a new authority. Do not carry the old
+			// receipt into it, but let the current accepted binding publish
+			// its own receipt in this pass.
+			continue
+		}
+		if candidate.GatewayClass == string(gateway.Spec.GatewayClassName) &&
 			candidate.ListenerDigest == listenerDigest {
 			return false
 		}
