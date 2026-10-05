@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/uuid"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
@@ -228,6 +229,14 @@ func (r *Reconciler) recordSetsForHostname(ctx context.Context, endpointRecordSe
 		rejectionMessage := ""
 		for _, fragment := range fragments {
 			recordSet := r.recordSetFromFragment(ctx, endpointRecordSet, recordSetNamespace, &zone, fragment)
+			if problems := validation.IsDNS1123Subdomain(recordSet.Name); len(problems) != 0 {
+				meta.SetStatusCondition(&status.Conditions, metav1.Condition{
+					Type: "Resolved", Status: metav1.ConditionFalse, ObservedGeneration: endpointRecordSet.Generation,
+					Reason:  "InvalidRecordSetName",
+					Message: fmt.Sprintf("Generated RecordSet %s/%s has an invalid metadata.name: %s", recordSet.Namespace, recordSet.Name, strings.Join(problems, "; ")),
+				})
+				return status, nil, nil
+			}
 			ok, message := declaration.RecordSetAllowedByZone(ctx, r.Client, &recordSet, &zone)
 			if !ok {
 				allowed = false
@@ -443,7 +452,10 @@ func generatedRecordSetName(endpointRecordSetNamespace, endpointRecordSetName, z
 	hashInput := endpointRecordSetNamespace + "/" + endpointRecordSetName + "/" + zoneNamespace + "/" + zoneName + "/" + recordName
 	sum := sha256.Sum256([]byte(hashInput))
 	hash := hex.EncodeToString(sum[:])[:10]
-	cleanRecordName := strings.NewReplacer(".", "-", "*", "wildcard").Replace(recordName)
+	cleanRecordName := "apex"
+	if recordName != "@" {
+		cleanRecordName = strings.NewReplacer(".", "-", "*", "wildcard").Replace(recordName)
+	}
 	candidate := fmt.Sprintf("%s-%s-%s-%s", endpointRecordSetName, cleanRecordName, strings.ToLower(string(recordType)), hash)
 	if len(candidate) <= 63 {
 		return candidate
