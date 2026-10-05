@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 
 	dnsv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/dns/v1alpha1"
@@ -11,12 +12,16 @@ import (
 	route53v1alpha1 "github.com/appthrust/dns-api/pkg/go/api/route53/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func TestPreferredRecordTypeForEndpointRecordSet(t *testing.T) {
@@ -366,5 +371,131 @@ func TestRecordSetFromFragmentDoesNotAddRoute53AdoptionByDefault(t *testing.T) {
 
 	if len(recordSet.Spec.Adoption.Raw) != 0 {
 		t.Fatalf("adoption = %s, want empty", string(recordSet.Spec.Adoption.Raw))
+	}
+}
+
+func TestGeneratedRecordSetName(t *testing.T) {
+	tests := []struct {
+		name       string
+		owner      string
+		recordName string
+		recordType endpointv1alpha1.EndpointRecordSetType
+		want       string
+	}{
+		{name: "label", owner: "public", recordName: "www", recordType: endpointv1alpha1.EndpointRecordSetTypeA, want: "public-www-a-4c284ea940"},
+		{name: "nested", owner: "public", recordName: "api.internal", recordType: endpointv1alpha1.EndpointRecordSetTypeAAAA, want: "public-api-internal-aaaa-3903e6c58c"},
+		{name: "wildcard", owner: "public", recordName: "*", recordType: endpointv1alpha1.EndpointRecordSetTypeA, want: "public-wildcard-a-379c4b55a2"},
+		{name: "nested wildcard", owner: "public", recordName: "*.apps", recordType: endpointv1alpha1.EndpointRecordSetTypeAAAA, want: "public-wildcard-apps-aaaa-bab63404ff"},
+		{name: "cname", owner: "public", recordName: "www", recordType: endpointv1alpha1.EndpointRecordSetTypeCNAME, want: "public-www-cname-4c284ea940"},
+		{name: "truncated", owner: strings.Repeat("p", 60), recordName: "www", recordType: endpointv1alpha1.EndpointRecordSetTypeAAAA, want: "ppppppppppppppppppppppppppppppppppppppppppppppp-aaaa-e79d9d74a0"},
+		{name: "literal apex label", owner: "public", recordName: "apex", recordType: endpointv1alpha1.EndpointRecordSetTypeA, want: "public-apex-a-d3c414a2da"},
+		{name: "apex A", owner: "public", recordName: "@", recordType: endpointv1alpha1.EndpointRecordSetTypeA, want: "public-apex-a-2d5c4cca15"},
+		{name: "apex AAAA", owner: "public", recordName: "@", recordType: endpointv1alpha1.EndpointRecordSetTypeAAAA, want: "public-apex-aaaa-2d5c4cca15"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := generatedRecordSetName("gateway-system", tt.owner, "dns-system", "example-com", tt.recordName, tt.recordType)
+			if got != tt.want {
+				t.Errorf("generated name = %q, want %q", got, tt.want)
+			}
+			if problems := validation.IsDNS1123Subdomain(got); len(problems) != 0 {
+				t.Errorf("generated name %q is invalid: %v", got, problems)
+			}
+			if len(got) > 63 {
+				t.Errorf("generated name length = %d, want at most 63", len(got))
+			}
+		})
+	}
+}
+
+func TestReconcileIsolatesInvalidRecordSetName(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := endpointv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add endpoint scheme: %v", err)
+	}
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add dns scheme: %v", err)
+	}
+	endpointRecordSet := &endpointv1alpha1.EndpointRecordSet{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "dns-system", Name: "public", Generation: 7, Finalizers: []string{generatedRecordSetsFinalizer}},
+		Spec: endpointv1alpha1.EndpointRecordSetSpec{
+			Hostnames: []string{"_invalid.example.com", "www.example.com"},
+			Targets:   []endpointv1alpha1.EndpointTarget{{Type: endpointv1alpha1.EndpointTargetTypeIPAddress, Value: "192.0.2.1"}},
+		},
+	}
+	zone := &dnsv1alpha1.Zone{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "dns-system", Name: "example-com"},
+		Spec:       dnsv1alpha1.ZoneSpec{DomainName: "example.com", Provider: route53v1alpha1.ProviderRef},
+	}
+	capability := &endpointv1alpha1.EndpointProviderCapability{
+		ObjectMeta: metav1.ObjectMeta{Name: "route53-v1alpha1"},
+		Spec:       endpointv1alpha1.EndpointProviderCapabilitySpec{Provider: route53v1alpha1.ProviderRef},
+	}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&endpointv1alpha1.EndpointRecordSet{}, &dnsv1alpha1.RecordSet{}).
+		WithObjects(endpointRecordSet, zone, capability).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
+				// The fake client does not enforce Kubernetes object-name admission.
+				if _, ok := object.(*dnsv1alpha1.RecordSet); ok {
+					if problems := validation.IsDNS1123Subdomain(object.GetName()); len(problems) != 0 {
+						return apierrors.NewInvalid(dnsv1alpha1.Kind("RecordSet"), object.GetName(), field.ErrorList{
+							field.Invalid(field.NewPath("metadata", "name"), object.GetName(), strings.Join(problems, "; ")),
+						})
+					}
+				}
+				return c.Create(ctx, object, opts...)
+			},
+		}).
+		Build()
+	reconciler := &Reconciler{
+		Client: k8sClient, Scheme: scheme,
+		conversionFunc: func(_ context.Context, _ *endpointv1alpha1.EndpointProviderCapability, input endpointv1alpha1.EndpointRecordSetConversionInput) ([]endpointv1alpha1.RecordSetSpecFragment, string, error) {
+			return []endpointv1alpha1.RecordSetSpecFragment{{
+				Name: input.Name, Type: endpointv1alpha1.EndpointRecordSetTypeA,
+				A: &dnsv1alpha1.ARecordSet{Addresses: []string{"192.0.2.1"}},
+			}}, "", nil
+		},
+	}
+	for range 2 {
+		if _, err := reconciler.Reconcile(ctx, ctrlRequest(endpointRecordSet)); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		var generated dnsv1alpha1.RecordSetList
+		if err := k8sClient.List(ctx, &generated); err != nil {
+			t.Fatalf("list generated RecordSets: %v", err)
+		}
+		if len(generated.Items) != 1 || generated.Items[0].Spec.Name != "www" || generated.Items[0].Spec.Type != dnsv1alpha1.RecordTypeA {
+			t.Fatalf("generated RecordSets = %#v, want only www A", generated.Items)
+		}
+		var got endpointv1alpha1.EndpointRecordSet
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(endpointRecordSet), &got); err != nil {
+			t.Fatalf("get EndpointRecordSet: %v", err)
+		}
+		if got.Status.HostnameCount != 2 || got.Status.GeneratedRecordSetCount != 1 {
+			t.Fatalf("status counts = (%d, %d), want (2, 1)", got.Status.HostnameCount, got.Status.GeneratedRecordSetCount)
+		}
+		for _, hostname := range got.Status.Hostnames {
+			condition := meta.FindStatusCondition(hostname.Conditions, "Resolved")
+			if condition == nil {
+				t.Fatalf("hostname %q has no Resolved condition", hostname.Hostname)
+			}
+			switch hostname.Hostname {
+			case "_invalid.example.com":
+				if condition.Status != metav1.ConditionFalse || condition.Reason != "InvalidRecordSetName" || len(hostname.RecordSets) != 0 {
+					t.Fatalf("invalid hostname status = %#v", hostname)
+				}
+			case "www.example.com":
+				if condition.Status != metav1.ConditionTrue || len(hostname.RecordSets) != 1 || hostname.RecordSets[0].Ref.Name != generated.Items[0].Name {
+					t.Fatalf("valid hostname status = %#v", hostname)
+				}
+			default:
+				t.Fatalf("unexpected hostname status %q", hostname.Hostname)
+			}
+		}
+		assertEndpointCondition(t, got.Status.Conditions, "Resolved", metav1.ConditionFalse, 7)
+		assertEndpointCondition(t, got.Status.Conditions, "Ready", metav1.ConditionFalse, 7)
 	}
 }

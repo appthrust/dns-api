@@ -62,6 +62,23 @@ The endpoint controller reconciles `EndpointRecordSet` resources:
 
 The endpoint controller does not decide provider-specific record shape. It does not hard-code Route 53 alias hosted zone IDs or Cloudflare TTL behavior.
 
+Generated `RecordSet.metadata.name` uses the endpoint name, a normalized relative
+record name, the lowercase record type, and a ten-character SHA-256 suffix. The
+zone apex `@` becomes `apex` in the object name; `*` remains `wildcard` and `.`
+remains `-`. `RecordSet.spec.name` keeps the original DNS name, including `@` or
+`*`. The hash still includes the original relative name and endpoint/Zone
+identity, so the apex and a literal `apex` label remain distinct. Existing valid
+object names and the 63-character truncation scheme are unchanged.
+
+Before applying children, the controller checks each generated object name
+against Kubernetes RFC 1123 subdomain validation. An invalid name produces
+`Resolved=False` with reason `InvalidRecordSetName` for that hostname and no
+children for it; other hostnames continue reconciling. A hostname without an
+accepted Zone still reports `ZoneNotResolved`. Either case makes the aggregate
+`Resolved` condition false with reason `HostnameNotResolved`, rather than
+preventing valid hostnames from publishing. Kubernetes read/write errors still
+return reconciliation errors.
+
 ### Aggregate readiness and deletion
 
 `EndpointRecordSet.status.conditions` contains generation-aware `Accepted`,
