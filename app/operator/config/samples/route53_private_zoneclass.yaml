@@ -1,0 +1,70 @@
+# Install the Route 53 Provider and create the tenant namespaces first.
+# Label tenant-a-app with appthrust.io/tenant: tenant-a.
+# Use an existing private hosted zone named internal.example.com with its VPC
+# associations already configured, and replace hostedZoneId with that zone's ID.
+apiVersion: route53.dns.appthrust.io/v1alpha1
+kind: Route53Identity
+metadata:
+  namespace: tenant-a-platform
+  name: route53-dev
+spec:
+  accountID: "123456789012"
+  region: ap-northeast-1
+  credentials:
+    runtime: {}
+---
+apiVersion: dns.appthrust.io/v1alpha1
+kind: ZoneClass
+metadata:
+  namespace: tenant-a-platform
+  name: route53-private
+spec:
+  allowedZones:
+    namespaces:
+      from: Selector
+      selector:
+        matchLabels:
+          appthrust.io/tenant: tenant-a
+  provider:
+    name: route53.dns.appthrust.io
+    version: v1alpha1
+  controllerName: route53.dns.appthrust.io/controller
+  identityRef:
+    name: route53-dev
+  parameters:
+    zoneType: Private
+    zoneCreationPolicy: Deny
+    zoneDeletionPolicy: Retain
+---
+apiVersion: dns.appthrust.io/v1alpha1
+kind: Zone
+metadata:
+  namespace: tenant-a-app
+  name: internal-example-com
+spec:
+  domainName: internal.example.com
+  provider:
+    name: route53.dns.appthrust.io
+    version: v1alpha1
+  zoneClassRef:
+    namespace: tenant-a-platform
+    name: route53-private
+  adoption:
+    hostedZoneId: Z10219583PPQMV0U1KGN2
+---
+apiVersion: dns.appthrust.io/v1alpha1
+kind: RecordSet
+metadata:
+  namespace: tenant-a-app
+  name: api
+spec:
+  zoneRef:
+    name: internal-example-com
+  provider:
+    name: route53.dns.appthrust.io
+    version: v1alpha1
+  type: CNAME
+  name: api
+  ttl: 300
+  cname:
+    target: control-plane.internal.example.com

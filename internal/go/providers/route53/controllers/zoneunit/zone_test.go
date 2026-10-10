@@ -106,6 +106,9 @@ func TestZoneReconcilerCreatesHostedZone(t *testing.T) {
 	if data.HostedZoneID != "Z000001" {
 		t.Fatalf("hostedZoneID = %q, want Z000001", data.HostedZoneID)
 	}
+	if data.ZoneType != route53v1alpha1.ZoneTypePublic {
+		t.Fatalf("zoneType = %q, want Public", data.ZoneType)
+	}
 	unitData := mustZoneUnitStatusData(t, ctx, k8sClient, zone.Namespace, zone.Name)
 	if unitData.PendingHostedZoneChange == nil || unitData.PendingHostedZoneChange.Status != route53v1alpha1.Route53ChangeStatusPending {
 		t.Fatalf("pendingHostedZoneChange = %#v, want PENDING", unitData.PendingHostedZoneChange)

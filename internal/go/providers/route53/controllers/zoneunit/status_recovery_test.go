@@ -733,12 +733,16 @@ func setRoute53ReadyZoneUnitStatus(t *testing.T, unit *dnsv1alpha1.ZoneUnit) {
 	t.Helper()
 	state, err := json.Marshal(route53v1alpha1.Route53ZoneStatusData{
 		HostedZoneID:    "Z000001",
+		ZoneType:        route53v1alpha1.ZoneTypePublic,
 		CallerReference: "dns-api:11111111-2222-3333-4444-555555555555",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	public, err := json.Marshal(route53v1alpha1.Route53ZoneStatusData{HostedZoneID: "Z000001"})
+	public, err := json.Marshal(route53v1alpha1.Route53ZoneStatusData{
+		HostedZoneID: "Z000001",
+		ZoneType:     route53v1alpha1.ZoneTypePublic,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

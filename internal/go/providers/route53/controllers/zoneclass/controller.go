@@ -73,6 +73,14 @@ func (r *ZoneClassReconciler) acceptZoneClass(ctx context.Context, zoneClass *dn
 	if err != nil {
 		return metav1.ConditionFalse, "InvalidParameters", err.Error(), nil
 	}
+	if params.ZoneType == route53v1alpha1.ZoneTypePrivate {
+		if params.ZoneCreationPolicy != "" && params.ZoneCreationPolicy != route53v1alpha1.ZoneCreationPolicyDeny {
+			return metav1.ConditionFalse, "InvalidParameters", "zoneType Private requires zoneCreationPolicy Deny", nil
+		}
+		if params.ZoneDeletionPolicy != "" && params.ZoneDeletionPolicy != route53v1alpha1.ZoneDeletionPolicyRetain {
+			return metav1.ConditionFalse, "InvalidParameters", "zoneType Private requires zoneDeletionPolicy Retain", nil
+		}
+	}
 	if zoneClass.Spec.IdentityRef.Name == "" {
 		return metav1.ConditionFalse, "InvalidIdentityRef", "spec.identityRef.name is required", nil
 	}

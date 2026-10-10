@@ -5,7 +5,7 @@ metadata:
 spec:
   display:
     name: Amazon Route 53
-    description: Public DNS zones and record sets managed through Route 53.
+    description: Public and adopted private DNS zones and record sets managed through Route 53.
     logo:
       url: https://cdn.jsdelivr.net/gh/glincker/thesvg@main/public/icons/aws-amazon-route-53/default.svg
   versions:
@@ -25,15 +25,21 @@ spec:
               type: object
               additionalProperties: false
               properties:
+                zoneType:
+                  type: string
+                  description: Route 53 hosted zone type. Defaults to Public. Private is adoption-only and requires zoneCreationPolicy Deny and zoneDeletionPolicy Retain; dns-api never creates, deletes, or manages VPC associations for private hosted zones.
+                  enum:
+                    - Public
+                    - Private
                 zoneCreationPolicy:
                   type: string
-                  description: Controls whether dns-api may create a Route 53 public hosted zone when a Zone does not adopt an existing hosted zone.
+                  description: Controls whether dns-api may create a Route 53 public hosted zone when a Zone does not adopt an existing hosted zone. Defaults to Create for Public and Deny for Private.
                   enum:
                     - Create
                     - Deny
                 zoneDeletionPolicy:
                   type: string
-                  description: Controls whether dns-api deletes the Route 53 hosted zone when the Kubernetes Zone is deleted.
+                  description: Controls whether dns-api deletes the Route 53 hosted zone when the Kubernetes Zone is deleted. Private requires Retain.
                   enum:
                     - Delete
                     - Retain
@@ -60,7 +66,7 @@ spec:
               properties:
                 hostedZoneId:
                   type: string
-                  description: Route 53 public hosted zone ID of the existing hosted zone to adopt.
+                  description: Route 53 hosted zone ID of the existing hosted zone to adopt. The zone must be public or private as declared by the ZoneClass zoneType.
                   pattern: '^Z[A-Z0-9]+$'
           statusProviderData:
             openAPIV3Schema:
@@ -71,6 +77,12 @@ spec:
                   type: string
                   description: Route 53 hosted zone ID managed for this Zone.
                   pattern: '^Z[A-Z0-9]+$'
+                zoneType:
+                  type: string
+                  description: Observed Route 53 hosted zone type.
+                  enum:
+                    - Public
+                    - Private
       recordSet:
         supportedTypes:
           - A

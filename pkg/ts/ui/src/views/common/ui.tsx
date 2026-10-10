@@ -1616,7 +1616,7 @@ export function ZoneClassSummaryCard({ zoneClass }: { zoneClass: ZoneClass }) {
         </Stack>
         <Typography sx={{ color: ui.faint, fontSize: 13, lineHeight: 1.55 }}>
           {descriptionOf(zoneClass) ||
-            'Public DNS only. Private DNS and VPC selection are not part of this flow.'}
+            'Public zones are created or adopted; private zones are adoption-only (ZoneClass zoneType: Private). VPC association is managed outside dns-api.'}
         </Typography>
         <Conditions conditions={zoneClass.status?.conditions} />
       </Stack>

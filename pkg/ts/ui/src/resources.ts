@@ -76,6 +76,7 @@ export interface ZoneClass extends KubeObjectInterface {
       identityRef?: {
         name?: string;
       };
+      zoneType?: 'Public' | 'Private';
       zoneCreationPolicy?: 'Create' | 'Deny';
       zoneDeletionPolicy?: 'Delete' | 'Retain';
       sameNameZonePolicy?: 'Allow' | 'Deny';

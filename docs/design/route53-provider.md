@@ -7,7 +7,7 @@
 `Route53Identity.spec` fields:
 
 - `accountID`: final AWS account ID that this identity operates. The controller resolves credentials and calls STS `GetCallerIdentity`; returned account ID must match.
-- `region`: AWS region used for SDK config and STS endpoint resolution. Required. Route 53 public hosted zones are global, but WebIdentity credentials, `AssumeRole`, `GetCallerIdentity`, and Route 53 client endpoint resolution use this region.
+- `region`: AWS region used for SDK config and STS endpoint resolution. Required. Route 53 hosted zones are global, but WebIdentity credentials, `AssumeRole`, `GetCallerIdentity`, and Route 53 client endpoint resolution use this region.
 - `credentials`: credential source union. Initially only `runtime` is accepted.
 - `credentials.runtime`: read the base credential from the AWS SDK default credential chain in the controller runtime environment.
 - `assumeRoleChain`: array of IAM roles to assume sequentially from the base credential. If omitted, use the base credential directly.
@@ -107,14 +107,15 @@ Route 53 controller reconciles `Route53Identity`. It validates the spec, resolve
 
 Route 53 provider schema is represented by `Provider/route53.dns.appthrust.io` version `v1alpha1`. Route 53 `ZoneClass` configuration is stored in `ZoneClass.spec.parameters`. `ZoneClass.spec.provider.name` and claim `spec.provider.name` reference `route53.dns.appthrust.io`; their `version` fields reference the served Provider version.
 
-Route 53 provider handles Public DNS only. Hosted zones created by the Route 53 controller are public hosted zones. VPC settings for private hosted zones are not stored in `ZoneClass` or `Zone`.
+Route 53 provider handles public hosted zones and adoption of existing private hosted zones. `ZoneClass.spec.parameters.zoneType` selects `Public` or `Private`; absent means `Public` and preserves existing behavior. Hosted zones created by the Route 53 controller are always public. VPC settings for private hosted zones are not stored in `ZoneClass` or `Zone`, and dns-api never manages VPC associations.
 
 Route 53 identity selection uses `ZoneClass.spec.identityRef.name`. The selected identity resource is a `Route53Identity` in the same namespace as the `ZoneClass`.
 
 Route 53 `ZoneClass.spec.parameters` fields:
 
-- `zoneCreationPolicy`: whether new hosted zone creation is allowed. Values: `Create` or `Deny`. Default: `Create`.
-- `zoneDeletionPolicy`: whether the hosted zone is deleted when the `Zone` is deleted. Values: `Delete` or `Retain`. Default: `Retain`.
+- `zoneType`: hosted zone type. Values: `Public` or `Private`. Default: `Public`. Private hosted zones are adoption-only.
+- `zoneCreationPolicy`: whether new public hosted zone creation is allowed. Values: `Create` or `Deny`. Default: `Create` for Public, `Deny` for Private. Private permits only absent or `Deny`.
+- `zoneDeletionPolicy`: whether the hosted zone is deleted when the `Zone` is deleted. Values: `Delete` or `Retain`. Default: `Retain`. Private permits only absent or `Retain`.
 - `sameNameZonePolicy`: how to handle existing same-name hosted zones in the Route 53 account. Values: `Allow` or `Deny`. Default: `Deny`.
 - `tags`: Route 53 tags added to created hosted zones.
 
@@ -122,19 +123,30 @@ Route 53 `Provider` schema descriptions for `zoneClass.schemas.parameters`:
 
 | Field | `description` |
 | --- | --- |
-| `zoneCreationPolicy` | `Controls whether dns-api may create a Route 53 public hosted zone when a Zone does not adopt an existing hosted zone.` |
-| `zoneDeletionPolicy` | `Controls whether dns-api deletes the Route 53 hosted zone when the Kubernetes Zone is deleted.` |
+| `zoneType` | `Route 53 hosted zone type. Defaults to Public. Private is adoption-only and requires zoneCreationPolicy Deny and zoneDeletionPolicy Retain; dns-api never creates, deletes, or manages VPC associations for private hosted zones.` |
+| `zoneCreationPolicy` | `Controls whether dns-api may create a Route 53 public hosted zone when a Zone does not adopt an existing hosted zone. Defaults to Create for Public and Deny for Private.` |
+| `zoneDeletionPolicy` | `Controls whether dns-api deletes the Route 53 hosted zone when the Kubernetes Zone is deleted. Private requires Retain.` |
 | `sameNameZonePolicy` | `Controls whether dns-api may create a new Route 53 hosted zone when another same-name hosted zone already exists.` |
 | `tags` | `Additional Route 53 tags applied to hosted zones created by this ZoneClass.` |
 | `tags.<key>` | `One Route 53 tag value applied to hosted zones created by this ZoneClass.` |
 
 AWS credentials themselves are not stored in `ZoneClass.spec.parameters`. `ZoneClass.spec.identityRef` selects the AWS account and assume role chain through `Route53Identity`.
 
+### Private hosted zones
+
+With `zoneType: Private`, dns-api adopts an existing private hosted zone through `Zone.spec.adoption.hostedZoneId` and manages its RecordSets. dns-api never creates or deletes private hosted zones and never manages their VPC associations. Create the private hosted zone and configure its VPC associations outside dns-api before adoption.
+
+The ZoneClass accepts `zoneCreationPolicy` only when absent or `Deny`, and `zoneDeletionPolicy` only when absent or `Retain`. Otherwise it sets `Accepted=False`, reason `InvalidParameters`, with `zoneType Private requires zoneCreationPolicy Deny` or `zoneType Private requires zoneDeletionPolicy Retain`. `sameNameZonePolicy` and `tags` are allowed, but apply only to hosted zone creation and do not cause private zone creation or tagging during adoption.
+
+A Zone without `spec.adoption` under a Private class is rejected with `Accepted=False`, reason `DeniedByPolicy`, even when `zoneCreationPolicy` is omitted. Deleting a Zone retains the private hosted zone. Private hosted zones have no delegation set, so `Zone.status.nameServers` is empty; dns-api does not fabricate name servers.
+
+See [the private hosted zone sample](../../app/operator/config/samples/route53_private_zoneclass.yaml) for a Route53Identity, adoption-only ZoneClass, Zone, and CNAME RecordSet.
+
 ### Controller Responsibility
 
 Route 53 ZoneClass controller reconciles `ZoneClass` resources whose `spec.controllerName` matches the Route 53 controller name and whose `spec.provider.name` is `route53.dns.appthrust.io`. It interprets `ZoneClass.spec.identityRef` as a `Route53Identity` reference, interprets `ZoneClass.spec.parameters` as Route 53 schema and policy, checks that the identity can be statically resolved, and updates `ZoneClass.status.conditions[Accepted]`. It does not call hosted zone APIs.
 
-Route 53 ZoneUnit controller reconciles `ZoneUnit` resources whose `spec.zone.zoneClassRef` resolves to a matching Route 53 `ZoneClass`. After confirming the referenced `Route53Identity` is `Ready=True`, it creates, adopts, deletes, and updates hosted zones; reconciles child record sets to Route 53; and updates `ZoneUnit.status`. It does not read or write `Zone` or `RecordSet` claims.
+Route 53 ZoneUnit controller reconciles `ZoneUnit` resources whose `spec.zone.zoneClassRef` resolves to a matching Route 53 `ZoneClass`. After confirming the referenced `Route53Identity` is `Ready=True`, it creates and deletes public hosted zones according to policy, adopts public or private hosted zones matching `zoneType`, reconciles child record sets to Route 53, and updates `ZoneUnit.status`. It does not read or write `Zone` or `RecordSet` claims.
 
 If `identityRef` cannot be resolved or the referenced `Route53Identity` is not resolved enough to decide, the Route 53 controller does not proceed with hosted zone reconciliation and sets `ZoneUnit.status.zone.conditions[Accepted]` to `Unknown`, reason `IdentityNotResolved`. If the referenced `Route53Identity` is `Accepted=False`, it sets `Accepted=False`, reason `InvalidIdentityRef`.
 
@@ -144,13 +156,13 @@ If the referenced `Route53Identity` is `Accepted=True` but not `Ready=True`, the
 
 When `zoneDeletionPolicy=Retain`, deleting the core `Zone` does not delete the Route 53 hosted zone. The Route 53 ZoneUnit controller removes its provider `ZoneUnit` finalizer after recording cleanup completion. If policy changes from `Delete` to `Retain` while the `ZoneUnit` is not being deleted, the controller does not start provider deletion.
 
-When `zoneDeletionPolicy=Delete`, the Route 53 ZoneUnit controller keeps a provider finalizer on `ZoneUnit`. When `ZoneUnit.metadata.deletionTimestamp` is set, it deletes the Route 53 hosted zone, then removes the provider finalizer after deletion completes.
+When `zoneDeletionPolicy=Delete`, which is allowed only for Public classes, the Route 53 ZoneUnit controller keeps a provider finalizer on `ZoneUnit`. When `ZoneUnit.metadata.deletionTimestamp` is set, it deletes the Route 53 hosted zone, then removes the provider finalizer after deletion completes. A Private class never reaches `DeleteHostedZone`.
 
 If Route 53 rejects hosted zone deletion, the controller keeps the finalizer and sets `Programmed=False`, reason `ProviderConflict`. For example, non-default record sets remaining in the hosted zone are treated this way.
 
-When `Zone.spec.adoption` is absent, the first implementation milestone creates public hosted zones only when `zoneCreationPolicy=Create`. If `Zone.spec.adoption` is absent and `zoneCreationPolicy=Deny`, the Route 53 controller sets `Zone Accepted=False`, reason `DeniedByPolicy`. `zoneCreationPolicy=Deny` is for adoption-only classes.
+When `Zone.spec.adoption` is absent, the controller creates public hosted zones only when `zoneType=Public` and `zoneCreationPolicy=Create`. If `Zone.spec.adoption` is absent and the effective `zoneCreationPolicy` is `Deny`, the Route 53 controller sets `Zone Accepted=False`, reason `DeniedByPolicy`. `zoneCreationPolicy=Deny` is for adoption-only classes and is always effective for Private classes, including when the parameter is omitted.
 
-`sameNameZonePolicy` applies only to creation when `Zone.spec.adoption` is absent. With `Deny`, an existing same-name public hosted zone results in `Programmed=False`, reason `ProviderConflict`. With `Allow`, a new hosted zone may be created even when a same-name zone exists. To manage an existing hosted zone, use `Zone.spec.adoption`.
+`sameNameZonePolicy` applies only to public hosted zone creation when `Zone.spec.adoption` is absent. With `Deny`, an existing same-name public hosted zone results in `Programmed=False`, reason `ProviderConflict`. With `Allow`, a new public hosted zone may be created even when a same-name zone exists. It does not allow creation under a Private class. To manage an existing hosted zone, use `Zone.spec.adoption`.
 
 Route 53 controller stores `CreateHostedZone` `CallerReference` only as provider-internal state in `ZoneUnit.status.provider.state`. It is not stored in `ZoneUnit.spec` and is not public `status.provider.data`. The controller may reuse a cached caller reference while status is present, but the caller reference is not the recovery source of truth.
 
@@ -176,9 +188,9 @@ Route 53 `Provider` schema descriptions for `zone.schemas.adoption`:
 
 | Field | `description` |
 | --- | --- |
-| `hostedZoneId` | `Route 53 public hosted zone ID of the existing hosted zone to adopt.` |
+| `hostedZoneId` | `Route 53 hosted zone ID of the existing hosted zone to adopt. The zone must be public or private as declared by the ZoneClass zoneType.` |
 
-When adoption is specified, the Route 53 controller gets the hosted zone, verifies that the hosted zone name matches `ZoneUnit.spec.zone.domainName`, and verifies that it is public. If it matches, the controller manages it and stores `hostedZoneId` in `ZoneUnit.status.zone.provider.data.hostedZoneID`. If the hosted zone does not exist, set `Programmed=False`, reason `ExternalResourceNotFound`. If it is private or the name differs, set `Programmed=False`, reason `ExternalResourceMismatch`.
+When adoption is specified, the Route 53 controller gets the hosted zone, verifies that the hosted zone name matches `ZoneUnit.spec.zone.domainName`, and verifies that its public/private type matches the ZoneClass `zoneType`. If it matches, the controller manages its RecordSets and stores `hostedZoneId` in `ZoneUnit.status.zone.provider.data.hostedZoneID` and the observed type in `zoneType`. If the hosted zone does not exist, set `Programmed=False`, reason `ExternalResourceNotFound`. If the type or name differs, set `Programmed=False`, reason `ExternalResourceMismatch`. A Public class adopting a private zone keeps the message `Route 53 hosted zone is private; only public hosted zones are supported`. A Private class adopting a public zone reports `Route 53 hosted zone is public; ZoneClass zoneType is Private`.
 
 Created hosted zones receive ownership tags:
 
@@ -188,7 +200,7 @@ Created hosted zones receive ownership tags:
 - `appthrust.io/zone-class-namespace`: `ZoneClass` namespace
 - `appthrust.io/zone-class-name`: `ZoneClass` name
 
-`ZoneClass.spec.parameters.tags` are additional tags separate from ownership tags. Route 53 controller applies both ownership tags and `ZoneClass.spec.parameters.tags`.
+`ZoneClass.spec.parameters.tags` are additional tags separate from ownership tags. Route 53 controller applies both ownership tags and `ZoneClass.spec.parameters.tags` to created public hosted zones; adoption does not apply these tags.
 
 Ownership tag keys are reserved and managed by the controller. `ZoneClass.spec.parameters.tags` must not use the same keys. If a reserved key is specified, the controller sets `Accepted=False`, reason `DeniedByPolicy`.
 
@@ -196,17 +208,19 @@ Test tags are also specified in `ZoneClass.spec.parameters.tags`. kest uses `app
 
 The initial milestone does not support shared ownership of hosted zones. Ownership tag naming assumes one platform. Shared ownership will require a later design revision.
 
-Route 53-specific public hosted zone data is stored in `ZoneUnit.status.zone.provider.data` and projected to `Zone.status.provider.data`, validated by Route 53 Provider version `zone.schemas.statusProviderData`. `hostedZoneID` is public because users can copy it into adoption settings, use it to open the hosted zone in the AWS dashboard, and include it in support or troubleshooting workflows.
+Route 53-specific hosted zone data is stored in the user-visible `ZoneUnit.status.zone.provider.data` and projected to `Zone.status.provider.data`, validated by Route 53 Provider version `zone.schemas.statusProviderData`. `hostedZoneID` is public because users can copy it into adoption settings, use it to open the hosted zone in the AWS dashboard, and include it in support or troubleshooting workflows. `zoneType` records the observed hosted zone type alongside the ID for both public and private zones.
 
 Route 53 `Zone.status.provider.data` fields:
 
 - `hostedZoneID`: Route 53 hosted zone ID in `Z...` form.
+- `zoneType`: observed Route 53 hosted zone type, `Public` or `Private`.
 
 Route 53 `Provider` schema descriptions for `zone.schemas.statusProviderData`:
 
 | Field | `description` |
 | --- | --- |
 | `hostedZoneID` | `Route 53 hosted zone ID managed for this Zone.` |
+| `zoneType` | `Observed Route 53 hosted zone type.` |
 
 Pending Route 53 hosted-zone and record-set changes are stored in `ZoneUnit.status.provider.state`, not in public claim status. Pending fields are kept only while Route 53 reports `PENDING`. Completed `INSYNC` changes are not retained as history. `Programmed=True` is set after pending fields are removed and provider state is re-observed to match `ZoneUnit.spec`.
 

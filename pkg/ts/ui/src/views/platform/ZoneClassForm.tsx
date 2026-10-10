@@ -41,6 +41,7 @@ type ZoneClassForm = {
   allowedFrom: 'Same' | 'Selector' | 'All';
   allowedLabelsText: string;
   tags: string;
+  zoneType: 'Public' | 'Private';
   zoneCreationPolicy: 'Create' | 'Deny';
   zoneDeletionPolicy: 'Delete' | 'Retain';
   sameNameZonePolicy: 'Allow' | 'Deny';
@@ -61,6 +62,7 @@ const zoneClassFormSchema = z.object({
   allowedFrom: z.enum(['Same', 'Selector', 'All']),
   allowedLabelsText: z.string(),
   tags: z.string(),
+  zoneType: z.enum(['Public', 'Private']),
   zoneCreationPolicy: z.enum(['Create', 'Deny']),
   zoneDeletionPolicy: z.enum(['Delete', 'Retain']),
   sameNameZonePolicy: z.enum(['Allow', 'Deny']),
@@ -85,15 +87,21 @@ function zoneClassParametersFromForm(
   baseParameters: ZoneClass['spec']['parameters'] = {}
 ): ZoneClass['spec']['parameters'] {
   const tags = parseNamespaceLabelsYaml(form.tags);
+  const isPrivateZone = isRoute53ProviderRef(form.provider) && form.zoneType === 'Private';
   const parameters: ZoneClass['spec']['parameters'] = {
     ...baseParameters,
-    zoneCreationPolicy: form.zoneCreationPolicy,
-    zoneDeletionPolicy: form.zoneDeletionPolicy,
+    zoneCreationPolicy: isPrivateZone ? 'Deny' : form.zoneCreationPolicy,
+    zoneDeletionPolicy: isPrivateZone ? 'Retain' : form.zoneDeletionPolicy,
   };
   delete (parameters as Record<string, unknown>).identityRef;
+  if (isPrivateZone) {
+    parameters.zoneType = 'Private';
+  } else {
+    delete parameters.zoneType;
+  }
   if (isRoute53ProviderRef(form.provider)) {
     parameters.tags = tags;
-    if (form.zoneCreationPolicy === 'Create') {
+    if (parameters.zoneCreationPolicy === 'Create') {
       parameters.sameNameZonePolicy = form.sameNameZonePolicy;
     } else {
       delete parameters.sameNameZonePolicy;
@@ -273,6 +281,7 @@ function zoneClassFormFromResource(zoneClass: ZoneClass): ZoneClassForm {
     allowedFrom,
     allowedLabelsText: namespaceLabelsYaml(selector?.matchLabels),
     tags: namespaceLabelsYaml(zoneClass.spec.parameters.tags),
+    zoneType: zoneClass.spec.parameters.zoneType ?? 'Public',
     zoneCreationPolicy: zoneClass.spec.parameters.zoneCreationPolicy ?? 'Create',
     zoneDeletionPolicy: zoneClass.spec.parameters.zoneDeletionPolicy ?? 'Retain',
     sameNameZonePolicy: zoneClass.spec.parameters.sameNameZonePolicy ?? 'Deny',
@@ -409,6 +418,7 @@ export function ZoneClassFormPage({
             allowedFrom: 'Selector',
             allowedLabelsText: '',
             tags: '',
+            zoneType: 'Public',
             zoneCreationPolicy: 'Create',
             zoneDeletionPolicy: 'Delete',
             sameNameZonePolicy: 'Deny',
@@ -423,6 +433,7 @@ export function ZoneClassFormPage({
       provider => providerRef(provider) === form.provider
     ) ?? selectedIdentityProvider;
   const providerObject = providerRefObject(form.provider);
+  const isPrivateZone = isRoute53ProviderRef(form.provider) && form.zoneType === 'Private';
   const preview = zoneClass
     ? updatedZoneClassPreview(zoneClass, form)
     : selectedProvider
@@ -535,11 +546,30 @@ export function ZoneClassFormPage({
             Provider controller instance that reconciles ZoneUnits for this ZoneClass.
           </Typography>
         </Box>
+        {isRoute53ProviderRef(form.provider) ? (
+          <DnsFormControl fullWidth>
+            <InputLabel>Zone type</InputLabel>
+            <Select
+              label="Zone type"
+              value={form.zoneType}
+              onChange={event =>
+                setForm({
+                  ...form,
+                  zoneType: event.target.value as ZoneClassForm['zoneType'],
+                })
+              }
+            >
+              <MenuItem value="Public">Public</MenuItem>
+              <MenuItem value="Private">Private</MenuItem>
+            </Select>
+          </DnsFormControl>
+        ) : null}
         <DnsFormControl fullWidth>
           <InputLabel>Zone creation policy</InputLabel>
           <Select
             label="Zone creation policy"
-            value={form.zoneCreationPolicy}
+            value={isPrivateZone ? 'Deny' : form.zoneCreationPolicy}
+            disabled={isPrivateZone}
             onChange={event =>
               setForm({
                 ...form,
@@ -552,10 +582,11 @@ export function ZoneClassFormPage({
           </Select>
         </DnsFormControl>
         <Typography sx={formHelperSx}>
-          Controls whether the provider controller may create public DNS zones. Use Deny when
-          Zones must point to existing public hosted zones with adoption.
+          {isPrivateZone
+            ? 'Private zones are adoption-only. dns-api never creates, deletes, or VPC-associates them.'
+            : 'Controls whether the provider controller may create public DNS zones. Use Deny when Zones must point to existing public hosted zones with adoption.'}
         </Typography>
-        {form.zoneCreationPolicy === 'Create' && isRoute53ProviderRef(form.provider) ? (
+        {!isPrivateZone && form.zoneCreationPolicy === 'Create' && isRoute53ProviderRef(form.provider) ? (
           <>
             <DnsFormControl fullWidth>
               <InputLabel>Duplicate hosted zone policy</InputLabel>
@@ -583,7 +614,8 @@ export function ZoneClassFormPage({
           <InputLabel>Zone deletion policy</InputLabel>
           <Select
             label="Zone deletion policy"
-            value={form.zoneDeletionPolicy}
+            value={isPrivateZone ? 'Retain' : form.zoneDeletionPolicy}
+            disabled={isPrivateZone}
             onChange={event =>
               setForm({
                 ...form,

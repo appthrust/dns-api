@@ -248,7 +248,10 @@ func (r *ZoneReconciler) patchRoute53ZoneStatus(ctx context.Context, zone *dnsv1
 		return err
 	}
 	return r.patchZoneStatus(ctx, zone, func(status *dnsv1alpha1.ZoneStatus) {
-		publicRaw, _ := json.Marshal(route53v1alpha1.Route53ZoneStatusData{HostedZoneID: statusData.HostedZoneID})
+		publicRaw, _ := json.Marshal(route53v1alpha1.Route53ZoneStatusData{
+			HostedZoneID: statusData.HostedZoneID,
+			ZoneType:     statusData.ZoneType,
+		})
 		status.Provider = &dnsv1alpha1.ProviderStatus{
 			Data:  runtime.RawExtension{Raw: publicRaw},
 			State: runtime.RawExtension{Raw: raw},
@@ -353,7 +356,17 @@ func route53ZoneUnitStatusData(unit *dnsv1alpha1.ZoneUnit) (route53v1alpha1.Rout
 	return route53v1alpha1.Route53ZoneStatusData{}, nil
 }
 
+func zoneType(params *route53v1alpha1.Route53ZoneClassParameters) route53v1alpha1.ZoneType {
+	if params.ZoneType == "" {
+		return route53v1alpha1.ZoneTypePublic
+	}
+	return params.ZoneType
+}
+
 func zoneCreationPolicy(params *route53v1alpha1.Route53ZoneClassParameters) route53v1alpha1.ZoneCreationPolicy {
+	if zoneType(params) == route53v1alpha1.ZoneTypePrivate {
+		return route53v1alpha1.ZoneCreationPolicyDeny
+	}
 	if params.ZoneCreationPolicy == "" {
 		return route53v1alpha1.ZoneCreationPolicyCreate
 	}
@@ -361,7 +374,7 @@ func zoneCreationPolicy(params *route53v1alpha1.Route53ZoneClassParameters) rout
 }
 
 func zoneDeletionPolicy(params *route53v1alpha1.Route53ZoneClassParameters) route53v1alpha1.ZoneDeletionPolicy {
-	if params.ZoneDeletionPolicy == "" {
+	if zoneType(params) == route53v1alpha1.ZoneTypePrivate || params.ZoneDeletionPolicy == "" {
 		return route53v1alpha1.ZoneDeletionPolicyRetain
 	}
 	return params.ZoneDeletionPolicy
@@ -469,12 +482,23 @@ func isRoute53HostedZoneExternalRefID(id string) bool {
 	return true
 }
 
+func setRoute53ZoneStatusData(data *route53v1alpha1.Route53ZoneStatusData, hostedZone HostedZone) {
+	data.HostedZoneID = hostedZone.ID
+	data.ZoneType = route53v1alpha1.ZoneTypePublic
+	if hostedZone.Private {
+		data.ZoneType = route53v1alpha1.ZoneTypePrivate
+	}
+}
+
 func hostedZoneSpecMismatch(zone *dnsv1alpha1.Zone, params *route53v1alpha1.Route53ZoneClassParameters, hostedZone HostedZone) string {
 	if hostedZone.Name != zone.Spec.DomainName {
 		return "Route 53 hosted zone name does not match Zone domainName"
 	}
-	if hostedZone.Private {
-		return "Route 53 hosted zone is private; only public hosted zones are supported"
+	if hostedZone.Private != (zoneType(params) == route53v1alpha1.ZoneTypePrivate) {
+		if hostedZone.Private {
+			return "Route 53 hosted zone is private; only public hosted zones are supported"
+		}
+		return "Route 53 hosted zone is public; ZoneClass zoneType is Private"
 	}
 	return ""
 }

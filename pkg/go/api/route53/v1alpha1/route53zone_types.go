@@ -16,6 +16,9 @@ type Route53ZoneStatusData struct {
 	// HostedZoneID is the normalized Route 53 hosted zone ID in Z... form.
 	HostedZoneID string `json:"hostedZoneID,omitempty"`
 
+	// ZoneType is the observed Route 53 hosted zone type.
+	ZoneType ZoneType `json:"zoneType,omitempty"`
+
 	// CallerReference is the value passed to CreateHostedZone.
 	CallerReference string `json:"callerReference,omitempty"`
 
