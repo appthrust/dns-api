@@ -1,12 +1,14 @@
 package webhook
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"text/template"
 
 	cloudflarev1alpha1 "github.com/appthrust/dns-api/pkg/go/api/cloudflare/v1alpha1"
 	dnsv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/dns/v1alpha1"
@@ -730,6 +732,75 @@ func TestZoneValidationChecksAdoptionSchema(t *testing.T) {
 	err := validator.validateZone(ctx, zone, nil)
 	if err == nil || !strings.Contains(err.Error(), "spec.adoption") {
 		t.Fatalf("validateZone error = %v, want adoption schema failure", err)
+	}
+}
+
+func TestRoute53ZoneAdoptionSchemas(t *testing.T) {
+	builtIn := builtInProviderManifest(t, "route53_extensions.yaml")
+	path := filepath.Join("..", "..", "..", "..", "deploy", "charts", "dns-api", "templates", "provider-route53.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	tmpl, err := template.New("provider-route53").Parse(string(data))
+	if err != nil {
+		t.Fatalf("parse chart provider template: %v", err)
+	}
+	var rendered bytes.Buffer
+	if err := tmpl.Execute(&rendered, map[string]any{
+		"Values": map[string]any{"providers": map[string]any{"route53": map[string]any{"enabled": true}}},
+	}); err != nil {
+		t.Fatalf("render chart provider template: %v", err)
+	}
+	var chart dnsv1alpha1.Provider
+	if err := yaml.Unmarshal(rendered.Bytes(), &chart); err != nil {
+		t.Fatalf("unmarshal chart provider: %v", err)
+	}
+	if !bytes.Equal(builtIn.Spec.Versions[0].Zone.Schemas.Adoption.OpenAPIV3Schema.Raw, chart.Spec.Versions[0].Zone.Schemas.Adoption.OpenAPIV3Schema.Raw) {
+		t.Fatal("built-in and chart adoption schemas differ")
+	}
+	for name, provider := range map[string]*dnsv1alpha1.Provider{"built-in": &builtIn, "chart": &chart} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateProvider(provider); err != nil {
+				t.Fatalf("validateProvider: %v", err)
+			}
+			for _, test := range []struct {
+				name     string
+				adoption string
+				valid    bool
+			}{
+				{name: "absent", valid: true},
+				{name: "hosted zone ID", adoption: `{"hostedZoneId":"ZADOPT"}`, valid: true},
+				{name: "by name", adoption: `{"byName":true}`, valid: true},
+				{name: "both", adoption: `{"hostedZoneId":"ZADOPT","byName":true}`},
+				{name: "both with false", adoption: `{"hostedZoneId":"ZADOPT","byName":false}`},
+				{name: "both with null", adoption: `{"hostedZoneId":"ZADOPT","byName":null}`},
+				{name: "empty", adoption: `{}`},
+				{name: "false", adoption: `{"byName":false}`},
+				{name: "string", adoption: `{"byName":"true"}`},
+				{name: "null by name", adoption: `{"byName":null}`},
+				{name: "unknown field", adoption: `{"byName":true,"other":true}`},
+				{name: "path ID", adoption: `{"hostedZoneId":"/hostedzone/ZADOPT"}`},
+				{name: "empty ID", adoption: `{"hostedZoneId":""}`},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					zone := validZone()
+					zone.Spec.Adoption = runtime.RawExtension{Raw: []byte(test.adoption)}
+					validator := newTestValidator(t,
+						&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "app"}},
+						provider, route53ZoneClass(t), zone,
+					)
+					err := validator.validateZone(context.Background(), zone, nil)
+					if test.valid {
+						if err != nil {
+							t.Fatalf("validateZone: %v", err)
+						}
+					} else if err == nil || !strings.Contains(err.Error(), "spec.adoption") {
+						t.Fatalf("validateZone error = %v, want adoption schema failure", err)
+					}
+				})
+			}
+		})
 	}
 }
 
@@ -1933,17 +2004,7 @@ func route53Provider(t *testing.T) *dnsv1alpha1.Provider {
 					},
 					Zone: dnsv1alpha1.ProviderZone{
 						Schemas: dnsv1alpha1.ProviderZoneSchemas{
-							Adoption: &dnsv1alpha1.ProviderOpenAPISchema{OpenAPIV3Schema: raw(t, map[string]any{
-								"type":     "object",
-								"required": []any{"hostedZoneId"},
-								"properties": map[string]any{
-									"hostedZoneId": map[string]any{
-										"type":        "string",
-										"pattern":     "^Z[A-Z0-9]+$",
-										"description": "Route 53 public hosted zone ID of the existing hosted zone to adopt.",
-									},
-								},
-							})},
+							Adoption: builtInProviderManifest(t, "route53_extensions.yaml").Spec.Versions[0].Zone.Schemas.Adoption,
 							StatusProviderData: &dnsv1alpha1.ProviderOpenAPISchema{OpenAPIV3Schema: raw(t, map[string]any{
 								"type": "object",
 								"properties": map[string]any{

@@ -134,7 +134,7 @@ AWS credentials themselves are not stored in `ZoneClass.spec.parameters`. `ZoneC
 
 ### Private hosted zones
 
-With `zoneType: Private`, dns-api adopts an existing private hosted zone through `Zone.spec.adoption.hostedZoneId` and manages its RecordSets. dns-api never creates or deletes private hosted zones and never manages their VPC associations. Create the private hosted zone and configure its VPC associations outside dns-api before adoption.
+With `zoneType: Private`, dns-api adopts an existing private hosted zone through `Zone.spec.adoption.hostedZoneId` or `Zone.spec.adoption.byName: true` and manages its RecordSets. dns-api never creates or deletes private hosted zones and never manages their VPC associations. Create the private hosted zone and configure its VPC associations outside dns-api before adoption.
 
 The ZoneClass accepts `zoneCreationPolicy` only when absent or `Deny`, and `zoneDeletionPolicy` only when absent or `Retain`. Otherwise it sets `Accepted=False`, reason `InvalidParameters`, with `zoneType Private requires zoneCreationPolicy Deny` or `zoneType Private requires zoneDeletionPolicy Retain`. `sameNameZonePolicy` and `tags` are allowed, but apply only to hosted zone creation and do not cause private zone creation or tagging during adoption.
 
@@ -166,7 +166,7 @@ When `Zone.spec.adoption` is absent, the controller creates public hosted zones 
 
 Route 53 controller stores `CreateHostedZone` `CallerReference` only as provider-internal state in `ZoneUnit.status.provider.state`. It is not stored in `ZoneUnit.spec` and is not public `status.provider.data`. The controller may reuse a cached caller reference while status is present, but the caller reference is not the recovery source of truth.
 
-If Route 53 status is lost after a hosted zone was created, recovery uses explicit adoption through `Zone.spec.adoption.hostedZoneId` / `ZoneUnit.spec.zone.adoption.hostedZoneId`. If status and adoption are both absent, the controller does not automatically adopt a same-name hosted zone. It reports `Programmed=False`, reason `ProviderConflict`, when provider state is ambiguous.
+If Route 53 status is lost after a hosted zone was created, recovery uses explicit adoption through `Zone.spec.adoption` / `ZoneUnit.spec.zone.adoption`, either by hosted zone ID or by name. If status and adoption are both absent, the controller does not automatically adopt a same-name hosted zone. It reports `Programmed=False`, reason `ProviderConflict`, when provider state is ambiguous.
 
 Temporary Route 53 ZoneUnit controller pseudocode is not part of the design source of truth. Hosted zone resolution order, finalizers, pending changes, Route 53 API errors, batch limits, and requeue behavior are defined in this document.
 
@@ -174,7 +174,7 @@ Route 53 controller re-observes hosted zones and child record sets even in stabl
 
 Route 53 controller also enqueues a `ZoneUnit` when `ZoneUnit.metadata.annotations["dns.appthrust.io/reconcile-request"]` changes. This requests re-observation of the hosted zone and child record sets without waiting for periodic re-observation. It follows the same validation, pending change, batch serialization, and drift self-healing rules. Updating the annotation alone must not set `Programmed=False` or send no-op provider API changes when external state already matches `ZoneUnit.spec`.
 
-Route 53 `Zone.spec.adoption` shape:
+Route 53 `Zone.spec.adoption` accepts exactly one of these shapes:
 
 ```yaml
 spec:
@@ -182,15 +182,29 @@ spec:
     hostedZoneId: Z10219583PPQMV0U1KGN2
 ```
 
-`hostedZoneId` is a Route 53 hosted zone ID in `Z...` form. `/hostedzone/Z...` and hosted zone ARNs are not accepted. This shape is validated by Route 53 Provider version `zone.schemas.adoption`.
+```yaml
+spec:
+  domainName: hcp.example.internal
+  adoption:
+    byName: true
+```
+
+`hostedZoneId` is a Route 53 hosted zone ID in `Z...` form. `/hostedzone/Z...` and hosted zone ARNs are not accepted. Alternatively, `byName` must be the boolean `true`; `false`, an empty adoption object, or both fields together are invalid. These mutually exclusive shapes are validated by the `oneOf` in Route 53 Provider version `zone.schemas.adoption`. Invalid adoption sets `Accepted=False`, reason `InvalidAdoption`.
+
+By-name adoption avoids passing an externally managed hosted zone ID (for example, an ID held only in Terraform state) through immutable installation configuration. It is explicit opt-in, not implicit same-name recovery.
 
 Route 53 `Provider` schema descriptions for `zone.schemas.adoption`:
 
 | Field | `description` |
 | --- | --- |
 | `hostedZoneId` | `Route 53 hosted zone ID of the existing hosted zone to adopt. The zone must be public or private as declared by the ZoneClass zoneType.` |
+| `byName` | `Adopt exactly one existing hosted zone matching domainName and the ZoneClass zoneType. The resolved hosted zone ID is recorded in status and reused without further name lookups.` |
 
-When adoption is specified, the Route 53 controller gets the hosted zone, verifies that the hosted zone name matches `ZoneUnit.spec.zone.domainName`, and verifies that its public/private type matches the ZoneClass `zoneType`. If it matches, the controller manages its RecordSets and stores `hostedZoneId` in `ZoneUnit.status.zone.provider.data.hostedZoneID` and the observed type in `zoneType`. If the hosted zone does not exist, set `Programmed=False`, reason `ExternalResourceNotFound`. If the type or name differs, set `Programmed=False`, reason `ExternalResourceMismatch`. A Public class adopting a private zone keeps the message `Route 53 hosted zone is private; only public hosted zones are supported`. A Private class adopting a public zone reports `Route 53 hosted zone is public; ZoneClass zoneType is Private`.
+For `byName: true` without a recorded hosted zone ID, the controller calls `ListHostedZonesByName` with `domainName` and retains only exact same-name zones after trailing-dot normalization whose public/private type matches the ZoneClass `zoneType` (`Public` by default). **By-name adoption requires exactly one same-name zone of the class's type.** A public and a private zone with the same name are not ambiguous when only one matches the class. Zero matches set `Programmed=False`, reason `ExternalResourceNotFound`. Multiple matches set `Programmed=False`, reason `ExternalResourceMismatch`; the message reports the matching count, never the candidate IDs.
+
+For either adoption mode, the Route 53 controller gets the selected hosted zone, verifies its ID, verifies that the hosted zone name matches `ZoneUnit.spec.zone.domainName` after trailing-dot normalization, and verifies that its public/private type matches the ZoneClass `zoneType`. If it matches, the controller manages its RecordSets and stores the resolved ID in `ZoneUnit.status.zone.provider.data.hostedZoneID` and the observed type in `zoneType`, using the same status patch for both modes. If the hosted zone does not exist, set `Programmed=False`, reason `ExternalResourceNotFound`. If the ID, type, or name differs, set `Programmed=False`, reason `ExternalResourceMismatch`. A Public class adopting a private zone by ID keeps the message `Route 53 hosted zone is private; only public hosted zones are supported`. A Private class adopting a public zone by ID reports `Route 53 hosted zone is public; ZoneClass zoneType is Private`.
+
+Once recorded, the status hosted zone ID is authoritative for subsequent reconciles and deletion. By-name adoption does not list again or switch to another same-name zone, even if the recorded zone disappears; that case reports `ExternalResourceNotFound`. An explicit `hostedZoneId` differing from recorded status still sets `Accepted=False`, reason `ManagedResourceMismatch`. Deletion never resolves a previously unresolved by-name adoption: without a recorded ID there is no managed hosted zone to delete. Private zones are always retained; public zones follow the class deletion policy.
 
 Created hosted zones receive ownership tags:
 

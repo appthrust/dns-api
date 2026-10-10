@@ -60,14 +60,22 @@ spec:
           adoption:
             openAPIV3Schema:
               type: object
-              required:
-                - hostedZoneId
+              oneOf:
+                - required:
+                    - hostedZoneId
+                - required:
+                    - byName
               additionalProperties: false
               properties:
                 hostedZoneId:
                   type: string
                   description: Route 53 hosted zone ID of the existing hosted zone to adopt. The zone must be public or private as declared by the ZoneClass zoneType.
                   pattern: '^Z[A-Z0-9]+$'
+                byName:
+                  type: boolean
+                  description: Adopt exactly one existing hosted zone matching domainName and the ZoneClass zoneType. The resolved hosted zone ID is recorded in status and reused without further name lookups.
+                  enum:
+                    - true
           statusProviderData:
             openAPIV3Schema:
               type: object

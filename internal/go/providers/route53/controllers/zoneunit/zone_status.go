@@ -428,30 +428,44 @@ func callerReferenceForZoneState(zone *dnsv1alpha1.Zone, statusData route53v1alp
 	return callerReferenceForZone(zone)
 }
 
-func route53ZoneAdoptionID(zone *dnsv1alpha1.Zone) (string, bool, error) {
+type route53ZoneAdoption struct {
+	HostedZoneID string
+	ByName       bool
+}
+
+func parseRoute53ZoneAdoption(zone *dnsv1alpha1.Zone) (route53ZoneAdoption, bool, error) {
 	if len(zone.Spec.Adoption.Raw) == 0 {
-		return "", false, nil
+		return route53ZoneAdoption{}, false, nil
 	}
 
-	var adoption struct {
-		HostedZoneID string `json:"hostedZoneId"`
+	var payload struct {
+		HostedZoneID json.RawMessage `json:"hostedZoneId"`
+		ByName       json.RawMessage `json:"byName"`
 	}
-	if err := json.Unmarshal(zone.Spec.Adoption.Raw, &adoption); err != nil {
-		return "", true, fmt.Errorf("adoption must be an object with hostedZoneId: %w", err)
+	if err := json.Unmarshal(zone.Spec.Adoption.Raw, &payload); err != nil {
+		return route53ZoneAdoption{}, true, fmt.Errorf("adoption must be an object with hostedZoneId or byName: %w", err)
 	}
-	if !isRoute53HostedZoneExternalRefID(adoption.HostedZoneID) {
-		return "", true, errors.New("adoption.hostedZoneId must be a Route 53 hosted zone ID in Z... form")
+	if (len(payload.HostedZoneID) > 0) == (len(payload.ByName) > 0) {
+		return route53ZoneAdoption{}, true, errors.New("adoption must specify exactly one of hostedZoneId or byName")
 	}
-	return adoption.HostedZoneID, true, nil
+	var adoption route53ZoneAdoption
+	if len(payload.ByName) > 0 {
+		if err := json.Unmarshal(payload.ByName, &adoption.ByName); err != nil || !adoption.ByName {
+			return route53ZoneAdoption{}, true, errors.New("adoption.byName must be true")
+		}
+	} else if err := json.Unmarshal(payload.HostedZoneID, &adoption.HostedZoneID); err != nil || !isRoute53HostedZoneExternalRefID(adoption.HostedZoneID) {
+		return route53ZoneAdoption{}, true, errors.New("adoption.hostedZoneId must be a Route 53 hosted zone ID in Z... form")
+	}
+	return adoption, true, nil
 }
 
 func route53ZoneManagedResourceMismatch(zone *dnsv1alpha1.Zone, statusData route53v1alpha1.Route53ZoneStatusData) (string, bool, error) {
-	adoptionID, adopting, err := route53ZoneAdoptionID(zone)
-	if err != nil || !adopting {
+	adoption, adopting, err := parseRoute53ZoneAdoption(zone)
+	if err != nil || !adopting || adoption.ByName {
 		return "", false, err
 	}
 	statusID := normalizeHostedZoneID(statusData.HostedZoneID)
-	if statusID == "" || statusID == adoptionID {
+	if statusID == "" || statusID == adoption.HostedZoneID {
 		return "", false, nil
 	}
 	return "spec.adoption points to a different Route 53 hosted zone than the managed resource recorded in status", true, nil
@@ -461,10 +475,11 @@ func hostedZoneIDForDelete(zone *dnsv1alpha1.Zone, statusData route53v1alpha1.Ro
 	if hostedZoneID := normalizeHostedZoneID(statusData.HostedZoneID); hostedZoneID != "" {
 		return hostedZoneID, nil
 	}
-	if adoptionID, adopting, err := route53ZoneAdoptionID(zone); err != nil {
+	if adoption, adopting, err := parseRoute53ZoneAdoption(zone); err != nil {
 		return "", err
 	} else if adopting {
-		return adoptionID, nil
+		// Unresolved by-name adoption has no managed resource to delete.
+		return adoption.HostedZoneID, nil
 	}
 	return "", nil
 }
@@ -491,7 +506,7 @@ func setRoute53ZoneStatusData(data *route53v1alpha1.Route53ZoneStatusData, hoste
 }
 
 func hostedZoneSpecMismatch(zone *dnsv1alpha1.Zone, params *route53v1alpha1.Route53ZoneClassParameters, hostedZone HostedZone) string {
-	if hostedZone.Name != zone.Spec.DomainName {
+	if normalizeDomainName(hostedZone.Name) != normalizeDomainName(zone.Spec.DomainName) {
 		return "Route 53 hosted zone name does not match Zone domainName"
 	}
 	if hostedZone.Private != (zoneType(params) == route53v1alpha1.ZoneTypePrivate) {
