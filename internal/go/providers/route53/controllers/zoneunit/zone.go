@@ -122,7 +122,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return r.createHostedZone(ctx, provider, &zone, zoneClass, params)
 	}
 
-	adoptionID, adopting, err := route53ZoneAdoptionID(&zone)
+	adoption, adopting, err := parseRoute53ZoneAdoption(&zone)
 	if err != nil {
 		return ctrl.Result{}, r.setAccepted(ctx, &zone, metav1.ConditionFalse, "InvalidAdoption", err.Error())
 	}
@@ -134,8 +134,12 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return r.failProgrammedForProviderError(ctx, &zone, err)
 	}
 	if adopting {
-		if hostedZone.ID != adoptionID {
-			return ctrl.Result{}, r.setProgrammed(ctx, &zone, metav1.ConditionFalse, "ExternalResourceMismatch", "adopted Route 53 hosted zone ID does not match spec.adoption.hostedZoneId")
+		if hostedZone.ID != selection.ID {
+			message := "adopted Route 53 hosted zone ID does not match spec.adoption.hostedZoneId"
+			if adoption.ByName {
+				message = "adopted Route 53 hosted zone ID does not match resolved adoption target"
+			}
+			return ctrl.Result{}, r.setProgrammed(ctx, &zone, metav1.ConditionFalse, "ExternalResourceMismatch", message)
 		}
 		if message := hostedZoneSpecMismatch(&zone, params, hostedZone); message != "" {
 			return ctrl.Result{}, r.setProgrammed(ctx, &zone, metav1.ConditionFalse, "ExternalResourceMismatch", message)
@@ -358,7 +362,7 @@ func (r *ZoneReconciler) acceptZone(ctx context.Context, zone *dnsv1alpha1.Zone)
 	if err != nil || !accepted {
 		return nil, nil, nil, false, err
 	}
-	_, adopting, err := route53ZoneAdoptionID(zone)
+	_, adopting, err := parseRoute53ZoneAdoption(zone)
 	if err != nil {
 		return nil, nil, nil, false, r.setAccepted(ctx, zone, metav1.ConditionFalse, "InvalidAdoption", err.Error())
 	}
@@ -579,10 +583,16 @@ func (r *ZoneReconciler) deleteContextForZone(ctx context.Context, zone *dnsv1al
 }
 
 func (r *ZoneReconciler) selectHostedZone(ctx context.Context, provider Provider, zone *dnsv1alpha1.Zone, statusData route53v1alpha1.Route53ZoneStatusData, params *route53v1alpha1.Route53ZoneClassParameters) (HostedZone, bool, ctrl.Result, error) {
-	if adoptionID, adopting, err := route53ZoneAdoptionID(zone); err != nil {
+	if adoption, adopting, err := parseRoute53ZoneAdoption(zone); err != nil {
 		return HostedZone{}, true, ctrl.Result{}, r.setAccepted(ctx, zone, metav1.ConditionFalse, "InvalidAdoption", err.Error())
 	} else if adopting {
-		return HostedZone{ID: adoptionID}, false, ctrl.Result{}, nil
+		if statusID := normalizeHostedZoneID(statusData.HostedZoneID); statusID != "" {
+			return HostedZone{ID: statusID}, false, ctrl.Result{}, nil
+		}
+		if !adoption.ByName {
+			return HostedZone{ID: adoption.HostedZoneID}, false, ctrl.Result{}, nil
+		}
+		return r.selectHostedZoneByName(ctx, provider, zone, params)
 	}
 
 	statusID := normalizeHostedZoneID(statusData.HostedZoneID)
@@ -633,6 +643,35 @@ func (r *ZoneReconciler) selectHostedZone(ctx context.Context, provider Provider
 	}
 
 	return selected, false, ctrl.Result{}, nil
+}
+
+func (r *ZoneReconciler) selectHostedZoneByName(ctx context.Context, provider Provider, zone *dnsv1alpha1.Zone, params *route53v1alpha1.Route53ZoneClassParameters) (HostedZone, bool, ctrl.Result, error) {
+	domainName := normalizeDomainName(zone.Spec.DomainName)
+	zones, err := provider.ListHostedZonesByName(ctx, domainName)
+	if err != nil {
+		result, err := r.failProgrammedForProviderError(ctx, zone, err)
+		return HostedZone{}, true, result, err
+	}
+
+	wantType := zoneType(params)
+	var selected HostedZone
+	matches := 0
+	for _, hostedZone := range zones {
+		if normalizeDomainName(hostedZone.Name) == domainName && hostedZone.Private == (wantType == route53v1alpha1.ZoneTypePrivate) {
+			selected = hostedZone
+			matches++
+		}
+	}
+	switch matches {
+	case 0:
+		message := fmt.Sprintf("no same-name Route 53 hosted zone matches ZoneClass zoneType %s", wantType)
+		return HostedZone{}, true, ctrl.Result{}, r.setProgrammed(ctx, zone, metav1.ConditionFalse, "ExternalResourceNotFound", message)
+	case 1:
+		return selected, false, ctrl.Result{}, nil
+	default:
+		message := fmt.Sprintf("%d same-name Route 53 hosted zones match ZoneClass zoneType %s; adoption.byName requires exactly one", matches, wantType)
+		return HostedZone{}, true, ctrl.Result{}, r.setProgrammed(ctx, zone, metav1.ConditionFalse, "ExternalResourceMismatch", message)
+	}
 }
 
 func (r *ZoneReconciler) clearHostedZoneProviderStatus(ctx context.Context, zone *dnsv1alpha1.Zone) error {

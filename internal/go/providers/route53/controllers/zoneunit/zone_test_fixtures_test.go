@@ -549,8 +549,11 @@ type fakeProvider struct {
 	deleted    []string
 	upserted   []RecordSetResource
 	deletedRRs []RecordSetResource
+	listed     []string
+	fetched    []string
 
-	changeRecordSetsErr func(hostedZoneID string, changes []RecordSetChange) error
+	changeRecordSetsErr   func(hostedZoneID string, changes []RecordSetChange) error
+	listHostedZonesByName func(domainName string) ([]HostedZone, error)
 }
 
 func newFakeProvider() *fakeProvider {
@@ -562,6 +565,7 @@ func newFakeProvider() *fakeProvider {
 	}
 }
 func (p *fakeProvider) GetHostedZone(_ context.Context, id string) (HostedZone, error) {
+	p.fetched = append(p.fetched, id)
 	zone, ok := p.zones[normalizeHostedZoneID(id)]
 	if !ok {
 		return HostedZone{}, &smithy.GenericAPIError{
@@ -572,6 +576,10 @@ func (p *fakeProvider) GetHostedZone(_ context.Context, id string) (HostedZone, 
 	return zone, nil
 }
 func (p *fakeProvider) ListHostedZonesByName(_ context.Context, domainName string) ([]HostedZone, error) {
+	p.listed = append(p.listed, domainName)
+	if p.listHostedZonesByName != nil {
+		return p.listHostedZonesByName(domainName)
+	}
 	var zones []HostedZone
 	for _, zone := range p.zones {
 		if normalizeDomainName(zone.Name) == domainName {
