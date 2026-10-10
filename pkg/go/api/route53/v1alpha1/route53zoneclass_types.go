@@ -2,6 +2,13 @@ package v1alpha1
 
 import dnsv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/dns/v1alpha1"
 
+type ZoneType string
+
+const (
+	ZoneTypePublic  ZoneType = "Public"
+	ZoneTypePrivate ZoneType = "Private"
+)
+
 type ZoneCreationPolicy string
 
 const (
@@ -31,6 +38,10 @@ const (
 var ProviderRef = dnsv1alpha1.ProviderReference{Name: ProviderName, Version: ProviderVersion}
 
 type Route53ZoneClassParameters struct {
+	// ZoneType selects public or private hosted zones; defaults to Public.
+	// Private hosted zones are adoption-only and are always retained.
+	ZoneType ZoneType `json:"zoneType,omitempty"`
+
 	// ZoneCreationPolicy controls whether the controller may create hosted zones.
 	ZoneCreationPolicy ZoneCreationPolicy `json:"zoneCreationPolicy,omitempty"`
 

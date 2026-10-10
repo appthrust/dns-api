@@ -394,6 +394,7 @@ func setZoneStatusData(t *testing.T, zone *dnsv1alpha1.Zone, data route53v1alpha
 	publicData := route53v1alpha1.Route53ZoneStatusData{}
 	if data.HostedZoneID != "" {
 		publicData.HostedZoneID = data.HostedZoneID
+		publicData.ZoneType = data.ZoneType
 	}
 	publicRaw, err := json.Marshal(publicData)
 	if err != nil {
@@ -545,6 +546,7 @@ type fakeProvider struct {
 	changes    map[string]*route53v1alpha1.Route53Change
 	records    map[string]RecordSetResource
 	created    []createHostedZoneRequest
+	deleted    []string
 	upserted   []RecordSetResource
 	deletedRRs []RecordSetResource
 
@@ -606,6 +608,7 @@ func (p *fakeProvider) GetChange(_ context.Context, id string) (*route53v1alpha1
 	return change, nil
 }
 func (p *fakeProvider) DeleteHostedZone(_ context.Context, id string) (*route53v1alpha1.Route53Change, error) {
+	p.deleted = append(p.deleted, normalizeHostedZoneID(id))
 	delete(p.zones, normalizeHostedZoneID(id))
 	change := &route53v1alpha1.Route53Change{
 		ID:     "CDELETE",

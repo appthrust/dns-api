@@ -41,7 +41,7 @@ var reservedHostedZoneTagKeys = map[string]struct{}{
 	"appthrust.io/zone-class-name":      {},
 }
 
-// ZoneReconciler reconciles core Zone objects for Route 53 public hosted zones.
+// ZoneReconciler reconciles core Zone objects for Route 53 hosted zones.
 type ZoneReconciler struct {
 	client.Client
 
@@ -149,7 +149,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 
 	if err := r.patchRoute53ZoneStatus(ctx, &zone, func(data *route53v1alpha1.Route53ZoneStatusData) {
-		data.HostedZoneID = hostedZone.ID
+		setRoute53ZoneStatusData(data, hostedZone)
 		if hostedZone.CallerReference == callerReferenceForZoneState(&zone, statusData) {
 			data.CallerReference = hostedZone.CallerReference
 		}
@@ -466,11 +466,16 @@ func (r *ZoneReconciler) reconcileDelete(ctx context.Context, zone *dnsv1alpha1.
 		return ctrl.Result{}, r.setAccepted(ctx, zone, metav1.ConditionFalse, "InvalidAdoption", err.Error())
 	}
 	if hostedZoneID != "" {
-		if _, err := provider.GetHostedZone(ctx, hostedZoneID); err != nil {
+		hostedZone, err := provider.GetHostedZone(ctx, hostedZoneID)
+		if err != nil {
 			if isProviderNotFound(err) {
 				return ctrl.Result{}, r.removeFinalizer(ctx, unit)
 			}
 			return r.failProgrammedForProviderError(ctx, zone, err)
+		}
+		if hostedZone.Private {
+			r.recordEvent(zone, corev1.EventTypeNormal, "ExternalResourceRetained", "Zone was deleted and the private DNS zone was retained")
+			return ctrl.Result{}, r.removeFinalizer(ctx, unit)
 		}
 
 		change, err := provider.DeleteHostedZone(ctx, hostedZoneID)
@@ -636,6 +641,7 @@ func (r *ZoneReconciler) clearHostedZoneProviderStatus(ctx context.Context, zone
 		return err
 	}
 	statusData.HostedZoneID = ""
+	statusData.ZoneType = ""
 	statusData.CallerReference = ""
 	statusData.PendingHostedZoneChange = nil
 	statusData.PendingRecordSetChange = nil
@@ -676,7 +682,7 @@ func (r *ZoneReconciler) createHostedZone(ctx context.Context, provider Provider
 	}
 
 	if err := r.patchRoute53ZoneStatus(ctx, zone, func(data *route53v1alpha1.Route53ZoneStatusData) {
-		data.HostedZoneID = created.HostedZone.ID
+		setRoute53ZoneStatusData(data, created.HostedZone)
 		data.CallerReference = callerReference
 		if created.Change != nil && created.Change.Status == route53v1alpha1.Route53ChangeStatusPending {
 			data.PendingHostedZoneChange = pendingChangeFromChange(created.Change, "CREATE")

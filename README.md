@@ -6,7 +6,7 @@ It is useful when platform teams want to give application teams a safe DNS workf
 
 dns-api is currently focused on:
 
-- Amazon Route 53 public hosted zones
+- Amazon Route 53 public hosted zones, and adoption of existing private hosted zones
 - Cloudflare full zones
 - `A`, `AAAA`, `TXT`, `CNAME`, `MX`, `CAA`, and delegated `NS` records
 - Route 53 `ALIAS` records

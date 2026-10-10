@@ -684,7 +684,11 @@ function ZoneClassesTab({
               </GridCell>
               <GridCell>
                 <Typography sx={{ color: ui.text, fontSize: 14 }}>
-                  {zoneClass.spec.parameters.zoneCreationPolicy ?? 'Create'}
+                  {zoneClass.spec.parameters.zoneCreationPolicy ??
+                    (zoneClass.spec.parameters.zoneType === 'Private' ? 'Deny' : 'Create')}
+                </Typography>
+                <Typography sx={{ color: ui.faint, fontSize: 12 }}>
+                  Zone type: {zoneClass.spec.parameters.zoneType ?? 'Public'}
                 </Typography>
               </GridCell>
               <GridCell>
