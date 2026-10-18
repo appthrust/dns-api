@@ -11,11 +11,11 @@ import (
 type EndpointTargetType string
 
 const (
-	EndpointTargetTypeHostname  EndpointTargetType = "Hostname"
-	EndpointTargetTypeIPAddress EndpointTargetType = "IPAddress"
-	GeneratedRecordSetsFinalizer = "endpoint.dns.appthrust.io/generated-recordsets"
-	ReasonRetiring = "Retiring"
-	ReasonWithdrawalCapturePending = "WithdrawalCapturePending"
+	EndpointTargetTypeHostname     EndpointTargetType = "Hostname"
+	EndpointTargetTypeIPAddress    EndpointTargetType = "IPAddress"
+	GeneratedRecordSetsFinalizer                      = "endpoint.dns.appthrust.io/generated-recordsets"
+	ReasonRetiring                                    = "Retiring"
+	ReasonWithdrawalCapturePending                    = "WithdrawalCapturePending"
 )
 
 // EndpointTarget is one provider-neutral endpoint address.

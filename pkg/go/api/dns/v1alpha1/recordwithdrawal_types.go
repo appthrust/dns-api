@@ -13,17 +13,21 @@ import (
 )
 
 const (
-	AddressLabelKey = "endpoint.dns.appthrust.io/address"
-	ConditionWithdrawn ConditionType = "Withdrawn"
+	AddressLabelKey                         = "endpoint.dns.appthrust.io/address"
+	ConditionWithdrawn        ConditionType = "Withdrawn"
 	ConditionOverrideAccepted ConditionType = "OverrideAccepted"
 )
 
 // AddressLabelValue encodes a normalized address as a Kubernetes label value.
 // Invalid addresses return an empty value; callers must validate before creation.
 func AddressLabelValue(ip netip.Addr) string {
-	if !ip.IsValid() || ip.Zone() != "" { return "" }
+	if !ip.IsValid() || ip.Zone() != "" {
+		return ""
+	}
 	ip = ip.Unmap()
-	if ip.Is4() { return ip.String() }
+	if ip.Is4() {
+		return ip.String()
+	}
 	bytes := ip.As16()
 	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(bytes[:]))
 }
@@ -43,9 +47,9 @@ func WithdrawalSpecDigest(spec RecordWithdrawalSpec) string {
 // +kubebuilder:printcolumn:name="Address",type=string,JSONPath=`.spec.address`
 // +kubebuilder:printcolumn:name="Withdrawn",type=string,JSONPath=`.status.conditions[?(@.type=="Withdrawn")].status`
 type RecordWithdrawal struct {
-	metav1.TypeMeta `json:",inline"`
+	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec RecordWithdrawalSpec `json:"spec"`
+	Spec              RecordWithdrawalSpec `json:"spec"`
 	// +optional
 	Status RecordWithdrawalStatus `json:"status,omitempty"`
 }
@@ -73,6 +77,7 @@ type WithdrawalObjectReference struct {
 	Name string `json:"name"`
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:Type=string
 	UID types.UID `json:"uid"`
 }
 
@@ -126,7 +131,7 @@ type RecordWithdrawalStatus struct {
 type RecordWithdrawalList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items []RecordWithdrawal `json:"items"`
+	Items           []RecordWithdrawal `json:"items"`
 }
 
 // RecordWithdrawalWaiver records separately RBAC-authorized acceptance of stale
@@ -134,9 +139,9 @@ type RecordWithdrawalList struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 type RecordWithdrawalWaiver struct {
-	metav1.TypeMeta `json:",inline"`
+	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec RecordWithdrawalWaiverSpec `json:"spec"`
+	Spec              RecordWithdrawalWaiverSpec `json:"spec"`
 	// +optional
 	Status RecordWithdrawalWaiverStatus `json:"status,omitempty"`
 }
@@ -145,10 +150,11 @@ type RecordWithdrawalWaiver struct {
 type RecordWithdrawalWaiverSpec struct {
 	WithdrawalRef WithdrawalObjectReference `json:"withdrawalRef"`
 	// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
+	// +kubebuilder:validation:MaxLength=71
 	ClaimSpecDigest string `json:"claimSpecDigest"`
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=39
-	Address string `json:"address"`
+	Address        string                    `json:"address"`
 	ReservationRef WithdrawalObjectReference `json:"reservationRef"`
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=2048
@@ -180,9 +186,10 @@ type RecordWithdrawalWaiverReference struct {
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Type=string
 	UID types.UID `json:"uid"`
 	// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
-	Digest string `json:"digest"`
+	Digest         string                    `json:"digest"`
 	ReservationRef WithdrawalObjectReference `json:"reservationRef"`
 }
 
@@ -190,7 +197,7 @@ type RecordWithdrawalWaiverReference struct {
 type RecordWithdrawalWaiverList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items []RecordWithdrawalWaiver `json:"items"`
+	Items           []RecordWithdrawalWaiver `json:"items"`
 }
 
 // Scalar keys duplicate the nested identity because Kubernetes map-list keys
@@ -198,10 +205,12 @@ type RecordWithdrawalWaiverList struct {
 // +kubebuilder:validation:XValidation:rule="self.claimNamespace == self.claim.namespace && self.claimName == self.claim.name",message="scalar claim keys must match claim"
 type ZoneUnitWithdrawal struct {
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
 	ClaimNamespace string `json:"claimNamespace"`
 	// +kubebuilder:validation:MinLength=1
-	ClaimName string `json:"claimName"`
-	Claim WithdrawalObjectReference `json:"claim"`
+	// +kubebuilder:validation:MaxLength=253
+	ClaimName string                    `json:"claimName"`
+	Claim     WithdrawalObjectReference `json:"claim"`
 	// +kubebuilder:validation:Minimum=1
 	ObservedGeneration int64 `json:"observedGeneration"`
 	// +kubebuilder:validation:MinLength=1
@@ -210,7 +219,7 @@ type ZoneUnitWithdrawal struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=39
 	Address string `json:"address"`
-	Allowed bool `json:"allowed"`
+	Allowed bool   `json:"allowed"`
 	// +optional
 	Waiver *ZoneUnitWithdrawalWaiver `json:"waiver,omitempty"`
 }
@@ -219,6 +228,7 @@ type ZoneUnitWithdrawalWaiver struct {
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Type=string
 	UID types.UID `json:"uid"`
 	// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
 	Digest string `json:"digest"`
@@ -229,10 +239,12 @@ type ZoneUnitWithdrawalWaiver struct {
 // +kubebuilder:validation:XValidation:rule="self.claimNamespace == self.claim.namespace && self.claimName == self.claim.name",message="scalar claim keys must match claim"
 type ZoneUnitWithdrawalStatus struct {
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
 	ClaimNamespace string `json:"claimNamespace"`
 	// +kubebuilder:validation:MinLength=1
-	ClaimName string `json:"claimName"`
-	Claim WithdrawalObjectReference `json:"claim"`
+	// +kubebuilder:validation:MaxLength=253
+	ClaimName string                    `json:"claimName"`
+	Claim     WithdrawalObjectReference `json:"claim"`
 	// +kubebuilder:validation:Minimum=1
 	ObservedGeneration int64 `json:"observedGeneration"`
 	// +optional

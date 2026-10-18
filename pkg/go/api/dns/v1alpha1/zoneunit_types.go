@@ -59,6 +59,15 @@ type ZoneUnitZoneSpec struct {
 	// ZoneClassRef is the resolved ZoneClass reference.
 	ZoneClassRef ObjectReference `json:"zoneClassRef"`
 
+	// ZoneClassUID and ZoneClassObservedGeneration fence policy changes before
+	// provider reconciliation. Missing legacy bindings cannot prove withdrawal.
+	// +optional
+	// +kubebuilder:validation:Type=string
+	ZoneClassUID types.UID `json:"zoneClassUID,omitempty"`
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	ZoneClassObservedGeneration int64 `json:"zoneClassObservedGeneration,omitempty"`
+
 	// Adoption is provider-specific adoption payload in storage-version form.
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +optional
