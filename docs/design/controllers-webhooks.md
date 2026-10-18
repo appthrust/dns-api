@@ -25,30 +25,24 @@ Admission validation must not reject `Zone`, `RecordSet`, or `ZoneUnit` solely b
 
 All claim conditions include `observedGeneration`. If a resource moves out of a provider controller's scope, that controller stops updating `ZoneUnit.status`. Existing claim conditions can be recognized as old through `observedGeneration`.
 
-When projecting a current provider condition from `ZoneUnit.status.zone` or `ZoneUnit.status.recordSets[]`, core preserves `Status`, `Reason`, and `Message`, including an empty Message. It must not replace a provider diagnostic with its reason string. This applies to both Accepted and Programmed on Zone and RecordSet and does not weaken UID/generation checks, composition acceptance, or the use of core-generated messages for stale/missing provider results. Providers must supply bounded, non-secret messages suitable for public claim status.
+When projecting a current provider condition from `ZoneUnit.status.zone` or `ZoneUnit.status.recordSets[]`, core preserves `Status`, `Reason`, and `Message`, including an empty Message. This applies to Accepted and Programmed on both Zone and RecordSet, without changing UID/generation fences or acceptance precedence. Core-generated waiting/rejection conditions retain their own messages.
 
 Provider implementation differences are controlled by common conditions, reasons, status ownership, support levels, and conformance tests. The core does not hide differences by providing one shared DNS controller implementation; providers give a consistent user experience by satisfying the same contract.
 
-## Provider Enablement (required contract; not implemented at 87aa1dc)
+## Provider Enablement
 
-Provider enablement is a runtime and permission boundary, not merely a switch for rendering Provider manifests. The required chart contract passes explicit boolean manager flags.
+Provider enablement gates runtime registrations and provider-only privileges, not just Provider manifests. The manager accepts these flags and environment defaults; explicit flags take precedence:
 
-At the current revision only `--gateway-endpoint-controller-enabled` and `--service-endpoint-controller-enabled` exist as enable flags; `providers.*.enabled` gate manifests only, and identity controllers, identity webhooks, the Route 53 conversion handler, identity RBAC, and Secret read permission are always on (`app/operator/cmd/manager/main.go`, `deploy/charts/dns-api/templates/rbac.yaml`). The flags below are introduced with the external provider.
-
-| Chart value | Manager flag (new) | Default | Enabled scope |
+| Chart value | Manager flag | Environment variable | Default |
 | --- | --- | --- | --- |
-| `providers.route53.enabled` | `--route53-controller-enabled` | true | Route53Identity, Route 53 ZoneClass/ZoneUnit controllers, identity webhook, provider identity RBAC, and the Route 53 Provider manifest. |
-| `providers.cloudflare.enabled` | `--cloudflare-controller-enabled` | true | CloudflareIdentity, Cloudflare ZoneClass/ZoneUnit controllers, identity webhook, identity/Secret reads and watches, and the Cloudflare Provider manifest. |
-| `providers.external.enabled` | `--external-controller-enabled` | false | External ZoneClass/ZoneUnit controllers, Provider, endpoint conversion handler/capability/APIService, and conversion-create RBAC. No identity controller, identity webhook, or credential reads. |
-| `providers.route53.endpoint.conversionAPI.enabled` | `--route53-endpoint-conversion-enabled` | true | Route 53 conversion handler/capability/APIService and conversion-create RBAC, only when Route 53 is enabled. |
+| `providers.route53.enabled` | `--route53-controller-enabled` | `ROUTE53_CONTROLLER_ENABLED` | true |
+| `providers.cloudflare.enabled` | `--cloudflare-controller-enabled` | `CLOUDFLARE_CONTROLLER_ENABLED` | true |
+| `providers.route53.endpoint.conversionAPI.enabled` | `--route53-endpoint-conversion-enabled` | `ROUTE53_ENDPOINT_CONVERSION_ENABLED` | true |
+| `providers.external.enabled` | `--external-controller-enabled` | `EXTERNAL_CONTROLLER_ENABLED` | false |
 
-The manager must not call disabled providers' controller or identity-webhook setup functions, register their conversion handlers, construct credential clients, or create their identity/Secret informers. Scheme/CRD types may remain available for reading existing objects. Provider-only RBAC and the corresponding ValidatingWebhookConfiguration entries are gated with registrations; leaving an unserved identity webhook in admission is not disabling a provider. Route 53 conversion requires both Route 53 flags. Cloudflare has no endpoint conversion handler in the current implementation; enablement must not invent an unserved capability.
+Each provider switch gates its identity, ZoneClass, and ZoneUnit controllers, credential-client construction, and identity spec/status admission handler. The chart gates matching identity RBAC and webhook entries. Secret get/list/watch belongs only to enabled Cloudflare; mounted serving certificates do not require Secret API reads. Route 53 conversion requires both Route 53 flags. Its chart flag, capability, APIService, and conversion-create permission additionally require the webhook Service to be enabled. The external switch gates the external ZoneClass/ZoneUnit controllers, the external Provider and `EndpointProviderCapability`, its conversion handler/APIService, and conversion-create RBAC; external has no identity controller, identity webhook, or credential reads, and its conversion API requires the webhook Service with cert-manager-managed serving TLS ([External Provider](external-provider.md#packaging-and-metrics)).
 
-Namespace reads and core/endpoint RBAC remain independent. Secret get/list/watch is granted only for an enabled credential consumer (Cloudflare in the built-in chart), not to the external provider or an all-disabled deployment. Mounted serving TLS certificates do not require Kubernetes Secret API read permission. Helm and Kustomize wiring must provide equivalent admission coverage, including ZoneClass status and enabled provider identity spec/status handlers. Existing `gatewayEndpoint.enabled` / `--gateway-endpoint-controller-enabled` and `serviceEndpoint.enabled` / `--service-endpoint-controller-enabled` continue to gate their own registrations and source-only permissions.
-
-Core composition, endpoint translation, core CRDs, and core schema/status admission are retained when providers are disabled. External enablement requires its conversion API to be reachable through the existing webhook server with verified serving TLS and CA wiring; reject incompatible chart settings instead of publishing an unusable capability or using `insecureSkipTLSVerify`. Provider/controller-name/version flags select runtime bindings and cannot override a disabled flag. Changing flags does not complete cleanup of existing claims; operators must not disable a provider while relying on its finalizers or continuing verification.
-
-These gates are the required design contract; manifest-only enable switches do not satisfy it.
+Core composition, endpoint translation, namespace reads, and core schema/status admission remain enabled independently. Gateway/Service source switches retain their existing registration and permission gates. Scheme/CRD types remain available when a provider is disabled. Helm's default admission coverage matches Kustomize, including ZoneClass status and both identity spec/status endpoints. Kustomize's default installation enables both providers; custom disable overlays must remove the corresponding admission entries and privileges as well as setting manager flags. Disabling a provider does not complete existing finalizers.
 
 ## Implementation Modules
 

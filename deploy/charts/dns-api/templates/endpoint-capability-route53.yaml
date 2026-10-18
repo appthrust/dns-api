@@ -1,4 +1,4 @@
-{{- if and .Values.providers.route53.enabled .Values.providers.route53.endpoint.conversionAPI.enabled }}
+{{- if and .Values.webhook.enabled .Values.providers.route53.enabled .Values.providers.route53.endpoint.conversionAPI.enabled }}
 apiVersion: endpoint.dns.appthrust.io/v1alpha1
 kind: EndpointProviderCapability
 metadata:

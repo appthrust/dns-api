@@ -337,13 +337,15 @@ func (v *CoreValidator) validateZoneClass(ctx context.Context, zoneClass *dnsv1a
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(zoneClass.Spec.IdentityRef.Name) == "" {
-		return errors.New("spec.identityRef.name is required")
-	}
 	if providerVersion.Identity != nil {
+		if zoneClass.Spec.IdentityRef == nil || strings.TrimSpace(zoneClass.Spec.IdentityRef.Name) == "" {
+			return errors.New("spec.identityRef.name is required")
+		}
 		if err := validateProviderIdentityResource(providerVersion.Identity.Resource, "Provider.identity.resource"); err != nil {
 			return err
 		}
+	} else if zoneClass.Spec.IdentityRef != nil {
+		return errors.New("spec.identityRef is forbidden when the Provider version does not declare identity")
 	}
 	if err := validateNamespacePolicy(zoneClass.Spec.AllowedZones.Namespaces, "spec.allowedZones.namespaces"); err != nil {
 		return err

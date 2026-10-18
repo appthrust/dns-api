@@ -40,8 +40,8 @@ func TestZoneUnitCompositionReconcilerDoesNotRebadgeStaleSameUIDProviderStatus(t
 			ObservedGeneration: 1,
 			Zone: &dnsv1alpha1.ZoneUnitZoneStatus{
 				Conditions: []metav1.Condition{
-					{Type: string(dnsv1alpha1.ConditionAccepted), Status: metav1.ConditionTrue, Reason: "Accepted", ObservedGeneration: 1},
-					{Type: string(dnsv1alpha1.ConditionProgrammed), Status: metav1.ConditionTrue, Reason: "Programmed", ObservedGeneration: 1},
+					{Type: string(dnsv1alpha1.ConditionAccepted), Status: metav1.ConditionTrue, Reason: "Accepted", Message: "stale acceptance", ObservedGeneration: 1},
+					{Type: string(dnsv1alpha1.ConditionProgrammed), Status: metav1.ConditionTrue, Reason: "Programmed", Message: "stale programming", ObservedGeneration: 1},
 				},
 			},
 			RecordSets: []dnsv1alpha1.ZoneUnitRecordSetStatus{{
@@ -51,8 +51,8 @@ func TestZoneUnitCompositionReconcilerDoesNotRebadgeStaleSameUIDProviderStatus(t
 				ObservedGeneration: 1,
 				Provider:           &dnsv1alpha1.ProviderStatus{Data: runtime.RawExtension{Raw: []byte(`{"recordID":"current"}`)}},
 				Conditions: []metav1.Condition{
-					{Type: string(dnsv1alpha1.ConditionAccepted), Status: metav1.ConditionTrue, Reason: "Accepted", ObservedGeneration: 1},
-					{Type: string(dnsv1alpha1.ConditionProgrammed), Status: metav1.ConditionTrue, Reason: "Programmed", ObservedGeneration: 1},
+					{Type: string(dnsv1alpha1.ConditionAccepted), Status: metav1.ConditionTrue, Reason: "Accepted", Message: "stale acceptance", ObservedGeneration: 1},
+					{Type: string(dnsv1alpha1.ConditionProgrammed), Status: metav1.ConditionTrue, Reason: "Programmed", Message: "stale programming", ObservedGeneration: 1},
 				},
 			}},
 		},
@@ -86,6 +86,13 @@ func TestZoneUnitCompositionReconcilerDoesNotRebadgeStaleSameUIDProviderStatus(t
 	}
 	assertConditionAtGeneration(t, staleZoneProjection.Status.Conditions, string(dnsv1alpha1.ConditionAccepted), metav1.ConditionUnknown, "OwnerStateNotResolved", zone.Generation)
 	assertConditionAtGeneration(t, staleZoneProjection.Status.Conditions, string(dnsv1alpha1.ConditionProgrammed), metav1.ConditionUnknown, "Reconciling", zone.Generation)
+	for _, conditions := range [][]metav1.Condition{staleProjection.Status.Conditions, staleZoneProjection.Status.Conditions} {
+		for _, condition := range conditions {
+			if condition.Message != condition.Reason {
+				t.Fatalf("stale provider diagnostic leaked into current condition: %#v", condition)
+			}
+		}
+	}
 
 	var currentUnit dnsv1alpha1.ZoneUnit
 	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(unit), &currentUnit); err != nil {
@@ -154,6 +161,98 @@ func TestZoneUnitCompositionReconcilerDoesNotRebadgeStaleSameUIDProviderStatus(t
 		t.Fatal("provider ownership did not survive fresh recovery")
 	}
 	assertRawEqual(t, recovered.Status.Provider.Data, map[string]any{"recordID": "current"})
+}
+
+func TestZoneUnitProjectionPreservesCurrentProviderMessages(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		accepted   metav1.ConditionStatus
+		programmed metav1.ConditionStatus
+		message    string
+	}{
+		{name: "verified", accepted: metav1.ConditionTrue, programmed: metav1.ConditionTrue, message: "DNS matches every required view; no DNS changes were made."},
+		{name: "mismatch", accepted: metav1.ConditionTrue, programmed: metav1.ConditionFalse, message: "DNS targets differ: unexpected AAAA."},
+		{name: "unavailable", accepted: metav1.ConditionTrue, programmed: metav1.ConditionUnknown, message: "DNS verification unavailable: timeout."},
+		{name: "empty", accepted: metav1.ConditionTrue, programmed: metav1.ConditionTrue},
+		{name: "rejected", accepted: metav1.ConditionFalse, programmed: metav1.ConditionTrue, message: "Provider identity is not usable."},
+		{name: "unresolved", accepted: metav1.ConditionUnknown, programmed: metav1.ConditionTrue, message: "Provider identity is not resolved."},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			zone := zone("app", "example-com", "example.com")
+			zone.Generation = 2
+			recordSet := aRecordSet("app", "www", "app", "example-com", "www")
+			recordSet.Generation = 2
+			recordSet.UID = types.UID("current")
+			oldConditions := []metav1.Condition{
+				{Type: "Accepted", Status: metav1.ConditionTrue, Reason: "Accepted", Message: "old acceptance", ObservedGeneration: 2},
+				{Type: "Programmed", Status: metav1.ConditionTrue, Reason: "Programmed", Message: "old success", ObservedGeneration: 2},
+			}
+			zone.Status.Conditions = append([]metav1.Condition(nil), oldConditions...)
+			recordSet.Status.Conditions = append([]metav1.Condition(nil), oldConditions...)
+			acceptedReason := "Accepted"
+			if test.accepted == metav1.ConditionFalse {
+				acceptedReason = "InvalidIdentityRef"
+			} else if test.accepted == metav1.ConditionUnknown {
+				acceptedReason = "IdentityNotResolved"
+			}
+			programmedReason := "Programmed"
+			if test.programmed == metav1.ConditionFalse {
+				programmedReason = "ExternalResourceMismatch"
+			} else if test.programmed == metav1.ConditionUnknown {
+				programmedReason = "ProviderUnavailable"
+			}
+			conditions := []metav1.Condition{
+				{Type: "Accepted", Status: test.accepted, Reason: acceptedReason, Message: test.message, ObservedGeneration: 2},
+				{Type: "Programmed", Status: test.programmed, Reason: programmedReason, Message: test.message, ObservedGeneration: 2},
+			}
+			unit := &dnsv1alpha1.ZoneUnit{
+				Spec: dnsv1alpha1.ZoneUnitSpec{
+					Zone:       dnsv1alpha1.ZoneUnitZoneSpec{ObservedGeneration: 2},
+					RecordSets: []dnsv1alpha1.ZoneUnitRecordSetSpec{zoneUnitRecordSetItem(recordSet, providercontract.Payload{})},
+				},
+				Status: dnsv1alpha1.ZoneUnitStatus{
+					Zone: &dnsv1alpha1.ZoneUnitZoneStatus{Conditions: conditions},
+					RecordSets: []dnsv1alpha1.ZoneUnitRecordSetStatus{{
+						RecordSetNamespace: recordSet.Namespace,
+						RecordSetName:      recordSet.Name,
+						RecordSetUID:       recordSet.UID,
+						ObservedGeneration: 2,
+						Conditions:         conditions,
+					}},
+				},
+			}
+			k8sClient := fake.NewClientBuilder().
+				WithScheme(testScheme(t)).
+				WithObjects(zone, recordSet).
+				WithStatusSubresource(&dnsv1alpha1.Zone{}, &dnsv1alpha1.RecordSet{}).
+				Build()
+			reconciler := &ZoneUnitCompositionReconciler{Client: k8sClient}
+			if err := reconciler.projectZoneUnitStatus(ctx, zone, nil, []dnsv1alpha1.RecordSet{*recordSet}, unit); err != nil {
+				t.Fatalf("projectZoneUnitStatus: %v", err)
+			}
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(zone), zone); err != nil {
+				t.Fatalf("get Zone: %v", err)
+			}
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(recordSet), recordSet); err != nil {
+				t.Fatalf("get RecordSet: %v", err)
+			}
+			for _, projected := range [][]metav1.Condition{zone.Status.Conditions, recordSet.Status.Conditions} {
+				accepted := assertCondition(t, projected, "Accepted", test.accepted, acceptedReason)
+				if accepted.Message != test.message {
+					t.Fatalf("Accepted message = %q, want %q", accepted.Message, test.message)
+				}
+				programmedStatus, reason, message := test.programmed, programmedReason, test.message
+				if test.accepted != metav1.ConditionTrue {
+					programmedStatus, reason, message = metav1.ConditionUnknown, "Reconciling", "Reconciling"
+				}
+				programmed := assertCondition(t, projected, "Programmed", programmedStatus, reason)
+				if programmed.Message != message {
+					t.Fatalf("Programmed message = %q, want %q", programmed.Message, message)
+				}
+			}
+		})
+	}
 }
 
 func assertConditionAtGeneration(t *testing.T, conditions []metav1.Condition, conditionType string, status metav1.ConditionStatus, reason string, generation int64) {

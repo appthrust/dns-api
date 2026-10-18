@@ -17,11 +17,20 @@ rules:
       - ""
     resources:
       - namespaces
+    verbs:
+      - get
+      - list
+      - watch
+  {{- if .Values.providers.cloudflare.enabled }}
+  - apiGroups:
+      - ""
+    resources:
       - secrets
     verbs:
       - get
       - list
       - watch
+  {{- end }}
   {{- if .Values.serviceEndpoint.enabled }}
   - apiGroups:
       - ""
@@ -39,6 +48,7 @@ rules:
     verbs:
       - update
   {{- end }}
+  {{- if .Values.providers.cloudflare.enabled }}
   - apiGroups:
       - cloudflare.dns.appthrust.io
     resources:
@@ -57,6 +67,7 @@ rules:
       - get
       - patch
       - update
+  {{- end }}
   - apiGroups:
       - coordination.k8s.io
     resources:
@@ -153,12 +164,14 @@ rules:
       - get
       - patch
       - update
+  {{- if and .Values.providers.route53.enabled .Values.providers.route53.endpoint.conversionAPI.enabled .Values.webhook.enabled }}
   - apiGroups:
       - endpoint.route53.dns.appthrust.io
     resources:
       - endpointrecordsetconversions
     verbs:
       - create
+  {{- end }}
   {{- if .Values.gatewayEndpoint.enabled }}
   - apiGroups:
       - gateway.networking.k8s.io
@@ -184,6 +197,7 @@ rules:
     verbs:
       - update
   {{- end }}
+  {{- if .Values.providers.route53.enabled }}
   - apiGroups:
       - route53.dns.appthrust.io
     resources:
@@ -202,6 +216,7 @@ rules:
       - get
       - patch
       - update
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

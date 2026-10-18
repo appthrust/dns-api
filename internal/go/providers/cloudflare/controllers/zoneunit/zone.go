@@ -249,7 +249,7 @@ func (r *ZoneReconciler) acceptZone(ctx context.Context, zone *dnsv1alpha1.Zone)
 }
 
 func (r *ZoneReconciler) acceptIdentityRef(ctx context.Context, zone *dnsv1alpha1.Zone, zoneClass *dnsv1alpha1.ZoneClass) (*cloudflarev1alpha1.CloudflareIdentity, bool, error) {
-	if zoneClass.Spec.IdentityRef.Name == "" {
+	if zoneClass.Spec.IdentityRef == nil || zoneClass.Spec.IdentityRef.Name == "" {
 		return nil, false, r.setAccepted(ctx, zone, metav1.ConditionFalse, "InvalidIdentityRef", "spec.identityRef.name is required")
 	}
 	var identity cloudflarev1alpha1.CloudflareIdentity
@@ -849,7 +849,7 @@ func (r *ZoneReconciler) mapIdentityToZoneUnits(ctx context.Context, obj client.
 		if err != nil || zoneClass.Spec.ControllerName != r.controllerName() || !cloudflareProviderVersionMatches(provider, version, r.providerReference()) {
 			continue
 		}
-		if zoneClass.Spec.IdentityRef.Name == identity.Name {
+		if zoneClass.Spec.IdentityRef != nil && zoneClass.Spec.IdentityRef.Name == identity.Name {
 			requests = appendUniqueRequests(requests, r.zoneUnitRequestsForZoneClass(ctx, zoneClass.Namespace, zoneClass.Name)...)
 		}
 	}

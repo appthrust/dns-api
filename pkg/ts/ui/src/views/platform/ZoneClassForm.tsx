@@ -9,8 +9,8 @@ import { Stack } from '../../components/primitives';
 import { Typography } from '../../components/primitives';
 import React from 'react';
 import { z } from 'zod';
-import { createZoneClass, updateZoneClass } from '../../api/dns';
-import { nameOf, namespaceOf, resourceKey, zoneClassIdentityName } from '../../resources';
+import { createZoneClass, updateZoneClass, useAccess } from '../../api/dns';
+import { nameOf, namespaceOf, resourceKey, zoneClassIdentityName, ZoneClassResource } from '../../resources';
 import type { Provider, ProviderIdentity, ZoneClass } from '../../types/resources';
 import {
   type BreadcrumbItem,
@@ -23,6 +23,7 @@ import {
   IdentitySummaryCard,
   namespaceLabelsYaml,
   parseNamespaceLabelsYaml,
+  readJSON,
   ToolbarButton,
   ui,
   useDnsFormState,
@@ -41,6 +42,7 @@ type ZoneClassForm = {
   allowedFrom: 'Same' | 'Selector' | 'All';
   allowedLabelsText: string;
   tags: string;
+  parametersJSON: string;
   zoneType: 'Public' | 'Private';
   zoneCreationPolicy: 'Create' | 'Deny';
   zoneDeletionPolicy: 'Delete' | 'Retain';
@@ -62,6 +64,7 @@ const zoneClassFormSchema = z.object({
   allowedFrom: z.enum(['Same', 'Selector', 'All']),
   allowedLabelsText: z.string(),
   tags: z.string(),
+  parametersJSON: z.string(),
   zoneType: z.enum(['Public', 'Private']),
   zoneCreationPolicy: z.enum(['Create', 'Deny']),
   zoneDeletionPolicy: z.enum(['Delete', 'Retain']),
@@ -116,11 +119,13 @@ function zoneClassParametersFromForm(
 function buildZoneClassDesiredManifest({
   form: rawForm,
   provider,
+  providerDefinition,
   baseParameters,
   validateSelector = true,
 }: {
   form: ZoneClassForm;
   provider: string;
+  providerDefinition?: Provider;
   baseParameters?: ZoneClass['spec']['parameters'];
   validateSelector?: boolean;
 }): ZoneClass {
@@ -132,6 +137,12 @@ function buildZoneClassDesiredManifest({
     throw new Error('Controller name is required');
   }
   const providerObject = providerRefObject(provider);
+  const version = nameOf(providerDefinition) === providerObject.name
+    ? providerDefinition?.spec.versions.find(item => item.name === providerObject.version)
+    : undefined;
+  if (!version) {
+    throw new Error('Provider version is required');
+  }
   return {
     apiVersion: 'dns.appthrust.io/v1alpha1',
     kind: 'ZoneClass',
@@ -139,27 +150,31 @@ function buildZoneClassDesiredManifest({
     spec: {
       provider: providerObject,
       controllerName: form.controllerName,
-      identityRef: { name: form.identityName },
+      ...(version.identity ? { identityRef: { name: form.identityName } } : {}),
       allowedZones: allowedZonesFromForm(form, { validateSelector }),
-      parameters: zoneClassParametersFromForm(form, baseParameters),
+      parameters: version.identity
+        ? zoneClassParametersFromForm(form, baseParameters)
+        : z.record(z.string(), z.unknown()).parse(readJSON(form.parametersJSON, {}, 'Provider parameters')),
     },
   };
 }
 
-function buildZoneClassManifest(
+export function buildZoneClassManifest(
   form: ZoneClassForm,
   provider?: Provider
 ): ZoneClass {
   return buildZoneClassDesiredManifest({
     form,
-    provider: providerRef(provider),
+    provider: form.provider,
+    providerDefinition: provider,
   });
 }
 
-function buildUpdatedZoneClassManifest(zoneClass: ZoneClass, form: ZoneClassForm): ZoneClass {
+function buildUpdatedZoneClassManifest(zoneClass: ZoneClass, form: ZoneClassForm, provider?: Provider): ZoneClass {
   const desiredManifest = buildZoneClassDesiredManifest({
     form,
     provider: providerRefString(zoneClass.spec.provider),
+    providerDefinition: provider,
     baseParameters: zoneClass.spec.parameters,
   });
   const annotations = { ...(zoneClass.metadata?.annotations ?? {}) };
@@ -255,7 +270,8 @@ function zoneClassPreview(
   try {
     return buildZoneClassDesiredManifest({
       form,
-      provider: providerRef(provider),
+      provider: form.provider,
+      providerDefinition: provider,
       validateSelector: false,
     });
   } catch (error) {
@@ -281,6 +297,7 @@ function zoneClassFormFromResource(zoneClass: ZoneClass): ZoneClassForm {
     allowedFrom,
     allowedLabelsText: namespaceLabelsYaml(selector?.matchLabels),
     tags: namespaceLabelsYaml(zoneClass.spec.parameters.tags),
+    parametersJSON: JSON.stringify(zoneClass.spec.parameters, null, 2),
     zoneType: zoneClass.spec.parameters.zoneType ?? 'Public',
     zoneCreationPolicy: zoneClass.spec.parameters.zoneCreationPolicy ?? 'Create',
     zoneDeletionPolicy: zoneClass.spec.parameters.zoneDeletionPolicy ?? 'Retain',
@@ -290,12 +307,14 @@ function zoneClassFormFromResource(zoneClass: ZoneClass): ZoneClassForm {
 
 function updatedZoneClassPreview(
   zoneClass: ZoneClass,
-  form: ZoneClassForm
+  form: ZoneClassForm,
+  provider?: Provider
 ): ZoneClass | { error: string } {
   try {
     return buildZoneClassDesiredManifest({
       form,
       provider: providerRefString(zoneClass.spec.provider),
+      providerDefinition: provider,
       baseParameters: zoneClass.spec.parameters,
       validateSelector: false,
     });
@@ -306,25 +325,43 @@ function updatedZoneClassPreview(
 
 export function ZoneClassIdentitySelectPage({
   identities,
+  providers,
+  onSelectProvider,
   onCancel,
   onSelectIdentity,
   breadcrumb,
 }: {
   identities: ProviderIdentity[];
+  providers: Provider[];
+  onSelectProvider: (provider: Provider) => void;
   onCancel: () => void;
   onSelectIdentity: (identity: ProviderIdentity) => void;
   breadcrumb?: BreadcrumbItem[];
 }) {
+  const credentiallessProviders = providers.filter(provider => {
+    const version = provider.spec.versions.find(item => item.served);
+    return version && !version.identity;
+  });
   return (
     <Stack spacing={2.5}>
       <PlatformContentTitle
         breadcrumb={breadcrumb}
-        title="Select Provider Identity"
-        description="Choose the Provider Identity this ZoneClass will use."
+        title={credentiallessProviders.length ? 'Select Provider' : 'Select Provider Identity'}
+        description="Choose a provider or Provider Identity for this ZoneClass."
         action={
           <ToolbarButton label="Cancel" icon="mdi:close" tone="secondary" onClick={onCancel} />
         }
       />
+      {credentiallessProviders.map(provider => (
+        <Button
+          key={nameOf(provider)}
+          variant="outlined"
+          onClick={() => onSelectProvider(provider)}
+          sx={{ justifyContent: 'flex-start', textTransform: 'none' }}
+        >
+          {provider.spec.display.name}
+        </Button>
+      ))}
       {identities.length ? (
         <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: '1fr', lg: '1fr 1fr' } }}>
           {identities.map(identity => (
@@ -346,7 +383,7 @@ export function ZoneClassIdentitySelectPage({
             </Button>
           ))}
         </Box>
-      ) : (
+      ) : credentiallessProviders.length ? null : (
         <EmptyState
           title="No Provider Identities"
           body="Create a Provider Identity before creating ZoneClasses."
@@ -390,6 +427,8 @@ export function ZoneClassFormPage({
   identity,
   zoneClass,
   providers,
+  provider,
+  namespaces = [],
   onBack,
   onSaved,
   breadcrumb,
@@ -397,13 +436,15 @@ export function ZoneClassFormPage({
   identity?: ProviderIdentity;
   zoneClass?: ZoneClass;
   providers: Provider[];
+  provider?: Provider;
+  namespaces?: string[];
   onBack: () => void;
   onSaved: () => void;
   breadcrumb?: BreadcrumbItem[];
 }) {
   const { showSuccess, showError, snackbar } = useNotice();
   const isEdit = Boolean(zoneClass);
-  const selectedIdentityProvider = providerForIdentity(providers, identity);
+  const selectedIdentityProvider = provider ?? providerForIdentity(providers, identity);
   const initialForm = React.useMemo<ZoneClassForm>(
     () =>
       zoneClass
@@ -418,6 +459,7 @@ export function ZoneClassFormPage({
             allowedFrom: 'Selector',
             allowedLabelsText: '',
             tags: '',
+            parametersJSON: '{}',
             zoneType: 'Public',
             zoneCreationPolicy: 'Create',
             zoneDeletionPolicy: 'Delete',
@@ -428,14 +470,19 @@ export function ZoneClassFormPage({
   const [form, setForm] = useDnsFormState<ZoneClassForm>(initialForm);
   const [errors, setErrors] = React.useState<ZoneClassFormErrors>({});
 
-  const selectedProvider =
-    providers.find(
-      provider => providerRef(provider) === form.provider
-    ) ?? selectedIdentityProvider;
   const providerObject = providerRefObject(form.provider);
+  const selectedProvider = providers.find(item => nameOf(item) === providerObject.name);
+  const selectedVersion = selectedProvider?.spec.versions.find(item => item.name === providerObject.version);
+  const requiresIdentity = Boolean(selectedVersion?.identity);
+  const canSave = useAccess(ZoneClassResource, isEdit ? 'update' : 'create', {
+    group: 'dns.appthrust.io',
+    version: 'v1alpha1',
+    resource: 'zoneclasses',
+    namespace: form.namespace,
+  });
   const isPrivateZone = isRoute53ProviderRef(form.provider) && form.zoneType === 'Private';
   const preview = zoneClass
-    ? updatedZoneClassPreview(zoneClass, form)
+    ? updatedZoneClassPreview(zoneClass, form, selectedProvider)
     : selectedProvider
     ? zoneClassPreview(form, selectedProvider)
     : { error: 'Provider is required' };
@@ -458,7 +505,7 @@ export function ZoneClassFormPage({
     setErrors({});
     try {
       if (zoneClass) {
-        await updateZoneClass(buildUpdatedZoneClassManifest(zoneClass, form));
+        await updateZoneClass(buildUpdatedZoneClassManifest(zoneClass, form, selectedProvider));
         showSuccess('ZoneClass updated');
       } else {
         await createZoneClass(buildZoneClassManifest(form, selectedProvider));
@@ -485,16 +532,17 @@ export function ZoneClassFormPage({
         }
       />
       <FormPanel
-        title="Selected Provider Identity"
+        title={requiresIdentity ? 'Selected Provider Identity' : 'Selected Provider'}
         footer={
           <ToolbarButton
             label={isEdit ? 'Save changes' : 'Save ZoneClass'}
             icon="mdi:check"
             onClick={save}
+            disabled={!canSave || !form.namespace || !form.name || !selectedVersion || (requiresIdentity && !form.identityName) || 'error' in preview}
           />
         }
       >
-        {identity ? (
+        {requiresIdentity ? identity ? (
           <IdentitySummaryCard identity={identity} />
         ) : (
           <Alert severity="warning">
@@ -502,13 +550,28 @@ export function ZoneClassFormPage({
               ? `Provider Identity ${form.namespace}/${form.identityName} is not visible.`
               : 'No Provider Identity selected.'}
           </Alert>
-        )}
+        ) : null}
         <Box>
           <Typography sx={{ color: ui.muted, fontSize: 13, mb: 1 }}>Namespace</Typography>
-          <FixedValue value={form.namespace} />
-          <Typography sx={{ color: ui.faint, fontSize: 12, mt: 1 }}>
-            The ZoneClass is created in the same namespace as the selected Provider Identity.
-          </Typography>
+          {!requiresIdentity && !isEdit ? (
+            <DnsFormControl fullWidth>
+              <Select
+                value={form.namespace}
+                onChange={event => setForm({ ...form, namespace: event.target.value })}
+              >
+                {namespaces.map(namespace => (
+                  <MenuItem key={namespace} value={namespace}>{namespace}</MenuItem>
+                ))}
+              </Select>
+            </DnsFormControl>
+          ) : (
+            <FixedValue value={form.namespace} />
+          )}
+          {requiresIdentity ? (
+            <Typography sx={{ color: ui.faint, fontSize: 12, mt: 1 }}>
+              The ZoneClass is created in the same namespace as the selected Provider Identity.
+            </Typography>
+          ) : null}
         </Box>
         {isEdit ? (
           <Box>
@@ -546,6 +609,18 @@ export function ZoneClassFormPage({
             Provider controller instance that reconciles ZoneUnits for this ZoneClass.
           </Typography>
         </Box>
+        {!requiresIdentity ? (
+          <DnsTextField
+            label="Provider parameters (JSON)"
+            helperText="Configure resolver.mode, resolver.servers, and expectedNameservers for External DNS. Admission validates the selected Provider schema."
+            value={form.parametersJSON}
+            onChange={event => setForm({ ...form, parametersJSON: event.target.value })}
+            multiline
+            minRows={6}
+            fullWidth
+          />
+        ) : (
+          <>
         {isRoute53ProviderRef(form.provider) ? (
           <DnsFormControl fullWidth>
             <InputLabel>Zone type</InputLabel>
@@ -650,6 +725,8 @@ export function ZoneClassFormPage({
             fullWidth
           />
         ) : null}
+          </>
+        )}
         <DnsTextField
           label="Allowed zone namespace selector"
           helperText={

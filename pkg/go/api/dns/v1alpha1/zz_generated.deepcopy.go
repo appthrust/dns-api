@@ -1154,7 +1154,11 @@ func (in *ZoneClassReference) DeepCopy() *ZoneClassReference {
 func (in *ZoneClassSpec) DeepCopyInto(out *ZoneClassSpec) {
 	*out = *in
 	out.Provider = in.Provider
-	out.IdentityRef = in.IdentityRef
+	if in.IdentityRef != nil {
+		in, out := &in.IdentityRef, &out.IdentityRef
+		*out = new(LocalObjectReference)
+		**out = **in
+	}
 	in.Parameters.DeepCopyInto(&out.Parameters)
 	in.AllowedZones.DeepCopyInto(&out.AllowedZones)
 }

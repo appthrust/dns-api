@@ -31,7 +31,10 @@ export function PlatformZoneClassesPage() {
   const navigation = usePlatformNavigation();
   const data = useDnsData();
   const { canCreateZoneClass } = useZoneClassAccess();
-  const hasIdentities = data.identities.items.length > 0;
+  const hasProviderSelection = data.identities.items.length > 0 || data.providers.items.some(provider => {
+    const version = provider.spec.versions.find(item => item.served);
+    return version && !version.identity;
+  });
 
   return (
     <PlatformRouteFrame active="zoneclasses">
@@ -39,7 +42,7 @@ export function PlatformZoneClassesPage() {
         title="Zone Classes"
         description="ZoneClasses publish provider-backed DNS zone capability to selected namespaces."
         action={
-          hasIdentities ? (
+          hasProviderSelection ? (
             <ToolbarButton
               label="New ZoneClass"
               icon="mdi:plus"
@@ -56,7 +59,7 @@ export function PlatformZoneClassesPage() {
           )
         }
       />
-      {!hasIdentities ? (
+      {!hasProviderSelection ? (
         <EmptyState
           title="No Provider Identities"
           body="Create a Provider Identity before creating ZoneClasses."

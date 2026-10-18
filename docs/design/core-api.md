@@ -15,7 +15,7 @@
 
 `ZoneClass.spec.controllerName` uses the Gateway API-style domain-prefixed path form. It must include both a DNS subdomain prefix and a path part after `/`. Valid examples are `route53.dns.appthrust.io/controller` and `cloudflare.dns.appthrust.io/prod-a`; `route53.dns.appthrust.io` is invalid.
 
-`ZoneClass.spec.identityRef`, when present, contains only `name`. It does not contain namespace, group, or kind. Cross-namespace identity references are not part of the initial design; identity resources live with the `ZoneClass` in the same platform namespace. The referenced Provider version declares the identity `group` and `kind`, so repeating them in every `ZoneClass` would create an unnecessary mismatch surface. Credentialless providers omit the field, rather than using an empty or sentinel reference. The Go field is `IdentityRef *LocalObjectReference` with JSON tag `identityRef,omitempty`; the CRD does not structurally require it, and core admission enforces the Provider-dependent requirement. Both generated CRD distributions, Go callers (`internal/go/providers/{route53,cloudflare}/controllers/{zoneclass,zoneunit}`), and the UI ZoneClass form are updated: the form omits `identityRef` and the identity picker step when the selected Provider version declares no `identity`. Route 53 and Cloudflare still require an identity.
+`ZoneClass.spec.identityRef`, when present, contains only `name`. It does not contain namespace, group, or kind. Cross-namespace identity references are not part of the initial design; identity resources live with the `ZoneClass` in the same platform namespace. The referenced Provider version declares the identity `group` and `kind`, so repeating them in every `ZoneClass` would create an unnecessary mismatch surface. Credentialless providers omit the field rather than using an empty or sentinel reference. The Go field is `IdentityRef *LocalObjectReference` with JSON tag `identityRef,omitempty`; both CRD distributions omit the structural requirement, while core admission enforces the Provider-dependent requirement. Upgrade separately managed CRD carriers with the controller; Helm does not upgrade existing CRDs during a normal chart upgrade.
 
 `ZoneClass.status.conditions` contains `Accepted`. `Accepted=True` means `provider`, `identityRef`, `parameters`, and `allowedZones` are statically acceptable. `Accepted=False` reasons are `InvalidProvider`, `InvalidIdentityRef`, `InvalidParameters`, and `DeniedByPolicy`. `Accepted=Unknown` reasons are `IdentityNotResolved`, `ProviderStorageVersionNotResolved`, and `ReconcileError`.
 
@@ -53,19 +53,19 @@ spec:
 
 `ZoneClass` is not reconciled by a core controller. The core validating webhook reads the referenced Provider version and validates `spec.identityRef`, `spec.parameters`, and `spec.allowedZones`.
 
-Provider controllers reconcile only `ZoneClass` resources whose `spec.controllerName` matches their own controller name. If it does not match, they do not update status. They interpret `identityRef` only when the Provider version declares an identity resource, interpret provider-specific `parameters`, and set `ZoneClass.status.conditions[Accepted]` to `True` when the class is statically acceptable. Credentialless providers perform no identity lookup.
+Provider controllers reconcile only `ZoneClass` resources whose `spec.controllerName` matches their own controller name. If it does not match, they do not update status. They interpret `identityRef` only when the Provider version declares an identity resource, interpret provider-specific `parameters`, and set `ZoneClass.status.conditions[Accepted]` to `True` when the class is statically acceptable. Credentialless providers perform no identity lookup. Route 53 and Cloudflare still reject absent or empty references controller-side as `Accepted=False/InvalidIdentityRef`.
 
 ## Zone
 
-`Zone` is a namespace-scoped resource connecting Kubernetes ownership boundaries with a provider's zone scope. For DNS-writing providers it corresponds to a hosted zone / zone on the DNS provider. For the [external verification provider](external-provider.md#zone-semantics), it is a logical DNS suffix and need not be a separately hosted or delegated zone.
+`Zone` is a namespace-scoped resource. It is the management unit corresponding to a hosted zone / zone on the DNS provider, connecting Kubernetes ownership boundaries with the provider-side object.
 
 `Zone.spec` fields:
 
-- `domainName`: zone apex or logical suffix, according to the Provider contract. Only canonical ASCII values are accepted. Immutable.
+- `domainName`: zone apex. Only canonical ASCII values are accepted. Immutable.
 - `zoneClassRef`: selected `ZoneClass`. If namespace is omitted, it defaults to the `Zone` namespace. Immutable.
 - `provider.name`: `Provider.metadata.name`. Required and immutable.
 - `provider.version`: `Provider.spec.versions[].name`. Required and immutable.
-- `adoption`: specified when adopting an existing external zone under a writing provider; omitted for creation. The external verification provider does not adopt DNS objects. Mutable, but provider controllers stop changes that point to a different external zone after management starts.
+- `adoption`: specified when adopting an existing external zone. Omitted for creation. Mutable, but provider controllers stop changes that point to a different external zone after management starts.
 - `adoption`: provider-specific opaque object validated by the referenced Provider version `zone.schemas.adoption`.
 - `allowedRecordSets`: conditions under which `RecordSet` resources from other namespaces may attach. If omitted, only same-namespace `RecordSet` resources are allowed. Each rule combines a namespace selector and record policy.
 
@@ -269,9 +269,9 @@ status:
 - `IdentityNotResolved`: provider-specific identity object or its accepted state is not resolved enough to decide.
 - `ProviderConversionUnavailable`: Provider conversion webhook is temporarily unavailable, timed out, or returned a retryable failure.
 
-`Programmed` means the provider-specific completion criteria for the accepted desired state are satisfied.
+`Programmed` means the desired state has been reflected to the provider.
 
-`Zone Programmed=True` is not a generic guarantee that records resolve. For Route 53, it means no `pendingHostedZoneChange` exists in `ZoneUnit.status.provider.state` and the observed hosted zone matches `ZoneUnit.spec.zone` and `ZoneClass.spec.parameters`; parent-zone delegation and DNS reachability are not guaranteed. For the external provider, it means the verifier is configured and any requested nameserver constraint is verified, independently of child record success. External RecordSet success requires the separate resolution predicate in [External Provider](external-provider.md#recordset-verification). Core performs no DNS queries.
+`Programmed=True` does not mean DNS is resolvable. It means the last provider-side state observed by the controller matches the accepted desired state and there is no pending provider change. For Route 53, `Programmed=True` means no `pendingHostedZoneChange` exists in `ZoneUnit.status.provider.state` and the observed hosted zone matches `ZoneUnit.spec.zone` and `ZoneClass.spec.parameters`. Parent-zone NS delegation, public DNS resolvability, and resolver reachability are not guaranteed.
 
 `Programmed=False` reasons:
 
@@ -826,7 +826,7 @@ If a pre-applied `ZoneUnit` contains record-set ownership state whose owner clai
 - `IdentityNotResolved`: provider-specific identity object or its accepted state is not resolved enough to decide.
 - `ProviderConversionUnavailable`: Provider conversion webhook is temporarily unavailable, timed out, or returned a retryable failure.
 
-`Programmed` means the provider-specific completion criteria for the accepted desired state are satisfied. For Route 53, `Programmed=True` means the last observed RRSet matches the `ZoneUnit.spec.recordSets[]` item and there is no `pendingRecordSetChange` affecting that record identity. For the external provider, it means the latest completed verification matches the expected records in every required resolver view, without DNS writes; it does not imply global resolver convergence or verified withdrawal after deletion.
+`Programmed` means the desired state has been reflected to the provider. Provider-specific completion criteria are defined in provider sections. For Route 53, `Programmed=True` means the last observed RRSet matches the `ZoneUnit.spec.recordSets[]` item and there is no `pendingRecordSetChange` affecting that record identity.
 
 `Programmed=False` reasons:
 

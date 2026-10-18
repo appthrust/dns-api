@@ -67,7 +67,7 @@ func route53ZoneClass(namespace, name string, tags map[string]string) *dnsv1alph
 		Spec: dnsv1alpha1.ZoneClassSpec{
 			Provider:       route53v1alpha1.ProviderRef,
 			ControllerName: DefaultControllerName,
-			IdentityRef:    dnsv1alpha1.LocalObjectReference{Name: "route53-dev"},
+			IdentityRef:    &dnsv1alpha1.LocalObjectReference{Name: "route53-dev"},
 			Parameters:     runtime.RawExtension{Raw: raw},
 			AllowedZones: dnsv1alpha1.ZoneClassAllowedZones{
 				Namespaces: dnsv1alpha1.NamespacePolicy{From: dnsv1alpha1.NamespacesFromSame},
