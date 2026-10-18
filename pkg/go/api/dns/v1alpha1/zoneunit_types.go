@@ -36,6 +36,14 @@ type ZoneUnitSpec struct {
 	// +listMapKey=recordSetNamespace
 	// +listMapKey=recordSetName
 	RecordSets []ZoneUnitRecordSetSpec `json:"recordSets,omitempty"`
+
+	// Withdrawals retains independently authorized address-exclusion claims.
+	// +optional
+	// +kubebuilder:validation:MaxItems=256
+	// +listType=map
+	// +listMapKey=claimNamespace
+	// +listMapKey=claimName
+	Withdrawals []ZoneUnitWithdrawal `json:"withdrawals,omitempty"`
 }
 
 type ZoneUnitZoneSpec struct {
@@ -163,6 +171,14 @@ type ZoneUnitStatus struct {
 	// +listMapKey=recordSetNamespace
 	// +listMapKey=recordSetName
 	RecordSets []ZoneUnitRecordSetStatus `json:"recordSets,omitempty"`
+
+	// Withdrawals contains identity-bound exclusion verification results.
+	// +optional
+	// +kubebuilder:validation:MaxItems=256
+	// +listType=map
+	// +listMapKey=claimNamespace
+	// +listMapKey=claimName
+	Withdrawals []ZoneUnitWithdrawalStatus `json:"withdrawals,omitempty"`
 }
 
 type ZoneUnitZoneStatus struct {

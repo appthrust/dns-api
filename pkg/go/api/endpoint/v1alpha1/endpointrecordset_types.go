@@ -13,6 +13,9 @@ type EndpointTargetType string
 const (
 	EndpointTargetTypeHostname  EndpointTargetType = "Hostname"
 	EndpointTargetTypeIPAddress EndpointTargetType = "IPAddress"
+	GeneratedRecordSetsFinalizer = "endpoint.dns.appthrust.io/generated-recordsets"
+	ReasonRetiring = "Retiring"
+	ReasonWithdrawalCapturePending = "WithdrawalCapturePending"
 )
 
 // EndpointTarget is one provider-neutral endpoint address.
@@ -38,16 +41,61 @@ type EndpointRecordSet struct {
 	Status EndpointRecordSetStatus `json:"status,omitempty"`
 }
 
+// +kubebuilder:validation:XValidation:rule="(has(self.hostnames) && size(self.hostnames) > 0 && has(self.targets) && size(self.targets) > 0) || (has(self.retiredTargets) && size(self.retiredTargets) > 0) || (has(self.retiredHostnames) && size(self.retiredHostnames) > 0)",message="nonempty hostname and target intent or retirement entries are required"
 type EndpointRecordSetSpec struct {
 	// Hostnames are fully qualified DNS hostnames to publish.
-	// +kubebuilder:validation:MinItems=1
+	// +optional
 	// +listType=set
-	Hostnames []string `json:"hostnames"`
+	Hostnames []string `json:"hostnames,omitempty"`
 
 	// Targets are endpoint addresses that the hostnames should publish.
-	// +kubebuilder:validation:MinItems=1
+	// +optional
 	// +listType=atomic
-	Targets []EndpointTarget `json:"targets"`
+	Targets []EndpointTarget `json:"targets,omitempty"`
+
+	// RetiredTargets preserves removed addresses with their old hostname snapshot.
+	// +optional
+	// +kubebuilder:validation:MaxItems=64
+	// +listType=map
+	// +listMapKey=id
+	RetiredTargets []RetiredTarget `json:"retiredTargets,omitempty"`
+
+	// RetiredHostnames preserves removed names with their old address snapshot.
+	// +optional
+	// +kubebuilder:validation:MaxItems=256
+	// +listType=map
+	// +listMapKey=id
+	RetiredHostnames []RetiredHostname `json:"retiredHostnames,omitempty"`
+}
+
+type RetiredTarget struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	ID string `json:"id"`
+	// +kubebuilder:validation:Minimum=1
+	SourceGeneration int64 `json:"sourceGeneration"`
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=39
+	Address string `json:"address"`
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=256
+	// +listType=set
+	Hostnames []string `json:"hostnames"`
+}
+
+type RetiredHostname struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	ID string `json:"id"`
+	// +kubebuilder:validation:Minimum=1
+	SourceGeneration int64 `json:"sourceGeneration"`
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Hostname string `json:"hostname"`
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=64
+	// +listType=set
+	Addresses []string `json:"addresses"`
 }
 
 type EndpointRecordSetStatus struct {
