@@ -25,7 +25,30 @@ Admission validation must not reject `Zone`, `RecordSet`, or `ZoneUnit` solely b
 
 All claim conditions include `observedGeneration`. If a resource moves out of a provider controller's scope, that controller stops updating `ZoneUnit.status`. Existing claim conditions can be recognized as old through `observedGeneration`.
 
+When projecting a current provider condition from `ZoneUnit.status.zone` or `ZoneUnit.status.recordSets[]`, core preserves `Status`, `Reason`, and `Message`, including an empty Message. It must not replace a provider diagnostic with its reason string. This applies to both Accepted and Programmed on Zone and RecordSet and does not weaken UID/generation checks, composition acceptance, or the use of core-generated messages for stale/missing provider results. Providers must supply bounded, non-secret messages suitable for public claim status.
+
 Provider implementation differences are controlled by common conditions, reasons, status ownership, support levels, and conformance tests. The core does not hide differences by providing one shared DNS controller implementation; providers give a consistent user experience by satisfying the same contract.
+
+## Provider Enablement (required contract; not implemented at 87aa1dc)
+
+Provider enablement is a runtime and permission boundary, not merely a switch for rendering Provider manifests. The required chart contract passes explicit boolean manager flags.
+
+At the current revision only `--gateway-endpoint-controller-enabled` and `--service-endpoint-controller-enabled` exist as enable flags; `providers.*.enabled` gate manifests only, and identity controllers, identity webhooks, the Route 53 conversion handler, identity RBAC, and Secret read permission are always on (`app/operator/cmd/manager/main.go`, `deploy/charts/dns-api/templates/rbac.yaml`). The flags below are introduced with the external provider.
+
+| Chart value | Manager flag (new) | Default | Enabled scope |
+| --- | --- | --- | --- |
+| `providers.route53.enabled` | `--route53-controller-enabled` | true | Route53Identity, Route 53 ZoneClass/ZoneUnit controllers, identity webhook, provider identity RBAC, and the Route 53 Provider manifest. |
+| `providers.cloudflare.enabled` | `--cloudflare-controller-enabled` | true | CloudflareIdentity, Cloudflare ZoneClass/ZoneUnit controllers, identity webhook, identity/Secret reads and watches, and the Cloudflare Provider manifest. |
+| `providers.external.enabled` | `--external-controller-enabled` | false | External ZoneClass/ZoneUnit controllers, Provider, endpoint conversion handler/capability/APIService, and conversion-create RBAC. No identity controller, identity webhook, or credential reads. |
+| `providers.route53.endpoint.conversionAPI.enabled` | `--route53-endpoint-conversion-enabled` | true | Route 53 conversion handler/capability/APIService and conversion-create RBAC, only when Route 53 is enabled. |
+
+The manager must not call disabled providers' controller or identity-webhook setup functions, register their conversion handlers, construct credential clients, or create their identity/Secret informers. Scheme/CRD types may remain available for reading existing objects. Provider-only RBAC and the corresponding ValidatingWebhookConfiguration entries are gated with registrations; leaving an unserved identity webhook in admission is not disabling a provider. Route 53 conversion requires both Route 53 flags. Cloudflare has no endpoint conversion handler in the current implementation; enablement must not invent an unserved capability.
+
+Namespace reads and core/endpoint RBAC remain independent. Secret get/list/watch is granted only for an enabled credential consumer (Cloudflare in the built-in chart), not to the external provider or an all-disabled deployment. Mounted serving TLS certificates do not require Kubernetes Secret API read permission. Helm and Kustomize wiring must provide equivalent admission coverage, including ZoneClass status and enabled provider identity spec/status handlers. Existing `gatewayEndpoint.enabled` / `--gateway-endpoint-controller-enabled` and `serviceEndpoint.enabled` / `--service-endpoint-controller-enabled` continue to gate their own registrations and source-only permissions.
+
+Core composition, endpoint translation, core CRDs, and core schema/status admission are retained when providers are disabled. External enablement requires its conversion API to be reachable through the existing webhook server with verified serving TLS and CA wiring; reject incompatible chart settings instead of publishing an unusable capability or using `insecureSkipTLSVerify`. Provider/controller-name/version flags select runtime bindings and cannot override a disabled flag. Changing flags does not complete cleanup of existing claims; operators must not disable a provider while relying on its finalizers or continuing verification.
+
+These gates are the required design contract; manifest-only enable switches do not satisfy it.
 
 ## Implementation Modules
 
@@ -86,7 +109,7 @@ The webhook server runs as part of the controller-runtime manager and listens on
 
 Webhook TLS certificates are issued by cert-manager. Tilt installs cert-manager as a Helm chart. dns-api manifests apply `Certificate`, `Issuer`, and `ValidatingWebhookConfiguration`. cert-manager CA injection sets the webhook `caBundle`.
 
-Core validating webhook covers at least spec create/update for `Provider`, `ZoneClass`, `Zone`, `RecordSet`, and `ZoneUnit`, and status update for `Zone`, `RecordSet`, and `ZoneUnit`. Provider-specific validating webhooks cover provider-specific resources such as `Route53Identity` and `CloudflareIdentity`. The core webhook must not import provider API packages such as `api/route53` or `api/cloudflare`.
+Core validating webhook covers at least spec create/update for `Provider`, `ZoneClass`, `Zone`, `RecordSet`, and `ZoneUnit`, and status update for `ZoneClass`, `Zone`, `RecordSet`, and `ZoneUnit`. Provider-specific validating webhooks cover enabled provider-specific resources such as `Route53Identity` and `CloudflareIdentity`; external has no identity admission handler. The core webhook must not import provider API packages such as `api/route53` or `api/cloudflare`.
 
 Provider controllers do not fully trust the webhook. The webhook is the primary user feedback boundary, but controllers keep minimal safety checks. Controller-side validation failure is returned as `Accepted=False` or `Programmed=False`.
 
@@ -139,7 +162,11 @@ validate ZoneClass:
 
   provider, providerVersion = resolve ProviderVersion(spec.provider)
 
-  validate spec.identityRef shape by providerVersion.identity.resource
+  if providerVersion.identity is present:
+    require spec.identityRef with nonempty name
+    validate spec.identityRef shape by providerVersion.identity.resource
+  else:
+    reject spec.identityRef
   validate spec.parameters by providerVersion.zoneClass.schemas.parameters
   validate providerVersion.zoneClass.validationRules
   validate spec.allowedZones
