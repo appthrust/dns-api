@@ -36,6 +36,32 @@ func TestZoneClassReconcilerAcceptsRoute53Parameters(t *testing.T) {
 	assertCondition(t, got.Status.Conditions, string(dnsv1alpha1.ConditionAccepted), metav1.ConditionTrue, "Accepted")
 }
 
+func TestZoneClassReconcilerRejectsMissingIdentityRef(t *testing.T) {
+	ctx := context.Background()
+	zoneClass := route53ZoneClass("platform", "route53-public", nil)
+	zoneClass.Spec.IdentityRef = nil
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(testScheme(t)).
+		WithObjects(route53Provider(), zoneClass).
+		WithStatusSubresource(&dnsv1alpha1.ZoneClass{}).
+		Build()
+	reconciler := &ZoneClassReconciler{Client: k8sClient}
+	if _, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(zoneClass)}); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	var got dnsv1alpha1.ZoneClass
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(zoneClass), &got); err != nil {
+		t.Fatalf("get ZoneClass: %v", err)
+	}
+	condition := assertCondition(t, got.Status.Conditions, string(dnsv1alpha1.ConditionAccepted), metav1.ConditionFalse, "InvalidIdentityRef")
+	if condition.Message != "spec.identityRef.name is required" {
+		t.Fatalf("Accepted message = %q", condition.Message)
+	}
+	if requests := reconciler.mapIdentityToZoneClasses(ctx, acceptedRoute53Identity("platform", "route53-dev")); len(requests) != 0 {
+		t.Fatalf("identity watch mapped credentialless class: %#v", requests)
+	}
+}
+
 func TestZoneClassReconcilerValidatesPrivateZonePolicies(t *testing.T) {
 	for _, test := range []struct {
 		name       string

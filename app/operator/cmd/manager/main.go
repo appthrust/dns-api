@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"os"
+	"strconv"
 
 	endpointrecordsetcontroller "github.com/appthrust/dns-api/internal/go/apps/endpoint/controllers/endpointrecordset"
 	gatewayendpointcontroller "github.com/appthrust/dns-api/internal/go/apps/gatewayendpoint/controllers/gateway"
@@ -82,6 +83,9 @@ func main() {
 	var leaderElection bool
 	var gatewayEndpointControllerEnabled bool
 	var serviceEndpointControllerEnabled bool
+	route53ControllerEnabled := envBoolOrDefault("ROUTE53_CONTROLLER_ENABLED", true)
+	cloudflareControllerEnabled := envBoolOrDefault("CLOUDFLARE_CONTROLLER_ENABLED", true)
+	route53EndpointConversionEnabled := envBoolOrDefault("ROUTE53_ENDPOINT_CONVERSION_ENABLED", true)
 	endpointRecordSetNamespace := envOrDefault("ENDPOINT_RECORDSET_NAMESPACE", "")
 	route53ControllerName := envOrDefault("ROUTE53_CONTROLLER_NAME", route53zoneunit.DefaultControllerName)
 	route53ProviderName := envOrDefault("ROUTE53_PROVIDER_NAME", route53v1alpha1.ProviderName)
@@ -96,6 +100,9 @@ func main() {
 	flag.BoolVar(&gatewayEndpointControllerEnabled, "gateway-endpoint-controller-enabled", true, "Watch Gateway API resources and synthesize EndpointRecordSets from HTTPRoutes.")
 	flag.BoolVar(&serviceEndpointControllerEnabled, "service-endpoint-controller-enabled", true, "Watch Services and synthesize EndpointRecordSets from their endpoint annotations.")
 	flag.StringVar(&endpointRecordSetNamespace, "endpoint-recordset-namespace", endpointRecordSetNamespace, "Namespace where generated EndpointRecordSet and RecordSet resources are stored. Defaults to the source namespace.")
+	flag.BoolVar(&route53ControllerEnabled, "route53-controller-enabled", route53ControllerEnabled, "Enable Route 53 controllers and identity admission.")
+	flag.BoolVar(&cloudflareControllerEnabled, "cloudflare-controller-enabled", cloudflareControllerEnabled, "Enable Cloudflare controllers and identity admission.")
+	flag.BoolVar(&route53EndpointConversionEnabled, "route53-endpoint-conversion-enabled", route53EndpointConversionEnabled, "Serve endpoint conversion when the Route 53 provider is enabled.")
 	flag.StringVar(&route53ControllerName, "route53-controller-name", route53ControllerName, "ZoneClass.spec.controllerName handled by the Route 53 controller.")
 	flag.StringVar(&route53ProviderName, "route53-provider-name", route53ProviderName, "Provider.metadata.name handled by the Route 53 controller.")
 	flag.StringVar(&route53ProviderVersion, "route53-provider-version", route53ProviderVersion, "Provider version handled by the Route 53 controller.")
@@ -123,68 +130,72 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&route53identity.IdentityReconciler{
-		Client:   mgr.GetClient(),
-		Resolver: route53identity.NewAWSIdentityResolver(),
-		Recorder: mgr.GetEventRecorderFor("route53-identity-controller"),
-	}).SetupWithManager(mgr); err != nil {
-		ctrl.Log.Error(err, "unable to set up Route 53 Identity controller")
-		os.Exit(1)
+	if route53ControllerEnabled {
+		if err := (&route53identity.IdentityReconciler{
+			Client:   mgr.GetClient(),
+			Resolver: route53identity.NewAWSIdentityResolver(),
+			Recorder: mgr.GetEventRecorderFor("route53-identity-controller"),
+		}).SetupWithManager(mgr); err != nil {
+			ctrl.Log.Error(err, "unable to set up Route 53 Identity controller")
+			os.Exit(1)
+		}
+
+		if err := (&route53zoneclass.ZoneClassReconciler{
+			ControllerName:  route53ControllerName,
+			Client:          mgr.GetClient(),
+			ProviderName:    route53ProviderName,
+			ProviderVersion: route53ProviderVersion,
+		}).SetupWithManager(mgr); err != nil {
+			ctrl.Log.Error(err, "unable to set up ZoneClass controller")
+			os.Exit(1)
+		}
+
+		if err := (&route53zoneunit.ZoneReconciler{
+			Client:          mgr.GetClient(),
+			Scheme:          mgr.GetScheme(),
+			ProviderFactory: route53zoneunit.NewAWSProviderFactory(),
+			ControllerName:  route53ControllerName,
+			ProviderName:    route53ProviderName,
+			ProviderVersion: route53ProviderVersion,
+			Recorder:        mgr.GetEventRecorderFor("route53-zoneunit-controller"),
+		}).SetupWithManager(mgr); err != nil {
+			ctrl.Log.Error(err, "unable to set up Route 53 ZoneUnit controller")
+			os.Exit(1)
+		}
 	}
 
-	if err := (&cloudflareidentity.IdentityReconciler{
-		Client:   mgr.GetClient(),
-		Resolver: cloudflareidentity.NewCloudflareAPIClient(),
-		Recorder: mgr.GetEventRecorderFor("cloudflare-identity-controller"),
-	}).SetupWithManager(mgr); err != nil {
-		ctrl.Log.Error(err, "unable to set up Cloudflare Identity controller")
-		os.Exit(1)
-	}
+	if cloudflareControllerEnabled {
+		if err := (&cloudflareidentity.IdentityReconciler{
+			Client:   mgr.GetClient(),
+			Resolver: cloudflareidentity.NewCloudflareAPIClient(),
+			Recorder: mgr.GetEventRecorderFor("cloudflare-identity-controller"),
+		}).SetupWithManager(mgr); err != nil {
+			ctrl.Log.Error(err, "unable to set up Cloudflare Identity controller")
+			os.Exit(1)
+		}
 
-	if err := (&route53zoneclass.ZoneClassReconciler{
-		ControllerName:  route53ControllerName,
-		Client:          mgr.GetClient(),
-		ProviderName:    route53ProviderName,
-		ProviderVersion: route53ProviderVersion,
-	}).SetupWithManager(mgr); err != nil {
-		ctrl.Log.Error(err, "unable to set up ZoneClass controller")
-		os.Exit(1)
-	}
+		if err := (&cloudflarezoneclass.ZoneClassReconciler{
+			ControllerName:  cloudflareControllerName,
+			Client:          mgr.GetClient(),
+			ProviderName:    cloudflareProviderName,
+			ProviderVersion: cloudflareProviderVersion,
+		}).SetupWithManager(mgr); err != nil {
+			ctrl.Log.Error(err, "unable to set up Cloudflare ZoneClass controller")
+			os.Exit(1)
+		}
 
-	if err := (&cloudflarezoneclass.ZoneClassReconciler{
-		ControllerName:  cloudflareControllerName,
-		Client:          mgr.GetClient(),
-		ProviderName:    cloudflareProviderName,
-		ProviderVersion: cloudflareProviderVersion,
-	}).SetupWithManager(mgr); err != nil {
-		ctrl.Log.Error(err, "unable to set up Cloudflare ZoneClass controller")
-		os.Exit(1)
-	}
-
-	if err := (&route53zoneunit.ZoneReconciler{
-		Client:          mgr.GetClient(),
-		Scheme:          mgr.GetScheme(),
-		ProviderFactory: route53zoneunit.NewAWSProviderFactory(),
-		ControllerName:  route53ControllerName,
-		ProviderName:    route53ProviderName,
-		ProviderVersion: route53ProviderVersion,
-		Recorder:        mgr.GetEventRecorderFor("route53-zoneunit-controller"),
-	}).SetupWithManager(mgr); err != nil {
-		ctrl.Log.Error(err, "unable to set up Route 53 ZoneUnit controller")
-		os.Exit(1)
-	}
-
-	if err := (&cloudflarezoneunit.ZoneReconciler{
-		Client:          mgr.GetClient(),
-		Scheme:          mgr.GetScheme(),
-		ProviderFactory: cloudflarezoneunit.NewCloudflareAPIClient(),
-		ControllerName:  cloudflareControllerName,
-		ProviderName:    cloudflareProviderName,
-		ProviderVersion: cloudflareProviderVersion,
-		Recorder:        mgr.GetEventRecorderFor("cloudflare-zoneunit-controller"),
-	}).SetupWithManager(mgr); err != nil {
-		ctrl.Log.Error(err, "unable to set up Cloudflare ZoneUnit controller")
-		os.Exit(1)
+		if err := (&cloudflarezoneunit.ZoneReconciler{
+			Client:          mgr.GetClient(),
+			Scheme:          mgr.GetScheme(),
+			ProviderFactory: cloudflarezoneunit.NewCloudflareAPIClient(),
+			ControllerName:  cloudflareControllerName,
+			ProviderName:    cloudflareProviderName,
+			ProviderVersion: cloudflareProviderVersion,
+			Recorder:        mgr.GetEventRecorderFor("cloudflare-zoneunit-controller"),
+		}).SetupWithManager(mgr); err != nil {
+			ctrl.Log.Error(err, "unable to set up Cloudflare ZoneUnit controller")
+			os.Exit(1)
+		}
 	}
 
 	if err := (&zoneunitcontroller.ZoneUnitCompositionReconciler{
@@ -230,15 +241,21 @@ func main() {
 		ctrl.Log.Error(err, "unable to set up core validation webhook")
 		os.Exit(1)
 	}
-	if err := route53webhook.SetupValidationWebhookWithManager(mgr); err != nil {
-		ctrl.Log.Error(err, "unable to set up Route 53 validation webhook")
-		os.Exit(1)
+	if route53ControllerEnabled {
+		if err := route53webhook.SetupValidationWebhookWithManager(mgr); err != nil {
+			ctrl.Log.Error(err, "unable to set up Route 53 validation webhook")
+			os.Exit(1)
+		}
+		if route53EndpointConversionEnabled {
+			route53conversion.NewHandler().Register(mgr.GetWebhookServer())
+		}
 	}
-	if err := cloudflarewebhook.SetupValidationWebhookWithManager(mgr); err != nil {
-		ctrl.Log.Error(err, "unable to set up Cloudflare validation webhook")
-		os.Exit(1)
+	if cloudflareControllerEnabled {
+		if err := cloudflarewebhook.SetupValidationWebhookWithManager(mgr); err != nil {
+			ctrl.Log.Error(err, "unable to set up Cloudflare validation webhook")
+			os.Exit(1)
+		}
 	}
-	route53conversion.NewHandler().Register(mgr.GetWebhookServer())
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		ctrl.Log.Error(err, "unable to set up health check")
@@ -261,4 +278,17 @@ func envOrDefault(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envBoolOrDefault(name string, fallback bool) bool {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	enabled, err := strconv.ParseBool(value)
+	if err != nil {
+		ctrl.Log.Error(err, "invalid boolean environment variable", "name", name)
+		os.Exit(1)
+	}
+	return enabled
 }

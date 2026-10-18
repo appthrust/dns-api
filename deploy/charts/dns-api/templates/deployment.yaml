@@ -41,6 +41,9 @@ spec:
             - --endpoint-recordset-namespace={{ .Values.endpoint.recordSetNamespace }}
             - --gateway-endpoint-controller-enabled={{ .Values.gatewayEndpoint.enabled }}
             - --service-endpoint-controller-enabled={{ .Values.serviceEndpoint.enabled }}
+            - --route53-controller-enabled={{ .Values.providers.route53.enabled }}
+            - --cloudflare-controller-enabled={{ .Values.providers.cloudflare.enabled }}
+            - --route53-endpoint-conversion-enabled={{ and .Values.providers.route53.enabled .Values.providers.route53.endpoint.conversionAPI.enabled .Values.webhook.enabled }}
             {{- range .Values.extraArgs }}
             - {{ . | quote }}
             {{- end }}

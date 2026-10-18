@@ -30,7 +30,9 @@ type ZoneClassSpec struct {
 	ControllerName string `json:"controllerName"`
 
 	// IdentityRef selects the provider identity resource in the ZoneClass namespace.
-	IdentityRef LocalObjectReference `json:"identityRef"`
+	// Required when the selected Provider version declares identity; forbidden otherwise.
+	// +optional
+	IdentityRef *LocalObjectReference `json:"identityRef,omitempty"`
 
 	// Parameters contains provider-specific ZoneClass settings.
 	// +kubebuilder:pruning:PreserveUnknownFields

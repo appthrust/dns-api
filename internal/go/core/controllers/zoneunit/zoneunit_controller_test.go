@@ -610,7 +610,7 @@ func route53ZoneClassForZoneUnitTest() *dnsv1alpha1.ZoneClass {
 		Spec: dnsv1alpha1.ZoneClassSpec{
 			Provider:       dnsv1alpha1.ProviderReference{Name: "route53.dns.appthrust.io", Version: "v1alpha1"},
 			ControllerName: "route53.dns.appthrust.io/controller",
-			IdentityRef:    dnsv1alpha1.LocalObjectReference{Name: "route53-dev"},
+			IdentityRef:    &dnsv1alpha1.LocalObjectReference{Name: "route53-dev"},
 			AllowedZones: dnsv1alpha1.ZoneClassAllowedZones{
 				Namespaces: dnsv1alpha1.NamespacePolicy{From: dnsv1alpha1.NamespacesFromAll},
 			},

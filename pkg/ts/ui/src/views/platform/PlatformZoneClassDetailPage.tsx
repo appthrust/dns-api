@@ -86,7 +86,13 @@ export function PlatformZoneClassDetailPage() {
     );
   }
 
-  const identityName = zoneClassIdentityName(selectedZoneClass);
+  const providerVersion = data.providers.items
+    .find(item => nameOf(item) === selectedZoneClass.spec.provider.name)
+    ?.spec.versions.find(item => item.name === selectedZoneClass.spec.provider.version);
+  const requiresIdentity = providerVersion
+    ? Boolean(providerVersion.identity)
+    : Boolean(selectedZoneClass.spec.identityRef);
+  const identityName = requiresIdentity ? zoneClassIdentityName(selectedZoneClass) : '';
   const identity = identityName
     ? findIdentity(data.identities.items, namespaceOf(selectedZoneClass), identityName)
     : undefined;
@@ -133,6 +139,7 @@ export function PlatformZoneClassDetailPage() {
           health={health}
           identity={identity}
           identityName={identityName}
+          requiresIdentity={requiresIdentity}
           provider={provider}
           usedBy={referencingZones.length}
           zoneClass={selectedZoneClass}
@@ -162,6 +169,7 @@ export function PlatformZoneClassDetailPage() {
             zoneClass={selectedZoneClass}
             identity={identity}
             identityName={identityName}
+            requiresIdentity={requiresIdentity}
             events={events}
             eventsError={data.events.error}
             onOpenIdentity={
@@ -304,6 +312,7 @@ function ZoneClassVitalsStrip({
   health,
   identity,
   identityName,
+  requiresIdentity,
   provider,
   usedBy,
   zoneClass,
@@ -313,6 +322,7 @@ function ZoneClassVitalsStrip({
   health: Health;
   identity?: ProviderIdentity;
   identityName?: string;
+  requiresIdentity: boolean;
   provider: string;
   usedBy: number;
   zoneClass: ZoneClass;
@@ -364,6 +374,7 @@ function ZoneClassVitalsStrip({
               {`${zoneClass.spec.provider.name}/${zoneClass.spec.provider.version}`}
             </Typography>
           </VitalsGroup>
+          {requiresIdentity ? (
           <VitalsGroup label="Provider identity">
             {identity ? (
               <DesignLinkButton onClick={onOpenIdentity}>
@@ -383,6 +394,7 @@ function ZoneClassVitalsStrip({
               </Typography>
             )}
           </VitalsGroup>
+          ) : null}
         </VitalsColumn>
       </Box>
     </Panel>
@@ -500,6 +512,7 @@ function StatusTab({
   zoneClass,
   identity,
   identityName,
+  requiresIdentity,
   events,
   eventsError,
   onOpenIdentity,
@@ -507,6 +520,7 @@ function StatusTab({
   zoneClass: ZoneClass;
   identity?: ProviderIdentity;
   identityName?: string;
+  requiresIdentity: boolean;
   events: KubeEvent[];
   eventsError: unknown;
   onOpenIdentity?: () => void;
@@ -524,8 +538,9 @@ function StatusTab({
             label="ZoneClass"
             health={zoneClassHealth}
             reason={conditionSummary(zoneClass.status?.conditions)}
-            divided
+            divided={requiresIdentity}
           />
+          {requiresIdentity ? (
           <HealthRow
             label="Provider identity"
             health={identityHealth}
@@ -544,6 +559,7 @@ function StatusTab({
               ) : undefined
             }
           />
+          ) : null}
         </Stack>
       </Panel>
       <ResourceConditionsPanel conditions={zoneClass.status?.conditions ?? []} />

@@ -1,6 +1,7 @@
 package v1alpha1_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	dnsv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/dns/v1alpha1"
@@ -36,5 +37,29 @@ func TestAddToSchemeRegistersCoreTypes(t *testing.T) {
 		if !matches(obj) {
 			t.Fatalf("kind %s created %T", kind, obj)
 		}
+	}
+}
+
+func TestZoneClassOptionalIdentityWireAndDeepCopy(t *testing.T) {
+	zoneClass := &dnsv1alpha1.ZoneClass{}
+	payload, err := json.Marshal(zoneClass.Spec)
+	if err != nil {
+		t.Fatalf("marshal ZoneClass spec: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		t.Fatalf("decode ZoneClass spec: %v", err)
+	}
+	if _, present := fields["identityRef"]; present {
+		t.Fatalf("credentialless ZoneClass serialized identityRef: %s", payload)
+	}
+	if copied := zoneClass.DeepCopy(); copied.Spec.IdentityRef != nil {
+		t.Fatalf("DeepCopy manufactured identityRef: %#v", copied.Spec.IdentityRef)
+	}
+	zoneClass.Spec.IdentityRef = &dnsv1alpha1.LocalObjectReference{Name: "original"}
+	copied := zoneClass.DeepCopy()
+	copied.Spec.IdentityRef.Name = "changed"
+	if zoneClass.Spec.IdentityRef.Name != "original" {
+		t.Fatal("DeepCopy aliased the original identityRef")
 	}
 }

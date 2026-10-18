@@ -15,7 +15,7 @@ func (r *ZoneUnitCompositionReconciler) projectZoneUnitStatus(ctx context.Contex
 	if unit.Status.Zone != nil {
 		accepted := projectedAccepted(unit.Spec.Zone.ObservedGeneration, zone.Status.Conditions, unit.Status.Zone.Conditions)
 		programmed := projectedProgrammed(unit.Spec.Zone.ObservedGeneration, accepted.Status, unit.Status.Zone.Conditions)
-		if err := r.setZoneClaimStatus(ctx, zone, accepted.Status, accepted.Reason, programmed.Status, programmed.Reason, unit.Status.Zone); err != nil {
+		if err := r.setZoneClaimStatusWithMessages(ctx, zone, accepted.Status, accepted.Reason, accepted.Message, programmed.Status, programmed.Reason, programmed.Message, unit.Status.Zone); err != nil {
 			return err
 		}
 	}
@@ -60,7 +60,7 @@ func (r *ZoneUnitCompositionReconciler) projectZoneUnitStatus(ctx context.Contex
 		}
 		accepted := projectedAccepted(desiredItem.ObservedGeneration, recordSet.Status.Conditions, providerConditions)
 		programmed := projectedProgrammed(desiredItem.ObservedGeneration, accepted.Status, providerConditions)
-		if err := r.setRecordSetClaimStatusWithZone(ctx, recordSet, accepted.Status, accepted.Reason, programmed.Status, programmed.Reason, recordSetZoneStatus(zone, zoneClass), &providerStatus); err != nil {
+		if err := r.setRecordSetClaimStatusWithZoneAndMessages(ctx, recordSet, accepted.Status, accepted.Reason, accepted.Message, programmed.Status, programmed.Reason, programmed.Message, recordSetZoneStatus(zone, zoneClass), &providerStatus); err != nil {
 			return err
 		}
 	}
@@ -76,31 +76,32 @@ func retainedNotAllowedRecordSetItem(item dnsv1alpha1.ZoneUnitRecordSetSpec) boo
 }
 
 type projectedCondition struct {
-	Status metav1.ConditionStatus
-	Reason string
+	Status  metav1.ConditionStatus
+	Reason  string
+	Message string
 }
 
 func projectedAccepted(observedGeneration int64, compositionConditions, providerConditions []metav1.Condition) projectedCondition {
 	provider := conditionAtGeneration(providerConditions, string(dnsv1alpha1.ConditionAccepted), observedGeneration)
 	if provider != nil {
-		return projectedCondition{Status: provider.Status, Reason: provider.Reason}
+		return projectedCondition{Status: provider.Status, Reason: provider.Reason, Message: provider.Message}
 	}
 	composition := conditionAtGeneration(compositionConditions, string(dnsv1alpha1.ConditionAccepted), observedGeneration)
 	if composition != nil && composition.Status != metav1.ConditionTrue {
-		return projectedCondition{Status: composition.Status, Reason: composition.Reason}
+		return projectedCondition{Status: composition.Status, Reason: composition.Reason, Message: composition.Message}
 	}
-	return projectedCondition{Status: metav1.ConditionUnknown, Reason: "OwnerStateNotResolved"}
+	return projectedCondition{Status: metav1.ConditionUnknown, Reason: "OwnerStateNotResolved", Message: "OwnerStateNotResolved"}
 }
 
 func projectedProgrammed(observedGeneration int64, accepted metav1.ConditionStatus, providerConditions []metav1.Condition) projectedCondition {
 	if accepted != metav1.ConditionTrue {
-		return projectedCondition{Status: metav1.ConditionUnknown, Reason: "Reconciling"}
+		return projectedCondition{Status: metav1.ConditionUnknown, Reason: "Reconciling", Message: "Reconciling"}
 	}
 	provider := conditionAtGeneration(providerConditions, string(dnsv1alpha1.ConditionProgrammed), observedGeneration)
 	if provider == nil {
-		return projectedCondition{Status: metav1.ConditionUnknown, Reason: "Reconciling"}
+		return projectedCondition{Status: metav1.ConditionUnknown, Reason: "Reconciling", Message: "Reconciling"}
 	}
-	return projectedCondition{Status: provider.Status, Reason: provider.Reason}
+	return projectedCondition{Status: provider.Status, Reason: provider.Reason, Message: provider.Message}
 }
 
 func conditionAtGeneration(conditions []metav1.Condition, conditionType string, observedGeneration int64) *metav1.Condition {

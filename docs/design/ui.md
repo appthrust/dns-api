@@ -434,11 +434,13 @@ Delete confirmation shows that provider identities still referenced by `ZoneClas
 
 ## Zone Classes
 
-`ZoneClass` is a provider-backed DNS zone capability published as platform policy to application namespaces. The initial UI handles only Public DNS. It does not show private hosted zone or VPC selection.
+`ZoneClass` is a provider-backed DNS zone capability published as platform policy to application namespaces. Credentialless providers can expose resolver policy without creating or adopting hosted zones.
 
-Creation starts with selecting a provider identity. Provider identities are grouped by provider and shown as cards. The `ZoneClass` is created in the same namespace as the selected provider identity.
+Creation selects a provider identity for versions that declare `identity`, or the Provider itself for credentialless versions. Identity-backed classes share the selected identity's namespace. Credentialless creation skips identity selection, offers a namespace selector, and checks create permission in the selected namespace.
 
-The `ZoneClass` form handles `Name`, `Description`, `provider.name`, `provider.version`, `controllerName`, `identityRef`, provider policy parameters such as `zoneCreationPolicy`, `zoneDeletionPolicy`, `sameNameZonePolicy`, and `allowedZones`. `provider` and `identityRef.name` are derived from the selected provider identity and Provider version identity resource declaration. `provider` is shown as read-only provider name and version fields. `controllerName` is selected from the provider controller instance for the selected provider and is required. `identityRef` is shown as the selected provider identity, not as a raw group / kind / namespace editor. Hosted zone type is not selectable.
+The `ZoneClass` form handles `Name`, `Description`, `provider.name`, `provider.version`, `controllerName`, optional `identityRef`, provider policy parameters, and `allowedZones`. Provider and controller binding remain read-only after selection. The selected Provider version determines whether the form shows identity information and includes `identityRef` in the preview/submitted manifest; credentialless versions omit it, even if an old identity name remains in form state. Route 53 and Cloudflare retain their identity selection and policy controls.
+
+Credentialless provider parameters use the existing JSON-object editor fallback. For External DNS this exposes `resolver.mode`, `resolver.servers`, and `expectedNameservers`; `{}` uses the Provider's omitted-field defaults. The form neither shows nor injects writing-provider creation/deletion policy or tags in this flow. Admission remains authoritative for the selected Provider's schema and CEL.
 
 `sameNameZonePolicy` is shown only when `zoneCreationPolicy=Create`. The UI label is `Duplicate hosted zone policy`. When `zoneCreationPolicy=Deny`, this policy is hidden.
 
@@ -450,7 +452,7 @@ Route 53 `ZoneClass.spec.parameters.tags` is edited as a YAML mapping of `key: v
 
 `ZoneClass` detail follows the shared resource detail pattern. The header actions are `Edit` and the resource actions menu. `Delete ZoneClass` is inside the resource actions menu and opens the delete confirmation screen; it is not a standalone header button.
 
-The `ZoneClass` detail vitals strip shows `Status`, `Used by`, `Namespace`, `Name`, `Provider`, and `Provider identity`. `Status` is derived from `ZoneClass` conditions. `Used by` is the count of `Zone` resources referencing the `ZoneClass`. `Provider identity` links to the same-namespace provider identity detail page when the referenced identity is visible; otherwise it shows the known identity name as plain text. The vitals strip is the canonical place for these fields, so the body does not repeat `Provider` and `Provider Identity` in a separate basic information grid.
+The `ZoneClass` detail vitals strip shows `Status`, `Used by`, `Namespace`, `Name`, and `Provider`, plus `Provider identity` only when the selected Provider version declares `identity`. Credentialless classes omit the identity health row. `Status` is derived from `ZoneClass` conditions. `Used by` is the count of referencing `Zone` resources. When present, `Provider identity` links to the same-namespace identity detail page when visible; otherwise it shows the known name as plain text.
 
 `ZoneClass` detail tabs are ordered `Zones`, `Status`, `Policy`, and `Manifest`.
 

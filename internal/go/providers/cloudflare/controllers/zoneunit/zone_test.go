@@ -39,6 +39,29 @@ func TestCloudflareZoneClassReconcilerAcceptsRootIdentityRef(t *testing.T) {
 	assertCloudflareCondition(t, got.Status.Conditions, string(dnsv1alpha1.ConditionAccepted), metav1.ConditionTrue, "Accepted")
 }
 
+func TestCloudflareZoneClassReconcilerRejectsMissingIdentityRef(t *testing.T) {
+	ctx := context.Background()
+	zoneClass := cloudflareZoneClass("platform", "cloudflare-public")
+	zoneClass.Spec.IdentityRef = nil
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(cloudflareTestScheme(t)).
+		WithObjects(cloudflareProvider(), zoneClass).
+		WithStatusSubresource(&dnsv1alpha1.ZoneClass{}).
+		Build()
+	reconciler := &zoneclass.ZoneClassReconciler{Client: k8sClient}
+	if _, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(zoneClass)}); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+	var got dnsv1alpha1.ZoneClass
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(zoneClass), &got); err != nil {
+		t.Fatalf("get ZoneClass: %v", err)
+	}
+	assertCloudflareCondition(t, got.Status.Conditions, string(dnsv1alpha1.ConditionAccepted), metav1.ConditionFalse, "InvalidIdentityRef")
+	if message := got.Status.Conditions[0].Message; message != "spec.identityRef.name is required" {
+		t.Fatalf("Accepted message = %q", message)
+	}
+}
+
 func TestCloudflareZoneReconcilerIgnoresRoute53ZoneUnit(t *testing.T) {
 	ctx := context.Background()
 	unit := cloudflareZoneUnit("app", "apps-example-com")
@@ -516,7 +539,7 @@ func cloudflareZoneClass(namespace, name string) *dnsv1alpha1.ZoneClass {
 		Spec: dnsv1alpha1.ZoneClassSpec{
 			Provider:       cloudflarev1alpha1.ProviderRef,
 			ControllerName: DefaultControllerName,
-			IdentityRef:    dnsv1alpha1.LocalObjectReference{Name: "cloudflare-ci"},
+			IdentityRef:    &dnsv1alpha1.LocalObjectReference{Name: "cloudflare-ci"},
 			Parameters:     runtime.RawExtension{Raw: raw},
 			AllowedZones: dnsv1alpha1.ZoneClassAllowedZones{
 				Namespaces: dnsv1alpha1.NamespacePolicy{From: dnsv1alpha1.NamespacesFromAll},
