@@ -18,6 +18,10 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&ZoneUnitList{},
 		&RecordSet{},
 		&RecordSetList{},
+		&RecordWithdrawal{},
+		&RecordWithdrawalList{},
+		&RecordWithdrawalWaiver{},
+		&RecordWithdrawalWaiverList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil

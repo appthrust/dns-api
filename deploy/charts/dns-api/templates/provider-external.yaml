@@ -161,4 +161,26 @@ spec:
           - {conditionType: Programmed, status: 'False', reason: ResolutionInconsistent, description: Required resolver or authority observations disagree.}
           - {conditionType: Programmed, status: 'False', reason: NameserverMismatch, description: Required zone nameserver verification failed.}
           - {conditionType: Programmed, status: Unknown, reason: DNSProbeFailed, description: A required DNS observation could not complete.}
+      recordWithdrawal:
+        supported: true
+        schemas:
+          statusProviderData:
+            openAPIV3Schema:
+              type: object
+              description: Bounded withdrawal diagnostics; complete typed evidence drives verification.
+              additionalProperties: false
+              properties:
+                views: *preview
+        additionalConditionReasons:
+          - {conditionType: Withdrawn, status: 'False', reason: DNSStillResolves, description: A required observation still returns the retired address.}
+          - {conditionType: Ready, status: 'False', reason: DNSStillResolves, description: A required observation still returns the retired address.}
+          - {conditionType: Withdrawn, status: 'False', reason: NegativeTTLNotElapsed, description: Cache safety and a separate confirming attempt are pending.}
+          - {conditionType: Ready, status: 'False', reason: NegativeTTLNotElapsed, description: Cache safety and a separate confirming attempt are pending.}
+          - {conditionType: Withdrawn, status: 'Unknown', reason: DNSProbeFailed, description: Required exclusion evidence is incomplete.}
+          - {conditionType: Ready, status: 'False', reason: DNSProbeFailed, description: Required exclusion evidence is incomplete.}
+          - {conditionType: Withdrawn, status: 'Unknown', reason: PolicyChanged, description: The binding or required view policy changed.}
+          - {conditionType: Ready, status: 'False', reason: PolicyChanged, description: The binding or required view policy changed.}
+          - {conditionType: Withdrawn, status: 'True', reason: WithdrawalVerified, description: Complete exclusion verified after the cache horizon.}
+          - {conditionType: Ready, status: 'True', reason: WithdrawalVerified, description: Complete exclusion verified after the cache horizon.}
+          - {conditionType: OverrideAccepted, status: 'True', reason: OperatorAuthorizedRelease, description: An exact separately authorized waiver accepts stale DNS risk.}
 {{- end }}

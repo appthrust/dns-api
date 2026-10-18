@@ -255,6 +255,126 @@ spec:
                 - recordSetNamespace
                 - recordSetName
                 x-kubernetes-list-type: map
+              withdrawals:
+                description: Withdrawals retains independently authorized address-exclusion
+                  claims.
+                items:
+                  description: |-
+                    Scalar keys duplicate the nested identity because Kubernetes map-list keys
+                    cannot address nested fields. CEL prevents either representation diverging.
+                  properties:
+                    address:
+                      maxLength: 39
+                      minLength: 1
+                      type: string
+                    allowed:
+                      type: boolean
+                    claim:
+                      description: WithdrawalObjectReference binds one immutable Kubernetes
+                        object incarnation.
+                      properties:
+                        name:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        namespace:
+                          maxLength: 63
+                          minLength: 1
+                          type: string
+                        uid:
+                          description: |-
+                            UID is a type that holds unique ID values, including UUIDs.  Because we
+                            don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                            intent and helps make sure that UIDs and names do not get conflated.
+                          maxLength: 128
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      - namespace
+                      - uid
+                      type: object
+                    claimName:
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    claimNamespace:
+                      maxLength: 63
+                      minLength: 1
+                      type: string
+                    name:
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      minimum: 1
+                      type: integer
+                    waiver:
+                      properties:
+                        digest:
+                          pattern: ^sha256:[0-9a-f]{64}$
+                          type: string
+                        name:
+                          minLength: 1
+                          type: string
+                        reservationRef:
+                          description: ReservationRef is immutable waiver scope, not
+                            platform lookup authority.
+                          properties:
+                            name:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            namespace:
+                              maxLength: 63
+                              minLength: 1
+                              type: string
+                            uid:
+                              description: |-
+                                UID is a type that holds unique ID values, including UUIDs.  Because we
+                                don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                                intent and helps make sure that UIDs and names do not get conflated.
+                              maxLength: 128
+                              minLength: 1
+                              type: string
+                          required:
+                          - name
+                          - namespace
+                          - uid
+                          type: object
+                        uid:
+                          description: |-
+                            UID is a type that holds unique ID values, including UUIDs.  Because we
+                            don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                            intent and helps make sure that UIDs and names do not get conflated.
+                          minLength: 1
+                          type: string
+                      required:
+                      - digest
+                      - name
+                      - reservationRef
+                      - uid
+                      type: object
+                  required:
+                  - address
+                  - allowed
+                  - claim
+                  - claimName
+                  - claimNamespace
+                  - name
+                  - observedGeneration
+                  type: object
+                  x-kubernetes-validations:
+                  - message: scalar claim keys must match claim
+                    rule: self.claimNamespace == self.claim.namespace && self.claimName
+                      == self.claim.name
+                maxItems: 256
+                type: array
+                x-kubernetes-list-map-keys:
+                - claimNamespace
+                - claimName
+                x-kubernetes-list-type: map
               zone:
                 description: Zone is the accepted desired state for the owning Zone
                   claim.
@@ -287,6 +407,10 @@ spec:
                     - name
                     - namespace
                     type: object
+                  zoneClassObservedGeneration:
+                    format: int64
+                    minimum: 1
+                    type: integer
                   zoneClassRef:
                     description: ZoneClassRef is the resolved ZoneClass reference.
                     properties:
@@ -302,6 +426,11 @@ spec:
                     - name
                     - namespace
                     type: object
+                  zoneClassUID:
+                    description: |-
+                      ZoneClassUID and ZoneClassObservedGeneration fence policy changes before
+                      provider reconciliation. Missing legacy bindings cannot prove withdrawal.
+                    type: string
                 required:
                 - domainName
                 - ref
@@ -513,6 +642,217 @@ spec:
                 x-kubernetes-list-map-keys:
                 - recordSetNamespace
                 - recordSetName
+                x-kubernetes-list-type: map
+              withdrawals:
+                description: Withdrawals contains identity-bound exclusion verification
+                  results.
+                items:
+                  properties:
+                    absentSince:
+                      format: date-time
+                      type: string
+                    checkedNames:
+                      items:
+                        type: string
+                      maxItems: 256
+                      type: array
+                      x-kubernetes-list-type: set
+                    claim:
+                      description: WithdrawalObjectReference binds one immutable Kubernetes
+                        object incarnation.
+                      properties:
+                        name:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        namespace:
+                          maxLength: 63
+                          minLength: 1
+                          type: string
+                        uid:
+                          description: |-
+                            UID is a type that holds unique ID values, including UUIDs.  Because we
+                            don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                            intent and helps make sure that UIDs and names do not get conflated.
+                          maxLength: 128
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      - namespace
+                      - uid
+                      type: object
+                    claimName:
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    claimNamespace:
+                      maxLength: 63
+                      minLength: 1
+                      type: string
+                    conditions:
+                      items:
+                        description: Condition contains details for one aspect of
+                          the current state of this API Resource.
+                        properties:
+                          lastTransitionTime:
+                            description: |-
+                              lastTransitionTime is the last time the condition transitioned from one status to another.
+                              This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                            format: date-time
+                            type: string
+                          message:
+                            description: |-
+                              message is a human readable message indicating details about the transition.
+                              This may be an empty string.
+                            maxLength: 32768
+                            type: string
+                          observedGeneration:
+                            description: |-
+                              observedGeneration represents the .metadata.generation that the condition was set based upon.
+                              For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                              with respect to the current state of the instance.
+                            format: int64
+                            minimum: 0
+                            type: integer
+                          reason:
+                            description: |-
+                              reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                              Producers of specific condition types may define expected values and meanings for this field,
+                              and whether the values are considered a guaranteed API.
+                              The value should be a CamelCase string.
+                              This field may not be empty.
+                            maxLength: 1024
+                            minLength: 1
+                            pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                            type: string
+                          status:
+                            description: status of the condition, one of True, False,
+                              Unknown.
+                            enum:
+                            - "True"
+                            - "False"
+                            - Unknown
+                            type: string
+                          type:
+                            description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                            maxLength: 316
+                            pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                            type: string
+                        required:
+                        - lastTransitionTime
+                        - message
+                        - reason
+                        - status
+                        - type
+                        type: object
+                      maxItems: 4
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - type
+                      x-kubernetes-list-type: map
+                    lastProbeTime:
+                      format: date-time
+                      type: string
+                    nextProbeTime:
+                      format: date-time
+                      type: string
+                    notBefore:
+                      format: date-time
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      minimum: 1
+                      type: integer
+                    policyFingerprint:
+                      type: string
+                    provider:
+                      properties:
+                        data:
+                          description: Data contains public provider-specific structured
+                            status.
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                        state:
+                          description: State contains provider-controller internal
+                            state.
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                      type: object
+                    requiredViews:
+                      items:
+                        type: string
+                      maxItems: 256
+                      type: array
+                      x-kubernetes-list-type: set
+                    resultDigest:
+                      type: string
+                    sampledWildcard:
+                      type: boolean
+                    verifiedAt:
+                      format: date-time
+                      type: string
+                    waiverRef:
+                      properties:
+                        digest:
+                          pattern: ^sha256:[0-9a-f]{64}$
+                          type: string
+                        name:
+                          minLength: 1
+                          type: string
+                        reservationRef:
+                          description: WithdrawalObjectReference binds one immutable
+                            Kubernetes object incarnation.
+                          properties:
+                            name:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            namespace:
+                              maxLength: 63
+                              minLength: 1
+                              type: string
+                            uid:
+                              description: |-
+                                UID is a type that holds unique ID values, including UUIDs.  Because we
+                                don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                                intent and helps make sure that UIDs and names do not get conflated.
+                              maxLength: 128
+                              minLength: 1
+                              type: string
+                          required:
+                          - name
+                          - namespace
+                          - uid
+                          type: object
+                        uid:
+                          description: |-
+                            UID is a type that holds unique ID values, including UUIDs.  Because we
+                            don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                            intent and helps make sure that UIDs and names do not get conflated.
+                          minLength: 1
+                          type: string
+                      required:
+                      - digest
+                      - name
+                      - reservationRef
+                      - uid
+                      type: object
+                  required:
+                  - claim
+                  - claimName
+                  - claimNamespace
+                  - observedGeneration
+                  type: object
+                  x-kubernetes-validations:
+                  - message: scalar claim keys must match claim
+                    rule: self.claimNamespace == self.claim.namespace && self.claimName
+                      == self.claim.name
+                maxItems: 256
+                type: array
+                x-kubernetes-list-map-keys:
+                - claimNamespace
+                - claimName
                 x-kubernetes-list-type: map
               zone:
                 description: Zone contains provider result for the owning Zone claim.

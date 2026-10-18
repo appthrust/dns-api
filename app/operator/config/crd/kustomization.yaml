@@ -3,6 +3,8 @@ resources:
   - bases/dns.appthrust.io_zoneclasses.yaml
   - bases/dns.appthrust.io_zones.yaml
   - bases/dns.appthrust.io_recordsets.yaml
+  - bases/dns.appthrust.io_recordwithdrawals.yaml
+  - bases/dns.appthrust.io_recordwithdrawalwaivers.yaml
   - bases/dns.appthrust.io_zoneunits.yaml
   - bases/endpoint.dns.appthrust.io_endpointprovidercapabilities.yaml
   - bases/endpoint.dns.appthrust.io_endpointrecordsets.yaml

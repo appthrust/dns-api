@@ -23,6 +23,9 @@ func TestExternalDeclarationAndCEL(t *testing.T) {
 	if len(version.Zone.AdditionalConditionReasons) != 5 || len(version.RecordSet.AdditionalConditionReasons) != 8 {
 		t.Fatal("condition reason tables differ from design")
 	}
+	if version.RecordWithdrawal == nil || !version.RecordWithdrawal.Supported || version.RecordWithdrawal.Schemas.StatusProviderData == nil || len(version.RecordWithdrawal.AdditionalConditionReasons) != 11 {
+		t.Fatal("withdrawal capability, schema and condition table must ship together")
+	}
 	for _, rule := range version.ZoneClass.ValidationRules {
 		if err := celruntime.CompileBool(rule.Rule, cel.Variable("self", cel.DynType)); err != nil {
 			t.Fatalf("compile %q: %v", rule.Rule, err)

@@ -18,10 +18,12 @@ type ZoneClassReference struct {
 type ZoneReference struct {
 	// Namespace defaults to the RecordSet namespace when omitted.
 	// +optional
+	// +kubebuilder:validation:MaxLength=63
 	Namespace *string `json:"namespace,omitempty"`
 
 	// Name is the Zone name.
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
 }
 

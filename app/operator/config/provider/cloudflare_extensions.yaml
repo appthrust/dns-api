@@ -13,6 +13,8 @@ spec:
       served: true
       storage: true
       deprecated: false
+      recordWithdrawal:
+        supported: false
       identity:
         resource:
           group: cloudflare.dns.appthrust.io
