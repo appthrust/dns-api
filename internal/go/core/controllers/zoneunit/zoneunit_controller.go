@@ -29,7 +29,7 @@ const (
 	recordSetNotAcceptedProgrammedMessage = "RecordSet programming is waiting for Accepted=True"
 )
 
-// ZoneUnitCompositionReconciler builds ZoneUnit desired state from Zone and RecordSet claims.
+// ZoneUnitCompositionReconciler composes Zone, RecordSet and retained withdrawal claims.
 type ZoneUnitCompositionReconciler struct {
 	client.Client
 }
@@ -46,7 +46,7 @@ type ZoneUnitCompositionReconciler struct {
 // +kubebuilder:rbac:groups=dns.appthrust.io,resources=zoneunits/finalizers,verbs=update
 // +kubebuilder:rbac:groups=dns.appthrust.io,resources=zoneunits/status,verbs=get;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
-func (r *ZoneUnitCompositionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *ZoneUnitCompositionReconciler) reconcileZone(ctx context.Context, req ctrl.Request, withdrawals []dnsv1alpha1.RecordWithdrawal) (ctrl.Result, error) {
 	recordSets, err := r.recordSetsForZoneKey(ctx, req.NamespacedName)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -201,12 +201,16 @@ func (r *ZoneUnitCompositionReconciler) Reconcile(ctx context.Context, req ctrl.
 		Spec: dnsv1alpha1.ZoneUnitSpec{
 			Provider: dnsv1alpha1.ProviderReference{Name: provider.Name, Version: storageVersion.Name},
 			Zone: dnsv1alpha1.ZoneUnitZoneSpec{
-				Ref:                dnsv1alpha1.ObjectReference{Namespace: zone.Namespace, Name: zone.Name},
-				ObservedGeneration: zone.Generation,
-				DomainName:         zone.Spec.DomainName,
-				ZoneClassRef:       dnsv1alpha1.ObjectReference{Namespace: zoneClass.Namespace, Name: zoneClass.Name},
+				Ref:                         dnsv1alpha1.ObjectReference{Namespace: zone.Namespace, Name: zone.Name},
+				ObservedGeneration:          zone.Generation,
+				DomainName:                  zone.Spec.DomainName,
+				ZoneClassRef:                dnsv1alpha1.ObjectReference{Namespace: zoneClass.Namespace, Name: zoneClass.Name},
+				ZoneClassUID:                zoneClass.UID,
+				ZoneClassObservedGeneration: zoneClass.Generation,
 			},
 			RecordSets: items,
+			// Preserve the independently converged withdrawal slice.
+			Withdrawals: existing.Spec.Withdrawals,
 		},
 	}
 	syncZoneUnitReconcileRequestAnnotation(&desired, &zone)
@@ -215,7 +219,7 @@ func (r *ZoneUnitCompositionReconciler) Reconcile(ctx context.Context, req ctrl.
 	}
 
 	if !zone.DeletionTimestamp.IsZero() {
-		if len(recordSets) > 0 {
+		if len(recordSets) > 0 || len(withdrawals) > 0 {
 			if !unitExists || existing.DeletionTimestamp.IsZero() {
 				if err := r.applyZoneUnitDesired(ctx, &desired, !unitExists); err != nil {
 					return ctrl.Result{}, err
@@ -233,7 +237,7 @@ func (r *ZoneUnitCompositionReconciler) Reconcile(ctx context.Context, req ctrl.
 				"Zone is accepted",
 				metav1.ConditionFalse,
 				"ProviderChangePending",
-				fmt.Sprintf("%d RecordSet resources still reference this Zone; delete or move them before Zone cleanup can continue", len(recordSets)),
+				fmt.Sprintf("%d RecordSet and %d RecordWithdrawal resources still reference this Zone; archive dependent claims before Zone cleanup can continue", len(recordSets), len(withdrawals)),
 				providerStatus,
 			)
 		}

@@ -1,0 +1,313 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: recordwithdrawals.dns.appthrust.io
+spec:
+  group: dns.appthrust.io
+  names:
+    kind: RecordWithdrawal
+    listKind: RecordWithdrawalList
+    plural: recordwithdrawals
+    singular: recordwithdrawal
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.address
+      name: Address
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Withdrawn")].status
+      name: Withdrawn
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          RecordWithdrawal is a retained request to verify exclusion of one DNS address.
+          It deliberately has no owner reference or automatic cleanup finalizer.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              address:
+                description: Address is a canonical, unscoped and unmapped IP literal.
+                maxLength: 39
+                minLength: 1
+                type: string
+              name:
+                description: Name is a canonical zone-relative owner, including @
+                  or a leftmost wildcard.
+                maxLength: 253
+                minLength: 1
+                type: string
+              zoneRef:
+                properties:
+                  name:
+                    description: Name is the Zone name.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: Namespace defaults to the RecordSet namespace when
+                      omitted.
+                    maxLength: 63
+                    type: string
+                required:
+                - name
+                type: object
+            required:
+            - address
+            - name
+            - zoneRef
+            type: object
+            x-kubernetes-validations:
+            - message: spec is immutable
+              rule: self == oldSelf
+          status:
+            properties:
+              absentSince:
+                format: date-time
+                type: string
+              checkedNames:
+                items:
+                  type: string
+                maxItems: 256
+                type: array
+                x-kubernetes-list-type: set
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                maxItems: 4
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              lastProbeTime:
+                format: date-time
+                type: string
+              nextProbeTime:
+                format: date-time
+                type: string
+              notBefore:
+                format: date-time
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              policyFingerprint:
+                type: string
+              provider:
+                description: Provider contains bounded public evidence, never private
+                  provider state.
+                properties:
+                  data:
+                    description: Data contains public provider-specific structured
+                      status.
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                  state:
+                    description: State contains provider-controller internal state.
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                type: object
+              providerRef:
+                properties:
+                  name:
+                    description: Name is the cluster-scoped Provider resource name.
+                    minLength: 1
+                    type: string
+                  version:
+                    description: Version is the Provider version name.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - version
+                type: object
+              requiredViews:
+                items:
+                  type: string
+                maxItems: 256
+                type: array
+                x-kubernetes-list-type: set
+              resultDigest:
+                type: string
+              sampledWildcard:
+                type: boolean
+              unit:
+                description: WithdrawalObjectReference binds one immutable Kubernetes
+                  object incarnation.
+                properties:
+                  name:
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                  uid:
+                    description: |-
+                      UID is a type that holds unique ID values, including UUIDs.  Because we
+                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                      intent and helps make sure that UIDs and names do not get conflated.
+                    maxLength: 128
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - namespace
+                - uid
+                type: object
+              verifiedAt:
+                format: date-time
+                type: string
+              waiverRef:
+                properties:
+                  digest:
+                    pattern: ^sha256:[0-9a-f]{64}$
+                    type: string
+                  name:
+                    minLength: 1
+                    type: string
+                  reservationRef:
+                    description: WithdrawalObjectReference binds one immutable Kubernetes
+                      object incarnation.
+                    properties:
+                      name:
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      namespace:
+                        maxLength: 63
+                        minLength: 1
+                        type: string
+                      uid:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        maxLength: 128
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - namespace
+                    - uid
+                    type: object
+                  uid:
+                    description: |-
+                      UID is a type that holds unique ID values, including UUIDs.  Because we
+                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                      intent and helps make sure that UIDs and names do not get conflated.
+                    minLength: 1
+                    type: string
+                required:
+                - digest
+                - name
+                - reservationRef
+                - uid
+                type: object
+              zone:
+                description: Zone and Unit are the exact binding used to interpret
+                  the provider result.
+                properties:
+                  name:
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                  uid:
+                    description: |-
+                      UID is a type that holds unique ID values, including UUIDs.  Because we
+                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                      intent and helps make sure that UIDs and names do not get conflated.
+                    maxLength: 128
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - namespace
+                - uid
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

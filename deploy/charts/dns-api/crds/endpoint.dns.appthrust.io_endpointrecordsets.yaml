@@ -49,9 +49,78 @@ spec:
                 description: Hostnames are fully qualified DNS hostnames to publish.
                 items:
                   type: string
-                minItems: 1
                 type: array
                 x-kubernetes-list-type: set
+              retiredHostnames:
+                description: RetiredHostnames preserves removed names with their old
+                  address snapshot.
+                items:
+                  properties:
+                    addresses:
+                      items:
+                        type: string
+                      maxItems: 64
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: set
+                    hostname:
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    id:
+                      maxLength: 128
+                      minLength: 1
+                      type: string
+                    sourceGeneration:
+                      format: int64
+                      minimum: 1
+                      type: integer
+                  required:
+                  - addresses
+                  - hostname
+                  - id
+                  - sourceGeneration
+                  type: object
+                maxItems: 256
+                type: array
+                x-kubernetes-list-map-keys:
+                - id
+                x-kubernetes-list-type: map
+              retiredTargets:
+                description: RetiredTargets preserves removed addresses with their
+                  old hostname snapshot.
+                items:
+                  properties:
+                    address:
+                      maxLength: 39
+                      minLength: 1
+                      type: string
+                    hostnames:
+                      items:
+                        type: string
+                      maxItems: 256
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: set
+                    id:
+                      maxLength: 128
+                      minLength: 1
+                      type: string
+                    sourceGeneration:
+                      format: int64
+                      minimum: 1
+                      type: integer
+                  required:
+                  - address
+                  - hostnames
+                  - id
+                  - sourceGeneration
+                  type: object
+                maxItems: 64
+                type: array
+                x-kubernetes-list-map-keys:
+                - id
+                x-kubernetes-list-type: map
               targets:
                 description: Targets are endpoint addresses that the hostnames should
                   publish.
@@ -72,13 +141,16 @@ spec:
                   - type
                   - value
                   type: object
-                minItems: 1
                 type: array
                 x-kubernetes-list-type: atomic
-            required:
-            - hostnames
-            - targets
             type: object
+            x-kubernetes-validations:
+            - message: nonempty hostname and target intent or retirement entries are
+                required
+              rule: (has(self.hostnames) && size(self.hostnames) > 0 && has(self.targets)
+                && size(self.targets) > 0) || (has(self.retiredTargets) && size(self.retiredTargets)
+                > 0) || (has(self.retiredHostnames) && size(self.retiredHostnames)
+                > 0)
           status:
             properties:
               conditions:

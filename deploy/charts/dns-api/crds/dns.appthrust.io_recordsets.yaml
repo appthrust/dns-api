@@ -223,11 +223,13 @@ spec:
                 properties:
                   name:
                     description: Name is the Zone name.
+                    maxLength: 253
                     minLength: 1
                     type: string
                   namespace:
                     description: Namespace defaults to the RecordSet namespace when
                       omitted.
+                    maxLength: 63
                     type: string
                 required:
                 - name
