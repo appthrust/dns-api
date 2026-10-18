@@ -150,8 +150,8 @@ func TestReconcilerCleansEndpointRecordSetWhenServiceDNSIntentIsRemoved(t *testi
 	if err := k8sClient.List(ctx, &list, client.InNamespace("app")); err != nil {
 		t.Fatalf("list EndpointRecordSets: %v", err)
 	}
-	if len(list.Items) != 0 {
-		t.Fatalf("EndpointRecordSets = %d, want 0", len(list.Items))
+	if len(list.Items) != 1 || list.Items[0].DeletionTimestamp.IsZero() || !containsString(list.Items[0].Finalizers, endpointv1alpha1.GeneratedRecordSetsFinalizer) {
+		t.Fatalf("EndpointRecordSets = %#v, want deletion pending endpoint cleanup", list.Items)
 	}
 	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(service), &updated); err != nil {
 		t.Fatalf("get cleaned Service: %v", err)

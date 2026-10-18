@@ -15,6 +15,7 @@ import (
 	endpointconversionv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/endpoint/conversion/v1alpha1"
 	endpointv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/endpoint/v1alpha1"
 	route53v1alpha1 "github.com/appthrust/dns-api/pkg/go/api/route53/v1alpha1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,7 +41,7 @@ const (
 	generatedLabelEndpointRecordSetName      = "endpoint.dns.appthrust.io/endpointrecordset-name"
 	route53RecordSetAdoptionAnnotation       = "endpoint.dns.appthrust.io/route53-recordset-adoption"
 	route53RecordTypeAnnotation              = "endpoint.dns.appthrust.io/route53-record-type"
-	generatedRecordSetsFinalizer             = "endpoint.dns.appthrust.io/generated-recordsets"
+	generatedRecordSetsFinalizer             = endpointv1alpha1.GeneratedRecordSetsFinalizer
 )
 
 type Reconciler struct {
@@ -59,6 +60,8 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=dns.appthrust.io,resources=zones,verbs=get;list;watch
 // +kubebuilder:rbac:groups=dns.appthrust.io,resources=zoneunits,verbs=get;list;watch
 // +kubebuilder:rbac:groups=dns.appthrust.io,resources=recordsets,verbs=create;delete;get;list;watch;patch;update
+// +kubebuilder:rbac:groups=dns.appthrust.io,resources=recordwithdrawals,verbs=create;get;list;watch
+// +kubebuilder:rbac:groups=dns.appthrust.io,resources=providers,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	recordSetNamespace := r.RecordSetNamespace
@@ -83,10 +86,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		return ctrl.Result{}, nil
 	}
+	if hasRetirements(&endpointRecordSet) {
+		if err := r.reconcileRetirements(ctx, &endpointRecordSet, recordSetNamespace); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: !retireOnly(&endpointRecordSet)}, nil
+	}
 
 	status, desired, err := r.buildStatusAndRecordSets(ctx, &endpointRecordSet, recordSetNamespace)
 	if err != nil {
 		return ctrl.Result{}, err
+	}
+	r.annotateWithdrawalStatus(ctx, &endpointRecordSet, &status)
+	if protectionNeedsBarrier(&endpointRecordSet, status) {
+		return ctrl.Result{Requeue: true}, r.patchStatus(ctx, &endpointRecordSet, status)
 	}
 	if err := r.applyRecordSets(ctx, &endpointRecordSet, recordSetNamespace, desired); err != nil {
 		return ctrl.Result{}, err
@@ -95,6 +108,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 	setAggregateConditions(&status, endpointRecordSet.Generation)
+	r.annotateWithdrawalStatus(ctx, &endpointRecordSet, &status)
 	if err := r.patchStatus(ctx, &endpointRecordSet, status); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -109,6 +123,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Named("endpoint-recordset").
 		For(&endpointv1alpha1.EndpointRecordSet{}).
 		Watches(&dnsv1alpha1.Zone{}, handler.EnqueueRequestsFromMapFunc(r.mapAllEndpointRecordSets)).
+		Watches(&dnsv1alpha1.Provider{}, handler.EnqueueRequestsFromMapFunc(r.mapAllEndpointRecordSets)).
 		Watches(&endpointv1alpha1.EndpointProviderCapability{}, handler.EnqueueRequestsFromMapFunc(r.mapAllEndpointRecordSets)).
 		Watches(&dnsv1alpha1.RecordSet{}, handler.EnqueueRequestsFromMapFunc(r.mapRecordSetToEndpointRecordSet)).
 		Complete(r)
@@ -537,12 +552,15 @@ func (r *Reconciler) reconcileDeletion(ctx context.Context, endpointRecordSet *e
 	if !slices.Contains(endpointRecordSet.Finalizers, generatedRecordSetsFinalizer) {
 		return nil
 	}
+	if err := r.captureWithdrawals(ctx, endpointRecordSet, recordSetNamespace, true); err != nil {
+		return r.captureFailed(ctx, endpointRecordSet, err)
+	}
 	remaining, err := r.deleteGeneratedRecordSets(ctx, recordSetNamespace, endpointRecordSet.Namespace, endpointRecordSet.Name)
 	if err != nil {
 		return err
 	}
 	if remaining > 0 {
-		status := endpointRecordSet.Status
+		status := *endpointRecordSet.Status.DeepCopy()
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionFalse,
@@ -556,7 +574,7 @@ func (r *Reconciler) reconcileDeletion(ctx context.Context, endpointRecordSet *e
 	endpointRecordSet.Finalizers = slices.DeleteFunc(endpointRecordSet.Finalizers, func(finalizer string) bool {
 		return finalizer == generatedRecordSetsFinalizer
 	})
-	return r.Patch(ctx, endpointRecordSet, client.MergeFrom(base))
+	return r.Patch(ctx, endpointRecordSet, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 }
 
 func (r *Reconciler) deleteGeneratedRecordSets(ctx context.Context, recordSetNamespace, endpointRecordSetNamespace, endpointRecordSetName string) (int, error) {
@@ -639,13 +657,22 @@ func setAggregateCondition(status *endpointv1alpha1.EndpointRecordSetStatus, con
 }
 
 func (r *Reconciler) patchStatus(ctx context.Context, endpointRecordSet *endpointv1alpha1.EndpointRecordSet, status endpointv1alpha1.EndpointRecordSetStatus) error {
-	var current endpointv1alpha1.EndpointRecordSet
-	if err := r.Get(ctx, client.ObjectKeyFromObject(endpointRecordSet), &current); err != nil {
-		return err
+	base := endpointRecordSet.DeepCopy()
+	// Normalize against the observed object, rather than reading a potentially
+	// older cache snapshot after a successful write. Preserve transition times.
+	conditions := append([]metav1.Condition(nil), endpointRecordSet.Status.Conditions...)
+	for _, condition := range status.Conditions {
+		meta.SetStatusCondition(&conditions, condition)
 	}
-	base := current.DeepCopy()
-	current.Status = status
-	return client.IgnoreNotFound(r.Status().Patch(ctx, &current, client.MergeFrom(base)))
+	conditions = slices.DeleteFunc(conditions, func(condition metav1.Condition) bool {
+		return !slices.ContainsFunc(status.Conditions, func(desired metav1.Condition) bool { return desired.Type == condition.Type })
+	})
+	status.Conditions = conditions
+	if apiequality.Semantic.DeepEqual(endpointRecordSet.Status, status) {
+		return nil
+	}
+	endpointRecordSet.Status = status
+	return client.IgnoreNotFound(r.Status().Patch(ctx, endpointRecordSet, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})))
 }
 
 func relativeRecordName(hostname, zoneDomainName string) string {
