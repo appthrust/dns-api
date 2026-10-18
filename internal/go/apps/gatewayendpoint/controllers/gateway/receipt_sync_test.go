@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	endpointv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/endpoint/v1alpha1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -21,7 +20,7 @@ func TestGatewayEndpointRecordSetReconcilesReceiptGatewaysAfterParentChange(t *t
 		reconcileRetentionRoute(t, r, routeKey)
 
 		var removed endpointv1alpha1.EndpointRecordSet
-		if err := r.Get(ctx, gatewayARecordKey, &removed); !apierrors.IsNotFound(err) {
+		if err := r.Get(ctx, gatewayARecordKey, &removed); err != nil || removed.DeletionTimestamp.IsZero() {
 			t.Fatalf("detached Gateway retained DNS intent: %v", err)
 		}
 		assertRetentionRecord(t, r, gatewayBRecordKey, []string{"shared.example.com"}, "192.0.2.20")
@@ -34,7 +33,7 @@ func TestGatewayEndpointRecordSetReconcilesReceiptGatewaysAfterParentChange(t *t
 
 		for _, key := range []client.ObjectKey{gatewayARecordKey, gatewayBRecordKey} {
 			var record endpointv1alpha1.EndpointRecordSet
-			if err := r.Get(ctx, key, &record); !apierrors.IsNotFound(err) {
+			if err := r.Get(ctx, key, &record); err != nil || record.DeletionTimestamp.IsZero() {
 				t.Fatalf("deleted route left prior Gateway DNS intent %s: %v", key, err)
 			}
 		}
@@ -56,7 +55,7 @@ func TestGatewayEndpointRecordSetDoesNotMintReceiptWithoutCurrentAddresses(t *te
 	deleteRoute(t, r, haKey)
 
 	var record endpointv1alpha1.EndpointRecordSet
-	if err := r.Get(ctx, recordKey, &record); !apierrors.IsNotFound(err) {
+	if err := r.Get(ctx, recordKey, &record); err != nil || record.DeletionTimestamp.IsZero() {
 		t.Fatalf("fresh route inherited a receipt while addresses were absent: %v", err)
 	}
 }
@@ -95,13 +94,15 @@ func receiptSyncFixture(t *testing.T) (*Reconciler, client.ObjectKey, client.Obj
 	gatewayA := receiptSyncGateway("gateway-a", "gateway-a-uid", "192.0.2.10", section)
 	gatewayB := receiptSyncGateway("gateway-b", "gateway-b-uid", "192.0.2.20", section)
 	k8sClient := fake.NewClientBuilder().WithScheme(testScheme(t)).
-		WithStatusSubresource(route, gatewayA, gatewayB).
+		WithStatusSubresource(route, gatewayA, gatewayB, &endpointv1alpha1.EndpointRecordSet{}).
 		WithObjects(route, gatewayA, gatewayB).Build()
 	r := &Reconciler{Client: k8sClient, EndpointRecordSetNamespace: "dns-system"}
 	routeKey := client.ObjectKeyFromObject(route)
 	reconcileRetentionRoute(t, r, routeKey)
 	gatewayARecordKey := client.ObjectKey{Namespace: "dns-system", Name: generatedGatewayEndpointRecordSetName(gatewayA.Namespace, gatewayA.Name)}
 	gatewayBRecordKey := client.ObjectKey{Namespace: "dns-system", Name: generatedGatewayEndpointRecordSetName(gatewayB.Namespace, gatewayB.Name)}
+	markUnprotected(t, r, gatewayARecordKey)
+	markUnprotected(t, r, gatewayBRecordKey)
 	assertRetentionRecord(t, r, gatewayARecordKey, []string{"shared.example.com"}, "192.0.2.10")
 	assertRetentionRecord(t, r, gatewayBRecordKey, []string{"shared.example.com"}, "192.0.2.20")
 	return r, routeKey, gatewayARecordKey, gatewayBRecordKey

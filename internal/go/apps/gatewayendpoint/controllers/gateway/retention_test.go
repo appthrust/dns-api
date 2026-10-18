@@ -138,7 +138,7 @@ func TestGatewayEndpointRecordSetRevokesExplicitFalseAndForeignGateway(t *testin
 		reconcileRetentionRoute(t, r, haKey)
 
 		var record endpointv1alpha1.EndpointRecordSet
-		if err := r.Get(ctx, recordKey, &record); !apierrors.IsNotFound(err) {
+		if err := r.Get(ctx, recordKey, &record); err != nil || record.DeletionTimestamp.IsZero() {
 			t.Fatalf("explicitly rejected route retained DNS intent: %v", err)
 		}
 	})
@@ -150,7 +150,7 @@ func TestGatewayEndpointRecordSetRevokesExplicitFalseAndForeignGateway(t *testin
 		reconcileRetentionRoute(t, r, haKey)
 
 		var record endpointv1alpha1.EndpointRecordSet
-		if err := r.Get(ctx, recordKey, &record); !apierrors.IsNotFound(err) {
+		if err := r.Get(ctx, recordKey, &record); err != nil || record.DeletionTimestamp.IsZero() {
 			t.Fatalf("explicitly rejected Gateway retained DNS intent: %v", err)
 		}
 	})
@@ -198,7 +198,7 @@ func TestGatewayEndpointRecordSetRevokesExplicitFalseAndForeignGateway(t *testin
 		reconcileRetentionRoute(t, r, haKey)
 
 		var record endpointv1alpha1.EndpointRecordSet
-		if err := r.Get(ctx, recordKey, &record); !apierrors.IsNotFound(err) {
+		if err := r.Get(ctx, recordKey, &record); err != nil || record.DeletionTimestamp.IsZero() {
 			t.Fatalf("changed listener ownership retained DNS intent: %v", err)
 		}
 	})
@@ -297,7 +297,7 @@ func TestGatewayEndpointRecordSetDoesNotRetainWithoutReceiptOrSelectorProof(t *t
 			reconcileRetentionRoute(t, r, haKey)
 
 			var record endpointv1alpha1.EndpointRecordSet
-			if err := r.Get(ctx, recordKey, &record); !apierrors.IsNotFound(err) {
+			if err := r.Get(ctx, recordKey, &record); err != nil || record.DeletionTimestamp.IsZero() {
 				t.Fatalf("unproven retained DNS intent: %v", err)
 			}
 		})
@@ -333,13 +333,28 @@ func retentionFixtureWithNamespacePolicy(t *testing.T, includePayment bool, name
 		objects = append(objects, payment)
 		paymentKey = client.ObjectKeyFromObject(payment)
 	}
-	k8sClient := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(ha, gateway).WithObjects(objects...).Build()
+	k8sClient := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(ha, gateway, &endpointv1alpha1.EndpointRecordSet{}).WithObjects(objects...).Build()
 	r := &Reconciler{Client: k8sClient, EndpointRecordSetNamespace: "dns-system"}
 	if includePayment {
 		reconcileRetentionRoute(t, r, paymentKey)
 	}
 	reconcileRetentionRoute(t, r, client.ObjectKeyFromObject(ha))
+	markUnprotected(t, r, client.ObjectKey{Namespace: "dns-system", Name: generatedGatewayEndpointRecordSetName("platform", "public")})
 	return r, paymentKey, client.ObjectKeyFromObject(ha), client.ObjectKeyFromObject(gateway), client.ObjectKey{Namespace: "dns-system", Name: generatedGatewayEndpointRecordSetName("platform", "public")}
+}
+
+// These admission-receipt tests exercise ordinary, non-external publication.
+// External protection and capture are covered by withdrawal_test.go.
+func markUnprotected(t *testing.T, r *Reconciler, key client.ObjectKey) {
+	t.Helper()
+	var record endpointv1alpha1.EndpointRecordSet
+	if err := r.Get(context.Background(), key, &record); err != nil {
+		t.Fatal(err)
+	}
+	record.Status.Conditions = []metav1.Condition{{Type: "WithdrawalProtected", Status: metav1.ConditionFalse, ObservedGeneration: record.Generation, Reason: "ProviderCapability"}}
+	if err := r.Status().Update(context.Background(), &record); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func retentionRoute(namespace, name, uid, hostname string, status metav1.ConditionStatus) *gatewayv1.HTTPRoute {

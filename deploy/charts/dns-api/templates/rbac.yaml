@@ -91,6 +91,8 @@ rules:
     resources:
       - recordsets
       - zoneunits
+      - recordwithdrawals
+      - recordwithdrawalwaivers
     verbs:
       - create
       - delete
@@ -113,6 +115,8 @@ rules:
       - recordsets/status
       - zoneclasses/status
       - zones/status
+      - recordwithdrawals/status
+      - recordwithdrawalwaivers/status
     verbs:
       - get
       - patch

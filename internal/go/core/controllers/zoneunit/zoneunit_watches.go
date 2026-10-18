@@ -12,10 +12,15 @@ import (
 )
 
 func (r *ZoneUnitCompositionReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := (&RecordWithdrawalWaiverReconciler{Client: r.Client}).SetupWithManager(mgr); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("zoneunit-composition").
 		For(&dnsv1alpha1.Zone{}).
 		Watches(&dnsv1alpha1.RecordSet{}, handler.EnqueueRequestsFromMapFunc(r.mapRecordSetToZone)).
+		Watches(&dnsv1alpha1.RecordWithdrawal{}, handler.EnqueueRequestsFromMapFunc(r.mapWithdrawalToZone)).
+		Watches(&dnsv1alpha1.RecordWithdrawalWaiver{}, handler.EnqueueRequestsFromMapFunc(r.mapWaiverToZone)).
 		Watches(&dnsv1alpha1.ZoneUnit{}, handler.EnqueueRequestsFromMapFunc(r.mapZoneUnitToZone)).
 		Watches(&dnsv1alpha1.ZoneClass{}, handler.EnqueueRequestsFromMapFunc(r.mapZoneClassToZones)).
 		Watches(&dnsv1alpha1.Provider{}, handler.EnqueueRequestsFromMapFunc(r.mapProviderToZones)).
@@ -115,6 +120,13 @@ func (r *ZoneUnitCompositionReconciler) mapNamespaceToZones(ctx context.Context,
 		}
 		zoneNamespace, zoneName := recordSetZoneKey(&recordSet)
 		appendRequest(client.ObjectKey{Namespace: zoneNamespace, Name: zoneName})
+	}
+	var withdrawals dnsv1alpha1.RecordWithdrawalList
+	if err := r.List(ctx, &withdrawals, client.InNamespace(namespace.Name)); err != nil {
+		return requests
+	}
+	for i := range withdrawals.Items {
+		appendRequest(withdrawalZoneKey(&withdrawals.Items[i]))
 	}
 	return requests
 }

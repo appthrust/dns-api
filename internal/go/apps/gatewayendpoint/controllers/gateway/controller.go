@@ -8,17 +8,16 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/appthrust/dns-api/internal/go/apps/endpoint/retirement"
 	endpointv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/endpoint/v1alpha1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
@@ -46,6 +45,7 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=endpoint.dns.appthrust.io,resources=endpointrecordsets,verbs=create;delete;get;list;watch;patch;update
+// +kubebuilder:rbac:groups=endpoint.dns.appthrust.io,resources=endpointrecordsets/status,verbs=get;patch;update
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	namespace := r.EndpointRecordSetNamespace
 	if namespace == "" {
@@ -105,8 +105,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&gatewayv1.Gateway{}, handler.EnqueueRequestsFromMapFunc(r.mapGatewayToHTTPRoutes)).
 		// Cross-namespace projections cannot use owner references. The final
 		// delete event must wake routes even when their own state has not changed.
-		Watches(&endpointv1alpha1.EndpointRecordSet{}, handler.EnqueueRequestsFromMapFunc(r.mapEndpointRecordSetToHTTPRoutes),
-			builder.WithPredicates(predicate.Or(predicate.GenerationChangedPredicate{}, predicate.LabelChangedPredicate{}))).
+		Watches(&endpointv1alpha1.EndpointRecordSet{}, handler.EnqueueRequestsFromMapFunc(r.mapEndpointRecordSetToHTTPRoutes)).
 		Complete(r)
 }
 
@@ -132,6 +131,9 @@ func (r *Reconciler) mapEndpointRecordSetToHTTPRoutes(ctx context.Context, obj c
 	labels := obj.GetLabels()
 	if labels[managedByLabel] != managedByValue {
 		return nil
+	}
+	if labels[generatedLabelRouteNamespace] != "" && labels[generatedLabelRouteName] != "" {
+		return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: labels[generatedLabelRouteNamespace], Name: labels[generatedLabelRouteName]}}}
 	}
 	key := client.ObjectKey{Namespace: labels[generatedLabelGatewayNamespace], Name: labels[generatedLabelGatewayName]}
 	if key.Namespace == "" || key.Name == "" {
@@ -350,6 +352,7 @@ func (r *Reconciler) applyGatewayEndpointRecordSets(ctx context.Context, namespa
 		var existing endpointv1alpha1.EndpointRecordSet
 		err := r.Get(ctx, client.ObjectKey{Namespace: desired.Namespace, Name: desired.Name}, &existing)
 		if apierrors.IsNotFound(err) {
+			controllerutil.AddFinalizer(&desired, endpointv1alpha1.GeneratedRecordSetsFinalizer)
 			if err := r.Create(ctx, &desired, client.FieldOwner(fieldOwner)); err != nil {
 				return err
 			}
@@ -362,6 +365,14 @@ func (r *Reconciler) applyGatewayEndpointRecordSets(ctx context.Context, namespa
 			// Deletion is irreversible. Let the endpoint controller finish its
 			// provider cleanup; the EndpointRecordSet delete watch retries creation.
 			continue
+		}
+		spec, err := retirement.Append(&existing, desired.Spec)
+		if err != nil {
+			return retirement.ReportPending(ctx, r.Client, &existing, err)
+		}
+		desired.Spec = spec
+		if err := retirement.ClearPending(ctx, r.Client, &existing); err != nil {
+			return err
 		}
 		desiredReceipt := desired.Annotations[admissionReceiptAnnotation]
 		if apiequality.Semantic.DeepEqual(existing.Labels, desired.Labels) &&
@@ -396,7 +407,7 @@ func (r *Reconciler) applyGatewayEndpointRecordSets(ctx context.Context, namespa
 			continue
 		}
 		item := item
-		if err := r.Delete(ctx, &item); err != nil && !apierrors.IsNotFound(err) {
+		if err := retirement.RetireOrDelete(ctx, r.Client, &item); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
 	}
@@ -414,7 +425,7 @@ func (r *Reconciler) cleanupForRoute(ctx context.Context, endpointRecordSetNames
 	}
 	for _, item := range existing.Items {
 		item := item
-		if err := r.Delete(ctx, &item); err != nil && !apierrors.IsNotFound(err) {
+		if err := retirement.RetireOrDelete(ctx, r.Client, &item); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
 	}

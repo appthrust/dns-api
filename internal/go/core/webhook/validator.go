@@ -66,6 +66,8 @@ func SetupCoreValidationWebhookWithManager(mgr ctrl.Manager) error {
 	server.Register(zoneWebhookPath, &webhook.Admission{Handler: validator})
 	server.Register(recordSetWebhookPath, &webhook.Admission{Handler: validator})
 	server.Register(zoneUnitWebhookPath, &webhook.Admission{Handler: validator})
+	server.Register(recordWithdrawalWebhookPath, &webhook.Admission{Handler: validator})
+	server.Register(recordWithdrawalWaiverWebhookPath, &webhook.Admission{Handler: validator})
 	return nil
 }
 
@@ -135,6 +137,10 @@ func (v *CoreValidator) Handle(ctx context.Context, req admission.Request) admis
 		} else if err == nil {
 			err = v.validateRecordSet(ctx, &recordSet)
 		}
+	case "RecordWithdrawal":
+		err = v.validateWithdrawalRequest(ctx, req)
+	case "RecordWithdrawalWaiver":
+		err = v.validateWaiverRequest(req)
 	case "ZoneUnit":
 		var zoneUnit dnsv1alpha1.ZoneUnit
 		err = v.decoder.Decode(req, &zoneUnit)
@@ -241,6 +247,9 @@ func validateProvider(provider *dnsv1alpha1.Provider) error {
 			return err
 		}
 		if err := validateProviderConditionReasons(version.RecordSet.AdditionalConditionReasons, prefix+".recordSet.additionalConditionReasons", recordSetCoreConditionReasons()); err != nil {
+			return err
+		}
+		if err := validateProviderWithdrawal(version.RecordWithdrawal, prefix+".recordWithdrawal"); err != nil {
 			return err
 		}
 		for index, toggle := range version.RecordSet.DisableValidations {
@@ -752,10 +761,24 @@ func (v *CoreValidator) validateZoneUnit(ctx context.Context, zoneUnit *dnsv1alp
 			}
 		}
 	}
-	return nil
+	return validateUnitWithdrawals(zoneUnit, oldZoneUnit)
 }
 
 func (v *CoreValidator) validateZoneUnitDelete(ctx context.Context, zoneUnit *dnsv1alpha1.ZoneUnit) error {
+	var claims dnsv1alpha1.RecordWithdrawalList
+	if err := v.List(ctx, &claims); err != nil {
+		return err
+	}
+	for i := range claims.Items {
+		claim := &claims.Items[i]
+		namespace := claim.Namespace
+		if claim.Spec.ZoneRef.Namespace != nil {
+			namespace = *claim.Spec.ZoneRef.Namespace
+		}
+		if namespace == zoneUnit.Spec.Zone.Ref.Namespace && claim.Spec.ZoneRef.Name == zoneUnit.Spec.Zone.Ref.Name {
+			return errors.New("ZoneUnit cannot be deleted while RecordWithdrawal resources reference its Zone")
+		}
+	}
 	var zone dnsv1alpha1.Zone
 	err := v.Client.Get(ctx, client.ObjectKey{Namespace: zoneUnit.Spec.Zone.Ref.Namespace, Name: zoneUnit.Spec.Zone.Ref.Name}, &zone)
 	if apierrors.IsNotFound(err) {
@@ -830,7 +853,7 @@ func (v *CoreValidator) validateZoneUnitStatus(ctx context.Context, zoneUnit *dn
 			}
 		}
 	}
-	return nil
+	return v.validateUnitWithdrawalStatus(zoneUnit, providerVersion)
 }
 
 func (v *CoreValidator) zoneForRecordSet(ctx context.Context, recordSet *dnsv1alpha1.RecordSet) (*dnsv1alpha1.Zone, error) {
@@ -1113,8 +1136,8 @@ func validateProviderConditionReasons(reasons []dnsv1alpha1.ProviderConditionRea
 	seen := conditionReasonSet{}
 	for index, reason := range reasons {
 		itemPath := fmt.Sprintf("%s[%d]", path, index)
-		if !isKnownConditionType(reason.ConditionType) {
-			return fmt.Errorf("%s.conditionType must be Accepted or Programmed", itemPath)
+		if _, allowed := core[reason.ConditionType]; !allowed {
+			return fmt.Errorf("%s.conditionType is not allowed for this resource", itemPath)
 		}
 		if !isKnownConditionStatus(reason.Status) {
 			return fmt.Errorf("%s.status must be True, False, or Unknown", itemPath)
@@ -1371,10 +1394,6 @@ func recordSetCoreConditionReasons() conditionReasonSet {
 			},
 		},
 	}
-}
-
-func isKnownConditionType(conditionType dnsv1alpha1.ConditionType) bool {
-	return conditionType == dnsv1alpha1.ConditionAccepted || conditionType == dnsv1alpha1.ConditionProgrammed
 }
 
 func isKnownConditionStatus(status metav1.ConditionStatus) bool {

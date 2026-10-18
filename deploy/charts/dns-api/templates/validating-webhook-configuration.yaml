@@ -161,5 +161,21 @@ webhooks:
         resources:
           - zoneunits
           - zoneunits/status
+  {{- range $kind := list "recordwithdrawal" "recordwithdrawalwaiver" }}
+  - name: {{ $kind }}s.dns.appthrust.io
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: {{ $.Values.webhook.failurePolicy }}
+    clientConfig:
+      service:
+        namespace: {{ $.Release.Namespace }}
+        name: {{ include "dns-api.webhookServiceName" $ }}
+        path: /validate-dns-appthrust-io-v1alpha1-{{ $kind }}
+    rules:
+      - apiGroups: [dns.appthrust.io]
+        apiVersions: [v1alpha1]
+        operations: [CREATE, UPDATE]
+        resources: [{{ $kind }}s, {{ $kind }}s/status]
+  {{- end }}
 {{- end }}
 

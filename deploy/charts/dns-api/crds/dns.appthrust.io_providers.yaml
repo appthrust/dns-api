@@ -120,6 +120,9 @@ spec:
                                 enum:
                                 - Accepted
                                 - Programmed
+                                - Withdrawn
+                                - Ready
+                                - OverrideAccepted
                                 type: string
                               description:
                                 description: Description explains when the provider-specific
@@ -304,6 +307,67 @@ spec:
                             type: object
                           type: array
                       type: object
+                    recordWithdrawal:
+                      description: RecordWithdrawal declares support for independent
+                        exclusion verification.
+                      properties:
+                        additionalConditionReasons:
+                          items:
+                            properties:
+                              conditionType:
+                                description: ConditionType is the status condition
+                                  type this reason applies to.
+                                enum:
+                                - Accepted
+                                - Programmed
+                                - Withdrawn
+                                - Ready
+                                - OverrideAccepted
+                                type: string
+                              description:
+                                description: Description explains when the provider-specific
+                                  reason is used.
+                                minLength: 1
+                                type: string
+                              reason:
+                                description: Reason is the provider-specific condition
+                                  reason stored in metav1.Condition.reason.
+                                minLength: 1
+                                pattern: ^[A-Z][A-Za-z0-9]*$
+                                type: string
+                              status:
+                                description: Status is the condition status this reason
+                                  applies to.
+                                enum:
+                                - "True"
+                                - "False"
+                                - Unknown
+                                type: string
+                            required:
+                            - conditionType
+                            - description
+                            - reason
+                            - status
+                            type: object
+                          type: array
+                        schemas:
+                          properties:
+                            statusProviderData:
+                              description: StatusProviderData validates public withdrawal
+                                provider evidence.
+                              properties:
+                                openAPIV3Schema:
+                                  description: OpenAPIV3Schema is the schema for the
+                                    corresponding inline object.
+                                  type: object
+                                  x-kubernetes-preserve-unknown-fields: true
+                              type: object
+                          type: object
+                        supported:
+                          type: boolean
+                      required:
+                      - supported
+                      type: object
                     served:
                       description: Served controls whether new or updated specs may
                         reference this version.
@@ -326,6 +390,9 @@ spec:
                                 enum:
                                 - Accepted
                                 - Programmed
+                                - Withdrawn
+                                - Ready
+                                - OverrideAccepted
                                 type: string
                               description:
                                 description: Description explains when the provider-specific

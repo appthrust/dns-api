@@ -1838,6 +1838,10 @@ func TestBuiltInProviderManifestsPassValidation(t *testing.T) {
 			if err := validateProvider(&provider); err != nil {
 				t.Fatalf("validateProvider(%s) returned error: %v", name, err)
 			}
+			capability := provider.Spec.Versions[0].RecordWithdrawal
+			if capability == nil || capability.Supported != (provider.Name == "external.dns.appthrust.io") {
+				t.Fatalf("provider %s has incorrect withdrawal capability: %#v", provider.Name, capability)
+			}
 		})
 	}
 }

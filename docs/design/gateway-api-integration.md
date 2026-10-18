@@ -57,6 +57,10 @@ Provider controllers still make final provider-side acceptance and programming d
 
 The Gateway controller creates one `EndpointRecordSet` per Gateway. Multiple routes and listeners on the same Gateway are deduplicated into a single endpoint intent so HTTP and HTTPS routes for the same hostname do not create competing Core `RecordSet` owners.
 
+The source installs the endpoint-owned `endpoint.dns.appthrust.io/generated-recordsets` finalizer in the Create request. Updates are monotone for retirement intent: read the current ERS, preserve all existing retirement entries, append removed-address snapshots of old hostnames and removed-hostname snapshots of old IPs, then write desired live intent with resourceVersion concurrency. IDs use ERS UID and the pre-update generation; retries cannot overwrite concurrent obligations. The source never selects Zones/providers, creates Core withdrawal claims, prunes retirement entries, or treats capture as verified DNS absence.
+
+Protection defaults closed until a current-generation `WithdrawalProtected=False` establishes no withdrawal-capable binding. Collection/snapshot overflow reports `WithdrawalCapturePending`, preserves the old spec, and holds `Ready=False` rather than truncating. Successful source writes clear only their pending marker; the endpoint controller owns capture acknowledgment.
+
 For a route:
 
 ```yaml
@@ -189,6 +193,10 @@ bound Gateway. That discovery only schedules recomputation; it does not grant
 authority or relax UID, generation, Gateway, listener, or hostname matching.
 
 ## Deletion and Recovery
+
+Every source cleanup path uses the same retire-or-delete protocol: missing or deleting Gateway, current rejected Gateway admission, no remaining admitted hostname/usable target intent, removed generated intents, route disappearance/deletion or binding changes, and legacy route-labelled `cleanupForRoute` cleanup. Protected IP/hostname associations first move to retire-only ERS snapshots. DELETE waits for `WithdrawalCaptured=True` at the current ERS generation, then uses exact UID/resourceVersion preconditions. While capture is pending, cleanup returns `WithdrawalCapturePending`; it does not drop the ERS or strip finalizers. Hostname-only targets carry no address-withdrawal obligation; a current known-unprotected ERS follows ordinary deletion.
+
+The endpoint controller captures independent claims and performs generated-child cleanup. Gateway and Service source controllers share this protocol. Manual finalizer stripping or overwriting retained evidence is outside the supported contract.
 
 An `EndpointRecordSet` may still be terminating when its route becomes accepted
 again. The Gateway controller must not update that terminating intent or remove

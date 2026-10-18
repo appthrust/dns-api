@@ -38,7 +38,11 @@ func ZoneAllowedByClass(ctx context.Context, k8sClient client.Client, zoneClass 
 }
 
 func RecordSetAllowedByZone(ctx context.Context, k8sClient client.Client, recordSet *dnsv1alpha1.RecordSet, zone *dnsv1alpha1.Zone) (bool, string) {
-	if recordSet.Namespace == zone.Namespace {
+	return recordSetAllowedByZone(ctx, k8sClient, recordSet, zone, true)
+}
+
+func recordSetAllowedByZone(ctx context.Context, k8sClient client.Client, recordSet *dnsv1alpha1.RecordSet, zone *dnsv1alpha1.Zone, allowSameNamespace bool) (bool, string) {
+	if allowSameNamespace && recordSet.Namespace == zone.Namespace {
 		return true, ""
 	}
 	namespaceMatched := false

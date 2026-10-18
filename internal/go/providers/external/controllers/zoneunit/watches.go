@@ -41,6 +41,11 @@ func (r *ZoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 						return true
 					}
 				}
+				for _, item := range unit.Spec.Withdrawals {
+					if item.ClaimNamespace == obj.GetName() {
+						return true
+					}
+				}
 				return false
 			})
 		}), builder.WithPredicates(predicate.LabelChangedPredicate{})).

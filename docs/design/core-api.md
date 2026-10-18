@@ -678,9 +678,27 @@ spec:
       - ns-222.example-dns.net
 ```
 
+## RecordWithdrawal
+
+`RecordWithdrawal` is a namespace-scoped retained request to exclude one address from customer-managed DNS. Its immutable `spec` contains `zoneRef` (omitted namespace means the claim namespace), canonical zone-relative `name` (`@`, exact name, or leftmost wildcard), and one canonical unscoped, unmapped IPv4 or IPv6 `address`. It has no provider selection, resolver policy, ownerReferences, or finalizers. Admission rejects spec changes with `spec is immutable`.
+
+The required `endpoint.dns.appthrust.io/address` label equals the canonical IPv4 string or lowercase unpadded base32 of the normalized IPv6 bytes. It is a discovery key, not authorization or proof. Source annotations carry provenance, not authority. Endpoint-created names bind ERS UID, pre-update retirement generation, hostname, and address; create-or-get checks immutable shape, lifecycle, label, and source annotations.
+
+Core owns public status: `observedGeneration`, resolved `zone` and `unit` namespace/name/UID references, `providerRef`, `policyFingerprint`, `checkedNames`, `requiredViews`, `sampledWildcard`, `absentSince`, `notBefore`, `lastProbeTime`, `nextProbeTime`, `verifiedAt`, `resultDigest`, public `provider.data`, and optional `waiverRef`. Checked names and views each have a 256-item bound. At most four generation-aware conditions describe `Accepted`, `Withdrawn`, `Ready`, and optional `OverrideAccepted`. Provider-private state is not projected. The [external verification contract](./external-provider.md#withdrawal-verification) defines the condition/reason/message table and cache proof.
+
+Claims remain after source deletion and after verification; there is no age-based garbage collection. Every claim referencing a Zone is a deletion dependency, regardless of readiness. Operators explicitly archive/remove evidence when it is no longer consumable. Claim or binding disappearance never proves withdrawal.
+
+## RecordWithdrawalWaiver
+
+`RecordWithdrawalWaiver` is a separate namespace-scoped immutable declaration of stale-DNS risk acceptance. Its spec contains `withdrawalRef` namespace/name/UID, `claimSpecDigest` (`sha256:` plus 64 lowercase hex digits over the immutable claim wire spec), canonical `address`, receiving `reservationRef` namespace/name/UID, nonempty `reason` (at most 2048 bytes), `ticketRef` (at most 1024 bytes), and `acceptStaleDNSRisk: true`. It has no ownerReferences or finalizers.
+
+Waiver creation is separately RBAC-authorized; Kubernetes audit supplies actor/time/provenance. Client-supplied identity fields and platform lookups are not authority. Core validates the exact claim UID/spec digest/address and same-namespace scope, then composes the waiver name/UID/spec digest/reservation reference into the Unit. Public waiver status contains `observedGeneration` and `Accepted=True/Accepted` or `Accepted=False/InvalidWithdrawal`, maintained independently of Zone existence.
+
+The provider reports `OverrideAccepted=True/OperatorAuthorizedRelease` for the exact Core-validated scope. A waiver does not set `Withdrawn=True` or make DNS ready, and another claim or reservation incarnation cannot consume it. Claims and waivers are retained independently of their sources.
+
 ## ZoneUnit
 
-`ZoneUnit` is the zone-scoped desired-state and ownership ledger built from accepted `Zone` and `RecordSet` claims. It is namespace-scoped and uses the same namespace and name as the owning `Zone`. Users normally create `Zone` and `RecordSet` claims; the Core ZoneUnit Controller creates and updates `ZoneUnit`.
+`ZoneUnit` is the zone-scoped desired-state and ownership ledger built from `Zone`, `RecordSet`, and retained `RecordWithdrawal` claims. It is namespace-scoped and uses the same namespace and name as the owning `Zone`. Users normally create claims; the Core ZoneUnit Controller creates and updates `ZoneUnit`.
 
 `ZoneUnit.metadata.name` must match `spec.zone.ref.name`; the CRD validates this with CEL. `ZoneUnit.metadata.namespace` must match `spec.zone.ref.namespace`; Kubernetes CRD CEL does not expose `metadata.namespace`, so the core validating webhook rejects namespace mismatches on create and update. Provider controllers do not define an `InvalidZoneUnitName` condition reason and do not handle mismatched names defensively, because invalid `ZoneUnit` names are rejected before provider reconciliation.
 
@@ -695,6 +713,7 @@ spec:
 - `zone.observedGeneration`: `Zone.metadata.generation` used to build this item.
 - `zone.domainName`: accepted zone domain name.
 - `zone.zoneClassRef`: resolved `ZoneClass` reference.
+- `zone.zoneClassUID`, `zone.zoneClassObservedGeneration`: resolved Class incarnation and generation used for composition. These optional wire fields fence withdrawal policy changes; missing legacy bindings cannot establish withdrawal.
 - `zone.adoption`: provider-specific adoption payload after storage-version conversion.
 - `recordSets`: accepted desired state for owner `RecordSet` claims.
 - `recordSets[].recordSetNamespace`: owner `RecordSet` namespace. This is part of the list-map key.
@@ -708,6 +727,10 @@ spec:
 - `recordSets[].deletionRequested`: set by core when the owner `RecordSet` is deleting and provider-side cleanup is still needed.
 
 `recordSets` is a Kubernetes `listType=map` keyed by scalar fields `recordSetNamespace` and `recordSetName`. `recordSetRef` is not used inside the list item because nested-object list-map keys are not a CRD-safe shape across Kubernetes versions. `recordSetUID` is an incarnation fence, not an additional list key: only one owner incarnation occupies a claim key at a time. Provider controllers do not read `RecordSet` claims; core supplies the UID from the actual claim. A pending predecessor remains its own cleanup item until its UID-bound cleanup completes. A recreated same-name claim cannot inherit the predecessor's provider payload or completion.
+
+`spec.withdrawals` and `status.withdrawals` are map-lists of at most 256 items, keyed by scalar `claimNamespace` and `claimName`. Each item also carries `claim{namespace,name,uid}`; CEL requires its namespace/name to equal the scalar keys. UID is nonempty and is an incarnation fence, not a list key. Spec items contain claim `observedGeneration`, canonical relative `name`, `address`, `allowed`, and optional Core-validated `waiver{name,uid,digest,reservationRef}`. For the same nested claim identity, admission forbids changes to name, address, or observedGeneration; authorization and waiver attachment may change.
+
+Status items mirror claim identity/generation and carry the withdrawal policy, checked-name/view, cache-window, probe-time, digest, condition, public provider-data, and waiver-reference fields described above. Core projects only the current exact desired item with matching claim UID/generation, condition generations, current Unit status generation, and nonempty Class UID/generation. Withdrawals do not participate in active `Programmed` aggregation or claim ownership conflicts and never create empty A/AAAA RecordSets.
 
 `ZoneUnit.spec.zone` does not contain `Zone.metadata.uid`. Kubernetes assigns `metadata.uid`, so a `ZoneUnit` pre-applied for GitOps recovery cannot know the UID of a `Zone` claim that will be restored later. Provider controllers must not require the `Zone` UID as desired input.
 
@@ -770,17 +793,17 @@ Deletion uses both core and provider finalizers on `ZoneUnit`:
 
 - Core keeps a finalizer on `Zone` and `ZoneUnit` while the external cleanup result must be observed.
 - Provider controllers keep their own finalizer on `ZoneUnit` while provider cleanup is in progress.
-- `RecordSet` is a restrict-style child of `Zone`. While any `RecordSet` still references a deleting `Zone`, core keeps the matching `ZoneUnit` active and does not send the provider cleanup signal. The deleting `Zone` reports `Programmed=False`, reason `ProviderChangePending`, with a message that the remaining `RecordSet` resources must be deleted or moved first.
+- `RecordSet` and `RecordWithdrawal` are restrict-style dependent claims of `Zone`. While either kind still references a deleting Zone, core keeps the matching Unit active and does not send provider cleanup. The Zone reports `Programmed=False/ProviderChangePending`; when withdrawals exist, its message includes both dependency counts and asks operators to archive dependent claims. Verified withdrawals still count.
 - If a `RecordSet` that references a deleting `Zone` is itself deleting, core keeps or writes its `ZoneUnit.spec.recordSets[]` item with `deletionRequested=true` until provider record-set cleanup completes.
-- After no `RecordSet` references the deleting `Zone`, core deletes the matching `ZoneUnit` before removing the `Zone` finalizer.
-- If the deleting `Zone` has no remaining `RecordSet` references and the matching `ZoneUnit` does not exist, core removes the `Zone` finalizer because there is no provider-owned cleanup state to observe.
+- After no `RecordSet` or `RecordWithdrawal` references the deleting Zone, core deletes the matching Unit before removing the Zone finalizer.
+- If neither kind references the deleting Zone and the matching Unit does not exist, core removes the Zone finalizer because no provider-owned cleanup state remains.
 - `ZoneUnit.metadata.deletionTimestamp` is the provider cleanup signal. Provider controllers delete or retain external resources according to provider policy, update `ZoneUnit.status`, and remove their provider finalizer after cleanup completes.
 - Core removes its `ZoneUnit` finalizer after provider cleanup is complete, then removes the `Zone` finalizer.
 - Deleting a `RecordSet` sets `recordSets[].deletionRequested=true`. Provider controllers delete the external record target, then report completion. Core removes the `RecordSet` finalizer and later removes the item from `ZoneUnit.spec.recordSets[]`.
 
-The validating webhook rejects manual `ZoneUnit` deletion while the owning `Zone` exists and is not deleting. The owning `Zone` is resolved from `ZoneUnit.spec.zone.ref`. This prevents a user or GitOps controller from sending the provider cleanup signal while the desired `Zone` claim is still active.
+The validating webhook rejects manual `ZoneUnit` deletion while any `RecordWithdrawal` references its Zone, with `ZoneUnit cannot be deleted while RecordWithdrawal resources reference its Zone`. It also rejects deletion while the owning Zone exists and is not deleting. The owning Zone is resolved from `ZoneUnit.spec.zone.ref`.
 
-`ZoneUnit` deletion is allowed when the owning `Zone` exists and has `metadata.deletionTimestamp`; this is the normal path started by the Core ZoneUnit Controller during `Zone` deletion. `ZoneUnit` deletion is also allowed when the owning `Zone` is missing, so operators can remove a pre-applied or orphaned GitOps recovery ledger. Core does not delete a `ZoneUnit` merely because the owning `Zone` is temporarily missing during GitOps restore.
+With no withdrawal dependency, `ZoneUnit` deletion is allowed when the owning Zone is deleting or missing. Core does not delete a Unit merely because the Zone is temporarily missing during GitOps restore.
 
 Provider controllers perform provider cleanup only for `ZoneUnit` resources that are in their scope and have their provider finalizer or otherwise have provider-owned cleanup to complete. They do not add claim finalizers and do not remove core finalizers. If a deleting `ZoneUnit` has no provider finalizer and no provider-owned cleanup state, provider controllers may ignore it.
 

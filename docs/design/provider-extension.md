@@ -190,6 +190,14 @@ Only explicitly published core validations can be disabled. Initial disableable 
 
 These validations cannot be disabled: `require-provider`, `require-zone-ref`, `require-type`, `require-name`, `require-cname-target`, `require-mx-records`, `require-caa-records`, `require-ns-name-servers`, record name grammar, lowercase canonical form, label length, wildcard placement, type-specific underscore allowance, delegated NS apex rejection, delegated NS wildcard rejection, CNAME target validation, type/body exclusivity, `supportedTypes` consistency, namespace / record access policy, and `ZoneUnit` ownership validation.
 
+### Record Withdrawal Capability
+
+`spec.versions[].recordWithdrawal` is an optional `ProviderRecordWithdrawal` capability with `supported`, `schemas.statusProviderData.openAPIV3Schema`, and `additionalConditionReasons`. Omission or `supported=false` does not support independent withdrawal. Core checks both the served input and storage contracts before composing verification work. External advertises support; Route 53 and Cloudflare do not advertise or reconcile withdrawals.
+
+The status schema validates public `RecordWithdrawal.status.provider.data` and `ZoneUnit.status.withdrawals[].provider.data`, not provider-private scheduler state. External exposes only a bounded `views` preview there; typed claim/Unit evidence, never truncated previews, drives decisions.
+
+Core owns `Accepted=True/Accepted` and `Accepted=False` with `InvalidWithdrawal`, `NotAllowed`, or `UnsupportedProvider`. Withdrawal additional reasons use the closed contract: `Withdrawn=False` and `Ready=False` with `DNSStillResolves` or `NegativeTTLNotElapsed`; `Withdrawn=Unknown` and `Ready=False` with `DNSProbeFailed` or `PolicyChanged`; `Withdrawn=True` and `Ready=True` with `WithdrawalVerified`; and `OverrideAccepted=True/OperatorAuthorizedRelease`. External declares these eleven combinations. Admission validates schema fragments and rejects duplicate, core-acceptance, or out-of-contract reason combinations.
+
 ### Controller Responsibility
 
 `Provider` is not reconciled by a controller. It is installed as a cluster-scoped resource by provider packages and used by the core validating webhook for provider-specific validation of `ZoneClass`, `Zone`, and `RecordSet`. It also publishes identity resource metadata used by UI and generic reference display.

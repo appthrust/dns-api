@@ -1,14 +1,17 @@
 # DEP-0003: Verified record withdrawal before address reuse
 
-- Status: Draft
+- Status: Accepted
 - Owner: dns-api maintainers (Core, Endpoint App, and external provider)
 - Created: 2026-10-18
+- Accepted: 2026-10-18
+
+The accepted contract is now carried by `docs/design/`; this DEP retains rationale, alternatives, and compatibility history.
 
 ## Summary
 
 Introduce independent Core `RecordWithdrawal` and `RecordWithdrawalWaiver` claims, Core composition/projection through `ZoneUnit`, and external-provider exclusion verification. Endpoint sources preserve retired hostname/address pairs until the Endpoint App durably creates claims. Platform consumers use verified results before member retirement and address reuse; exceptional operator risk acceptance remains distinct from DNS verification.
 
-This is the dns-api part of the reviewed **Phase 4b: verified external-DNS withdrawal before VIP reuse** design, especially §§3.2–3.4, 4.1–4.3, 6–7, 8.2, and 9. It is a follow-up after PR #16, not additional stage-1 implementation scope. It is proposed behavior, not an implementation or runtime-verification report. Under the [DEP process](../docs/design/common.md#dep-process), committed `docs/design/` remains current specification until acceptance and reflection there.
+This is the dns-api part of the reviewed **Phase 4b: verified external-DNS withdrawal before VIP reuse** design, especially §§3.2–3.4, 4.1–4.3, 6–7, 8.2, and 9. It follows PR #16 rather than expanding stage-1 scope. Acceptance is not a runtime-verification report. Under the [DEP process](../docs/design/common.md#dep-process), `docs/design/` carries the current contract.
 
 ## Motivation
 
@@ -208,6 +211,8 @@ Stage-1 external RecordSet `DeletionRequested`/`DeletionCompleted` and ordinary 
 Two claim creators are intentional: platform CapacityReservation creates the mandatory Project wildcard per retiring external allocation, even with zero routes/ERSs; endpoint creates retained ERS-pair claims. Both use the same Core contract, neither writes status. Platform gates both CRS retirement and terminal-reservation address clearing on current results; a waiver has a separate release reason. External has no automatic `NeverPublished` release because customer wildcard DNS can exist before any route.
 
 The dns-api Core follow-up release, reviewed platform import, and CRD delivery precede platform Phase 4b support. Missing CRD/watch/verifier, denied/truncated reads, missing/stale results, or a mode switch cannot erase held external obligations. Pre-4b retirements that already lost history are not reconstructed by epochs or synthetic success.
+
+`ZoneUnit.spec.zone` binds the ZoneClass UID and observed generation; withdrawal projection requires current Unit status generation and current Class binding, and consumers compare the live Class UID/generation before consuming results.
 
 ## Documentation
 

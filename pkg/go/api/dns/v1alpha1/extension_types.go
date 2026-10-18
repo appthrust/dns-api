@@ -78,6 +78,10 @@ type ProviderVersion struct {
 	// +optional
 	RecordSet ProviderRecordSet `json:"recordSet,omitempty"`
 
+	// RecordWithdrawal declares support for independent exclusion verification.
+	// +optional
+	RecordWithdrawal *ProviderRecordWithdrawal `json:"recordWithdrawal,omitempty"`
+
 	// ZoneUnit defines provider-specific composition validations evaluated when core builds ZoneUnit.
 	// +optional
 	ZoneUnit ProviderZoneUnit `json:"zoneUnit,omitempty"`
@@ -175,6 +179,20 @@ type ProviderRecordSet struct {
 	// Conversion defines conversion from this version to the Provider storage version.
 	// +optional
 	Conversion ProviderConversion `json:"conversion,omitempty"`
+}
+
+type ProviderRecordWithdrawal struct {
+	Supported bool `json:"supported"`
+	// +optional
+	Schemas ProviderRecordWithdrawalSchemas `json:"schemas,omitempty"`
+	// +optional
+	AdditionalConditionReasons []ProviderConditionReason `json:"additionalConditionReasons,omitempty"`
+}
+
+type ProviderRecordWithdrawalSchemas struct {
+	// StatusProviderData validates public withdrawal provider evidence.
+	// +optional
+	StatusProviderData *ProviderOpenAPISchema `json:"statusProviderData,omitempty"`
 }
 
 type ProviderZoneUnit struct {
@@ -278,7 +296,7 @@ type ProviderValidationRule struct {
 
 type ProviderConditionReason struct {
 	// ConditionType is the status condition type this reason applies to.
-	// +kubebuilder:validation:Enum=Accepted;Programmed
+	// +kubebuilder:validation:Enum=Accepted;Programmed;Withdrawn;Ready;OverrideAccepted
 	ConditionType ConditionType `json:"conditionType"`
 
 	// Status is the condition status this reason applies to.

@@ -36,6 +36,14 @@ type ZoneUnitSpec struct {
 	// +listMapKey=recordSetNamespace
 	// +listMapKey=recordSetName
 	RecordSets []ZoneUnitRecordSetSpec `json:"recordSets,omitempty"`
+
+	// Withdrawals retains independently authorized address-exclusion claims.
+	// +optional
+	// +kubebuilder:validation:MaxItems=256
+	// +listType=map
+	// +listMapKey=claimNamespace
+	// +listMapKey=claimName
+	Withdrawals []ZoneUnitWithdrawal `json:"withdrawals,omitempty"`
 }
 
 type ZoneUnitZoneSpec struct {
@@ -50,6 +58,15 @@ type ZoneUnitZoneSpec struct {
 
 	// ZoneClassRef is the resolved ZoneClass reference.
 	ZoneClassRef ObjectReference `json:"zoneClassRef"`
+
+	// ZoneClassUID and ZoneClassObservedGeneration fence policy changes before
+	// provider reconciliation. Missing legacy bindings cannot prove withdrawal.
+	// +optional
+	// +kubebuilder:validation:Type=string
+	ZoneClassUID types.UID `json:"zoneClassUID,omitempty"`
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	ZoneClassObservedGeneration int64 `json:"zoneClassObservedGeneration,omitempty"`
 
 	// Adoption is provider-specific adoption payload in storage-version form.
 	// +kubebuilder:pruning:PreserveUnknownFields
@@ -163,6 +180,14 @@ type ZoneUnitStatus struct {
 	// +listMapKey=recordSetNamespace
 	// +listMapKey=recordSetName
 	RecordSets []ZoneUnitRecordSetStatus `json:"recordSets,omitempty"`
+
+	// Withdrawals contains identity-bound exclusion verification results.
+	// +optional
+	// +kubebuilder:validation:MaxItems=256
+	// +listType=map
+	// +listMapKey=claimNamespace
+	// +listMapKey=claimName
+	Withdrawals []ZoneUnitWithdrawalStatus `json:"withdrawals,omitempty"`
 }
 
 type ZoneUnitZoneStatus struct {

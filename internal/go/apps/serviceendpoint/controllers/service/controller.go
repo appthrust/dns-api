@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/appthrust/dns-api/internal/go/apps/endpoint/retirement"
 	endpointv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/endpoint/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -17,6 +18,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 const (
@@ -39,6 +42,7 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups="",resources=services/finalizers,verbs=update
 // +kubebuilder:rbac:groups=endpoint.dns.appthrust.io,resources=endpointrecordsets,verbs=create;delete;get;list;watch;patch;update
+// +kubebuilder:rbac:groups=endpoint.dns.appthrust.io,resources=endpointrecordsets/status,verbs=get;patch;update
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	namespace := r.EndpointRecordSetNamespace
 	if namespace == "" {
@@ -100,7 +104,16 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("service-endpoint").
 		For(&corev1.Service{}).
+		Watches(&endpointv1alpha1.EndpointRecordSet{}, handler.EnqueueRequestsFromMapFunc(r.mapEndpointRecordSetToService)).
 		Complete(r)
+}
+
+func (r *Reconciler) mapEndpointRecordSetToService(_ context.Context, obj client.Object) []reconcile.Request {
+	labels := obj.GetLabels()
+	if labels[managedByLabel] != managedByValue || labels[generatedLabelServiceNamespace] == "" || labels[generatedLabelServiceName] == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: labels[generatedLabelServiceNamespace], Name: labels[generatedLabelServiceName]}}}
 }
 
 func (r *Reconciler) endpointRecordSetForService(service *corev1.Service, namespace string) *endpointv1alpha1.EndpointRecordSet {
@@ -130,9 +143,21 @@ func (r *Reconciler) applyEndpointRecordSet(ctx context.Context, desired *endpoi
 	var existing endpointv1alpha1.EndpointRecordSet
 	err := r.Get(ctx, client.ObjectKey{Namespace: desired.Namespace, Name: desired.Name}, &existing)
 	if apierrors.IsNotFound(err) {
+		controllerutil.AddFinalizer(desired, endpointv1alpha1.GeneratedRecordSetsFinalizer)
 		return r.Create(ctx, desired, client.FieldOwner(fieldOwner))
 	}
 	if err != nil {
+		return err
+	}
+	if !existing.DeletionTimestamp.IsZero() {
+		return nil
+	}
+	spec, err := retirement.Append(&existing, desired.Spec)
+	if err != nil {
+		return retirement.ReportPending(ctx, r.Client, &existing, err)
+	}
+	desired.Spec = spec
+	if err := retirement.ClearPending(ctx, r.Client, &existing); err != nil {
 		return err
 	}
 	if !endpointRecordSetNeedsUpdate(&existing, desired) {
@@ -152,7 +177,7 @@ func (r *Reconciler) cleanupForService(ctx context.Context, endpointRecordSetNam
 		return err
 	}
 	for i := range existing.Items {
-		if err := r.Delete(ctx, &existing.Items[i]); err != nil && !apierrors.IsNotFound(err) {
+		if err := retirement.RetireOrDelete(ctx, r.Client, &existing.Items[i]); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
 	}
