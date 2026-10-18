@@ -135,6 +135,9 @@ func (r *ZoneReconciler) observe(ctx context.Context, c client.Client, unit *dns
 	for _, item := range unit.Spec.RecordSets {
 		namespaceNames = append(namespaceNames, item.RecordSetNamespace)
 	}
+	for _, item := range unit.Spec.Withdrawals {
+		namespaceNames = append(namespaceNames, item.ClaimNamespace)
+	}
 	slices.Sort(namespaceNames)
 	namespaceNames = slices.Compact(namespaceNames)
 	namespacePolicies := make(map[string]map[string]string, len(namespaceNames))
@@ -163,6 +166,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 	if err := r.Get(ctx, request.NamespacedName, &unit); err != nil {
 		if apierrors.IsNotFound(err) {
 			probe.SetPending(request.NamespacedName.String(), nil)
+			probe.SetWithdrawalsPending(request.NamespacedName.String(), nil)
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -184,7 +188,10 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 			unit.Status.RecordSets[i].DeletionCompleted = unit.Spec.RecordSets[i].RecordSetUID != ""
 		}
 		probe.SetPending(request.NamespacedName.String(), nil)
-		return ctrl.Result{}, r.patch(ctx, base, &unit)
+		if len(unit.Spec.Withdrawals) == 0 {
+			probe.SetWithdrawalsPending(request.NamespacedName.String(), nil)
+			return ctrl.Result{}, r.patch(ctx, base, &unit)
+		}
 	}
 	if rejected != nil {
 		r.reject(&unit, *rejected)
@@ -193,6 +200,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 	now := r.Options.Clock()
 	state := loadState(&unit, env.fingerprint)
 	groups := groupNames(&unit, env.fingerprint)
+	withdrawalsChanged := prepareWithdrawals(&unit, &state, env, now)
 	active := make(map[string]bool, len(groups))
 	for _, group := range groups {
 		active[group.Name] = true
@@ -222,11 +230,17 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 		}
 	}
 	due := selectDue(groups, state, now)
+	withdrawalDue := selectWithdrawalDue(&unit, state, env.fingerprint, now, MaxNamesPerPass)
+	if len(due) != 0 && len(withdrawalDue) != 0 {
+		// Reserve half of a busy pass for each class of work; both have fair cursors.
+		withdrawalDue = selectWithdrawalDue(&unit, state, env.fingerprint, now, MaxNamesPerPass/2)
+		due = due[:min(len(due), MaxNamesPerPass-withdrawalProbeCost(&unit, state, withdrawalDue))]
+	}
 	zoneCondition := meta.FindStatusCondition(unit.Status.Zone.Conditions, "Programmed")
 	zoneDue := state.Zone.Fingerprint != env.fingerprint || !state.Zone.Next.After(now) || zoneCondition == nil || zoneCondition.ObservedGeneration != unit.Spec.Zone.ObservedGeneration
 	var evidence *probe.ZoneEvidence
 	zoneDecision := currentDecision(unit.Status.Zone.Conditions)
-	zoneProbed := zoneDue || (len(due) != 0 && zoneDecision.Status == metav1.ConditionTrue)
+	zoneProbed := zoneDue || ((len(due) != 0 || len(withdrawalDue) != 0) && zoneDecision.Status == metav1.ConditionTrue)
 	if zoneProbed {
 		zoneRequest := probe.ProbeRequest{Zone: unit.Spec.Zone.DomainName, Name: unit.Spec.Zone.DomainName, Policy: env.policy, ZoneOnly: true}
 		switch {
@@ -267,6 +281,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 			probeRequest := probe.ProbeRequest{Name: group.CheckedName, Zone: unit.Spec.Zone.DomainName, Expected: group.Expected, Policy: env.policy, Evidence: evidence, DueTime: dueTime}
 			observed, probeErr := r.Options.Resolver.Probe(ctx, probeRequest)
 			decision = probe.Evaluate(probeRequest, observed)
+			retainPublication(&state, group, probeRequest, observed, r.Options.Clock())
 			if probeErr != nil {
 				decision = probe.Failed(group.CheckedName, "required-views", failureCode(probeErr))
 			}
@@ -292,13 +307,24 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 			}
 		}
 	}
+	r.probeWithdrawals(ctx, &unit, &state, env, evidence, zoneDecision, withdrawalDue)
+	if zoneProbed && zoneDecision.Status != metav1.ConditionTrue {
+		invalidateWithdrawalZone(&unit, &state, r.Options.Clock())
+		withdrawalsChanged = true
+	}
+	for name, publication := range state.Publications {
+		if !active[name] && !publicationUnexpired(publication, r.Options.Clock()) {
+			delete(state.Publications, name)
+			prunedSchedule = true
+		}
+	}
 	// DNS I/O is an asynchronous observation boundary. Live inputs must still agree.
 	reader := readerClient{Client: r.Client, reader: r.Reader}
 	var current dnsv1alpha1.ZoneUnit
 	if err := reader.Get(ctx, request.NamespacedName, &current); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if current.UID != unit.UID || current.Generation != unit.Generation || !equality.Semantic.DeepEqual(current.Spec, unit.Spec) || !current.DeletionTimestamp.IsZero() {
+	if current.UID != unit.UID || current.Generation != unit.Generation || !equality.Semantic.DeepEqual(current.Spec, unit.Spec) || !current.DeletionTimestamp.Equal(unit.DeletionTimestamp) {
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 	fresh, blocked, err := r.observe(ctx, reader, &current)
@@ -311,7 +337,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 	// Preserve the stored RawExtension unless scheduling actually changed.
 	// Re-encoding unchanged state can reorder API-normalized JSON keys and
 	// make the status equality guard issue an otherwise empty patch.
-	if zoneProbed || len(due) != 0 || prunedSchedule {
+	if zoneProbed || len(due) != 0 || len(withdrawalDue) != 0 || prunedSchedule || withdrawalsChanged {
 		stateBytes, err := json.Marshal(state)
 		if err != nil {
 			return ctrl.Result{}, err
@@ -320,7 +346,8 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 	}
 	setAggregate(&unit, r.Options.Clock())
 	r.updatePending(&unit)
-	return ctrl.Result{RequeueAfter: nextRequeue(groups, state, r.Options.Clock())}, r.patch(ctx, base, &unit)
+	next := min(nextRequeue(groups, state, r.Options.Clock()), nextWithdrawalRequeue(&unit, state, env.fingerprint, r.Options.Clock()))
+	return ctrl.Result{RequeueAfter: next}, r.patch(ctx, base, &unit)
 }
 
 func validateGroup(unit *dnsv1alpha1.ZoneUnit, group nameGroup) (bool, string, string) {

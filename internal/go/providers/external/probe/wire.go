@@ -120,7 +120,7 @@ func (r *WireResolver) Probe(ctx context.Context, request ProbeRequest) (ProbeRe
 			for _, authority := range request.Evidence.Authorities {
 				view := session.resolve(ctx, request.Name, request.Policy.Resolver.Servers[0], authority, request.Zone)
 				result.Views = append(result.Views, view)
-				foreign := false
+				foreign := request.WithdrawalAddress != ""
 				for _, target := range view.Chain {
 					if target != request.Zone && !strings.HasSuffix(target, "."+request.Zone) {
 						foreign = true
@@ -138,6 +138,8 @@ func (r *WireResolver) Probe(ctx context.Context, request ProbeRequest) (ProbeRe
 	decision := Evaluate(request, result)
 	if request.ZoneOnly {
 		decision = EvaluateZone(request, result.Zone)
+	} else if request.WithdrawalAddress != "" {
+		decision = EvaluateWithdrawal(request, result).Decision
 	}
 	outcome := decision.Outcome()
 	for qtype, count := range session.qtypes {
@@ -245,6 +247,7 @@ func (s *wireSession) resolve(ctx context.Context, name, recursive, authority, z
 				view.Authoritative = true
 			}
 			rcodes[i] = reply.Rcode
+			view.Answers = append(view.Answers, answerEvidence(reply, current, qtype))
 			ownerAnswers := 0
 			for _, rr := range reply.Answer {
 				if CanonicalName(rr.Header().Name) != current {

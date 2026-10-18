@@ -20,10 +20,13 @@ type schedule struct {
 }
 
 type schedulerState struct {
-	Policy string              `json:"policy"`
-	Cursor string              `json:"cursor,omitempty"`
-	Zone   schedule            `json:"zone"`
-	Names  map[string]schedule `json:"names"`
+	Policy           string                         `json:"policy"`
+	Cursor           string                         `json:"cursor,omitempty"`
+	Zone             schedule                       `json:"zone"`
+	Names            map[string]schedule            `json:"names"`
+	Withdrawals      map[string]withdrawalState     `json:"withdrawals,omitempty"`
+	WithdrawalCursor string                         `json:"withdrawalCursor,omitempty"`
+	Publications     map[string]publicationEvidence `json:"publications,omitempty"`
 }
 
 type nameGroup struct {
@@ -38,7 +41,7 @@ type nameGroup struct {
 func groupNames(unit *dnsv1alpha1.ZoneUnit, policy string) []nameGroup {
 	byName := map[string][]int{}
 	for i, item := range unit.Spec.RecordSets {
-		if item.IsAllowed() && !item.DeletionRequested && item.RecordSetUID != "" {
+		if unit.DeletionTimestamp.IsZero() && item.IsAllowed() && !item.DeletionRequested && item.RecordSetUID != "" {
 			byName[item.Name] = append(byName[item.Name], i)
 		}
 	}
@@ -105,10 +108,18 @@ func loadState(unit *dnsv1alpha1.ZoneUnit, policy string) schedulerState {
 		_ = json.Unmarshal(unit.Status.Provider.State.Raw, &state)
 	}
 	if state.Policy != policy {
-		state = schedulerState{Policy: policy}
+		state.Policy = policy
+		state.Zone = schedule{}
+		state.Names = nil
 	}
 	if state.Names == nil {
 		state.Names = map[string]schedule{}
+	}
+	if state.Withdrawals == nil {
+		state.Withdrawals = map[string]withdrawalState{}
+	}
+	if state.Publications == nil {
+		state.Publications = map[string]publicationEvidence{}
 	}
 	return state
 }

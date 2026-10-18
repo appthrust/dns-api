@@ -35,6 +35,8 @@ type ProbeRequest struct {
 	ZoneOnly bool
 	// Evidence is cycle-local, never a process-wide DNS answer cache.
 	Evidence *ZoneEvidence
+	// WithdrawalAddress selects exclusion evaluation, never exact-set publication.
+	WithdrawalAddress string
 }
 
 type ProbeResult struct {
@@ -54,6 +56,9 @@ type View struct {
 	// Failure is a closed diagnostic code; raw transport errors never enter status.
 	Failure  string
 	Mismatch bool
+	// Answers retains each chain query's complete cache evidence. Publication's
+	// minimum-TTL summaries are not sufficient to authorize address reuse.
+	Answers []AnswerEvidence
 }
 
 type AuthorityObservation struct {

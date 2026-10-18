@@ -124,7 +124,6 @@ func setAggregate(unit *dnsv1alpha1.ZoneUnit, now time.Time) {
 
 func (r *ZoneReconciler) reject(unit *dnsv1alpha1.ZoneUnit, rejected acceptance) {
 	now := r.Options.Clock()
-	unit.Status.Provider = nil
 	unit.Status.Zone.Provider = nil
 	unit.Status.Zone.NameServers = nil
 	setCondition(&unit.Status.Zone.Conditions, "Accepted", rejected.Status, rejected.Reason, rejected.Message, unit.Spec.Zone.ObservedGeneration, now)
@@ -136,6 +135,7 @@ func (r *ZoneReconciler) reject(unit *dnsv1alpha1.ZoneUnit, rejected acceptance)
 		setCondition(&unit.Status.RecordSets[i].Conditions, "Accepted", metav1.ConditionFalse, "ZoneNotAccepted", rejected.Message, unit.Status.RecordSets[i].ObservedGeneration, now)
 		resetProgrammed(&unit.Status.RecordSets[i], now)
 	}
+	rejectWithdrawals(unit, now)
 	setAggregate(unit, now)
 	r.updatePending(unit)
 }
@@ -153,4 +153,16 @@ func (r *ZoneReconciler) updatePending(unit *dnsv1alpha1.ZoneUnit) {
 		}
 	}
 	probe.SetPending(unit.Namespace+"/"+unit.Name, counts)
+	withdrawals := map[string]int{}
+	for _, status := range unit.Status.Withdrawals {
+		condition := meta.FindStatusCondition(status.Conditions, "Withdrawn")
+		if accepted := meta.FindStatusCondition(status.Conditions, "Accepted"); accepted != nil && accepted.Status != metav1.ConditionTrue {
+			withdrawals[accepted.Reason]++
+		} else if condition == nil {
+			withdrawals["DNSProbeFailed"]++
+		} else if condition.Status != metav1.ConditionTrue {
+			withdrawals[condition.Reason]++
+		}
+	}
+	probe.SetWithdrawalsPending(unit.Namespace+"/"+unit.Name, withdrawals)
 }
