@@ -1832,8 +1832,8 @@ func TestProviderValidationChecksSchemaDescriptions(t *testing.T) {
 }
 
 func TestBuiltInProviderManifestsPassValidation(t *testing.T) {
-	for _, name := range []string{"route53_extensions.yaml", "cloudflare_extensions.yaml"} {
-		t.Run(name, func(t *testing.T) {
+	for _, name := range []string{"route53_extensions.yaml", "cloudflare_extensions.yaml", filepath.Join("..", "external", "external_extensions.yaml")} {
+		t.Run(filepath.Base(name), func(t *testing.T) {
 			provider := builtInProviderManifest(t, name)
 			if err := validateProvider(&provider); err != nil {
 				t.Fatalf("validateProvider(%s) returned error: %v", name, err)
