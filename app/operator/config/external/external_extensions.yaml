@@ -1,0 +1,159 @@
+apiVersion: dns.appthrust.io/v1alpha1
+kind: Provider
+metadata:
+  name: external.dns.appthrust.io
+spec:
+  display:
+    name: External DNS
+    description: Verifies customer-managed DNS without changing DNS records.
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      zoneClass:
+        schemas:
+          parameters:
+            openAPIV3Schema:
+              type: object
+              description: DNS resolver policy for verification without DNS writes.
+              additionalProperties: false
+              properties:
+                resolver:
+                  type: object
+                  description: Resolver view used for every verification query.
+                  additionalProperties: false
+                  properties:
+                    mode:
+                      type: string
+                      description: Cluster uses pod DNS; Recursive uses every configured server.
+                      enum: [Cluster, Recursive]
+                    servers:
+                      type: array
+                      description: Explicit recursive DNS IP endpoints; never authoritative NS names.
+                      maxItems: 3
+                      uniqueItems: true
+                      items:
+                        type: string
+                        minLength: 3
+                        maxLength: 64
+                        pattern: '^(\[[0-9a-f:.]+\]|[0-9.]+):[1-9][0-9]{0,4}$'
+                expectedNameservers:
+                  type: array
+                  description: Expected authoritative nameservers for the exact Zone domain.
+                  maxItems: 16
+                  uniqueItems: true
+                  items:
+                    type: string
+                    minLength: 1
+                    maxLength: 253
+                    pattern: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$'
+        validationRules:
+          - rule: >-
+              has(self.spec.parameters.resolver) &&
+              has(self.spec.parameters.resolver.mode) &&
+              self.spec.parameters.resolver.mode == 'Recursive'
+                ? (has(self.spec.parameters.resolver.servers) && size(self.spec.parameters.resolver.servers) > 0)
+                : (!has(self.spec.parameters.resolver) || !has(self.spec.parameters.resolver.servers) || size(self.spec.parameters.resolver.servers) == 0)
+            message: resolver.servers must be nonempty for Recursive and empty for Cluster
+          - rule: >-
+              !has(self.spec.parameters.resolver) || !has(self.spec.parameters.resolver.servers) ||
+              self.spec.parameters.resolver.servers.all(s,
+                cel.bind(host, s.startsWith('[') ? s.split(']')[0].substring(1) : s.split(':')[0],
+                cel.bind(port, s.startsWith('[') ? s.split(']:')[1] : s.split(':')[1],
+                  isIP(host) && ip.isCanonical(host) &&
+                  (s.startsWith('[') ? ip(host).family() == 6 : ip(host).family() == 4) &&
+                  int(port) >= 1 && int(port) <= 65535)))
+            message: resolver.servers must contain canonical IP addresses and ports from 1 through 65535
+          - rule: >-
+              !has(self.spec.parameters.expectedNameservers) ||
+              self.spec.parameters.expectedNameservers.all(n, !isIP(n))
+            message: expectedNameservers must contain DNS names, not IP addresses
+      zone:
+        schemas:
+          adoption: &empty
+            openAPIV3Schema:
+              type: object
+              additionalProperties: false
+              properties: {}
+          statusProviderData: &status
+            openAPIV3Schema:
+              type: object
+              description: Bounded read-only DNS verification evidence; not DNS withdrawal proof.
+              additionalProperties: false
+              properties:
+                resolverMode:
+                  type: string
+                  description: Selected recursive resolver view policy.
+                  enum: [Cluster, Recursive]
+                checkedName:
+                  type: string
+                  description: Absolute DNS owner checked, without the root dot.
+                  maxLength: 253
+                sampledWildcard:
+                  type: boolean
+                  description: Whether checkedName is a stable concrete wildcard witness.
+                actual: &preview
+                  type: object
+                  description: Sorted bounded diagnostic preview; equality uses the complete observation.
+                  additionalProperties: false
+                  required: [total, truncated]
+                  properties:
+                    values:
+                      type: array
+                      description: Up to sixteen typed values or diagnostic entries.
+                      maxItems: 16
+                      items:
+                        type: string
+                        maxLength: 512
+                    total:
+                      type: integer
+                      description: Total entries before truncation.
+                      minimum: 0
+                    truncated:
+                      type: boolean
+                      description: Whether values omits entries from the complete observation.
+                missing: *preview
+                extra: *preview
+                cnameChain: *preview
+                views: *preview
+                observedTTLSeconds:
+                  type: integer
+                  description: Minimum relevant positive TTL in seconds, when observed.
+                  minimum: 0
+                negativeTTLSeconds:
+                  type: integer
+                  description: Minimum of negative SOA TTL and SOA MINIMUM, when observed.
+                  minimum: 0
+                negativeExpiryTime:
+                  type: string
+                  format: date-time
+                  description: Negative cache expiry suggested by the observed SOA, not the polling cap.
+                lastProbeTime:
+                  type: string
+                  format: date-time
+                  description: Last completed attempt, including failures.
+                nextProbeTime:
+                  type: string
+                  format: date-time
+                  description: Approximate next planned attempt; queue load can delay it.
+        additionalConditionReasons:
+          - {conditionType: Programmed, status: 'True', reason: VerificationConfigured, description: Verifier configured without authority checks.}
+          - {conditionType: Programmed, status: 'True', reason: NameserversVerified, description: Every required view verified the exact apex and nameservers.}
+          - {conditionType: Programmed, status: 'False', reason: NameserverMismatch, description: Observed apex or nameservers differ from expectations.}
+          - {conditionType: Programmed, status: 'False', reason: ResolutionInconsistent, description: Required resolver or authority observations disagree.}
+          - {conditionType: Programmed, status: Unknown, reason: DNSProbeFailed, description: A required DNS observation could not complete.}
+      recordSet:
+        supportedTypes: [A, AAAA, CNAME]
+        schemas:
+          options: *empty
+          adoption: *empty
+          statusProviderData: *status
+        additionalConditionReasons:
+          - {conditionType: Programmed, status: 'True', reason: ResolutionVerified, description: Exact targets verified in every required view.}
+          - {conditionType: Programmed, status: 'False', reason: DNSNameNotFound, description: Required view returned NXDOMAIN.}
+          - {conditionType: Programmed, status: 'False', reason: DNSNoData, description: Required record type has no answers.}
+          - {conditionType: Programmed, status: 'False', reason: ResolutionPartial, description: A nonempty proper subset of targets was observed.}
+          - {conditionType: Programmed, status: 'False', reason: ResolutionMismatch, description: Targets or CNAME chain differ from expectations.}
+          - {conditionType: Programmed, status: 'False', reason: ResolutionInconsistent, description: Required resolver or authority observations disagree.}
+          - {conditionType: Programmed, status: 'False', reason: NameserverMismatch, description: Required zone nameserver verification failed.}
+          - {conditionType: Programmed, status: Unknown, reason: DNSProbeFailed, description: A required DNS observation could not complete.}

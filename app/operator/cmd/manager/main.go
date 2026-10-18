@@ -14,6 +14,10 @@ import (
 	cloudflarezoneclass "github.com/appthrust/dns-api/internal/go/providers/cloudflare/controllers/zoneclass"
 	cloudflarezoneunit "github.com/appthrust/dns-api/internal/go/providers/cloudflare/controllers/zoneunit"
 	cloudflarewebhook "github.com/appthrust/dns-api/internal/go/providers/cloudflare/webhook"
+	externalzoneclass "github.com/appthrust/dns-api/internal/go/providers/external/controllers/zoneclass"
+	externalzoneunit "github.com/appthrust/dns-api/internal/go/providers/external/controllers/zoneunit"
+	externalconversion "github.com/appthrust/dns-api/internal/go/providers/external/conversion"
+	externalprobe "github.com/appthrust/dns-api/internal/go/providers/external/probe"
 	route53identity "github.com/appthrust/dns-api/internal/go/providers/route53/controllers/identity"
 	route53zoneclass "github.com/appthrust/dns-api/internal/go/providers/route53/controllers/zoneclass"
 	route53zoneunit "github.com/appthrust/dns-api/internal/go/providers/route53/controllers/zoneunit"
@@ -23,6 +27,7 @@ import (
 	dnsv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/dns/v1alpha1"
 	endpointconversionv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/endpoint/conversion/v1alpha1"
 	endpointv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/endpoint/v1alpha1"
+	externalv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/external/v1alpha1"
 	route53v1alpha1 "github.com/appthrust/dns-api/pkg/go/api/route53/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -73,6 +78,7 @@ func init() {
 	utilruntime.Must(dnsv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(endpointv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(endpointconversionv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(externalv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1.Install(scheme))
 	utilruntime.Must(route53v1alpha1.AddToScheme(scheme))
 }
@@ -85,6 +91,7 @@ func main() {
 	var serviceEndpointControllerEnabled bool
 	route53ControllerEnabled := envBoolOrDefault("ROUTE53_CONTROLLER_ENABLED", true)
 	cloudflareControllerEnabled := envBoolOrDefault("CLOUDFLARE_CONTROLLER_ENABLED", true)
+	externalControllerEnabled := envBoolOrDefault("EXTERNAL_CONTROLLER_ENABLED", false)
 	route53EndpointConversionEnabled := envBoolOrDefault("ROUTE53_ENDPOINT_CONVERSION_ENABLED", true)
 	endpointRecordSetNamespace := envOrDefault("ENDPOINT_RECORDSET_NAMESPACE", "")
 	route53ControllerName := envOrDefault("ROUTE53_CONTROLLER_NAME", route53zoneunit.DefaultControllerName)
@@ -93,6 +100,11 @@ func main() {
 	cloudflareControllerName := envOrDefault("CLOUDFLARE_CONTROLLER_NAME", cloudflarezoneunit.DefaultControllerName)
 	cloudflareProviderName := envOrDefault("CLOUDFLARE_PROVIDER_NAME", cloudflarev1alpha1.ProviderName)
 	cloudflareProviderVersion := envOrDefault("CLOUDFLARE_PROVIDER_VERSION", cloudflarev1alpha1.ProviderVersion)
+	externalControllerName := envOrDefault("EXTERNAL_CONTROLLER_NAME", externalv1alpha1.ControllerName)
+	externalProviderName := envOrDefault("EXTERNAL_PROVIDER_NAME", externalv1alpha1.ProviderName)
+	externalProviderVersion := envOrDefault("EXTERNAL_PROVIDER_VERSION", externalv1alpha1.ProviderVersion)
+	var externalDNSQPS float64
+	var externalDNSBurst int
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -102,6 +114,7 @@ func main() {
 	flag.StringVar(&endpointRecordSetNamespace, "endpoint-recordset-namespace", endpointRecordSetNamespace, "Namespace where generated EndpointRecordSet and RecordSet resources are stored. Defaults to the source namespace.")
 	flag.BoolVar(&route53ControllerEnabled, "route53-controller-enabled", route53ControllerEnabled, "Enable Route 53 controllers and identity admission.")
 	flag.BoolVar(&cloudflareControllerEnabled, "cloudflare-controller-enabled", cloudflareControllerEnabled, "Enable Cloudflare controllers and identity admission.")
+	flag.BoolVar(&externalControllerEnabled, "external-controller-enabled", externalControllerEnabled, "Enable external DNS verification controllers and endpoint conversion.")
 	flag.BoolVar(&route53EndpointConversionEnabled, "route53-endpoint-conversion-enabled", route53EndpointConversionEnabled, "Serve endpoint conversion when the Route 53 provider is enabled.")
 	flag.StringVar(&route53ControllerName, "route53-controller-name", route53ControllerName, "ZoneClass.spec.controllerName handled by the Route 53 controller.")
 	flag.StringVar(&route53ProviderName, "route53-provider-name", route53ProviderName, "Provider.metadata.name handled by the Route 53 controller.")
@@ -109,6 +122,11 @@ func main() {
 	flag.StringVar(&cloudflareControllerName, "cloudflare-controller-name", cloudflareControllerName, "ZoneClass.spec.controllerName handled by the Cloudflare controller.")
 	flag.StringVar(&cloudflareProviderName, "cloudflare-provider-name", cloudflareProviderName, "Provider.metadata.name handled by the Cloudflare controller.")
 	flag.StringVar(&cloudflareProviderVersion, "cloudflare-provider-version", cloudflareProviderVersion, "Provider version handled by the Cloudflare controller.")
+	flag.StringVar(&externalControllerName, "external-controller-name", externalControllerName, "ZoneClass.spec.controllerName handled by the external controller.")
+	flag.StringVar(&externalProviderName, "external-provider-name", externalProviderName, "Provider.metadata.name handled by the external controller.")
+	flag.StringVar(&externalProviderVersion, "external-provider-version", externalProviderVersion, "Provider version handled by the external controller.")
+	flag.Float64Var(&externalDNSQPS, "external-dns-qps", externalprobe.DefaultQPS, "Maximum external DNS query rate per controller process.")
+	flag.IntVar(&externalDNSBurst, "external-dns-burst", externalprobe.DefaultBurst, "Maximum external DNS query burst per controller process.")
 
 	zapOpts := zap.Options{Development: true}
 	zapOpts.BindFlags(flag.CommandLine)
@@ -198,6 +216,36 @@ func main() {
 		}
 	}
 
+	if externalControllerEnabled {
+		if err := (&externalzoneclass.ZoneClassReconciler{
+			Client:          mgr.GetClient(),
+			ControllerName:  externalControllerName,
+			ProviderName:    externalProviderName,
+			ProviderVersion: externalProviderVersion,
+		}).SetupWithManager(mgr); err != nil {
+			ctrl.Log.Error(err, "unable to set up external ZoneClass controller")
+			os.Exit(1)
+		}
+
+		// NewReconciler supplies the wire resolver, its effective pod DNS policy,
+		// time.Now, and random jitter when their injection hooks are unset.
+		externalReconciler, err := externalzoneunit.NewReconciler(mgr.GetClient(), externalzoneunit.Options{
+			ControllerName:  externalControllerName,
+			ProviderName:    externalProviderName,
+			ProviderVersion: externalProviderVersion,
+			QPS:             externalDNSQPS,
+			Burst:           externalDNSBurst,
+		})
+		if err != nil {
+			ctrl.Log.Error(err, "unable to configure external DNS resolver")
+			os.Exit(1)
+		}
+		if err := externalReconciler.SetupWithManager(mgr); err != nil {
+			ctrl.Log.Error(err, "unable to set up external ZoneUnit controller")
+			os.Exit(1)
+		}
+	}
+
 	if err := (&zoneunitcontroller.ZoneUnitCompositionReconciler{
 		Client: mgr.GetClient(),
 	}).SetupWithManager(mgr); err != nil {
@@ -255,6 +303,9 @@ func main() {
 			ctrl.Log.Error(err, "unable to set up Cloudflare validation webhook")
 			os.Exit(1)
 		}
+	}
+	if externalControllerEnabled {
+		externalconversion.NewHandler().Register(mgr.GetWebhookServer())
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

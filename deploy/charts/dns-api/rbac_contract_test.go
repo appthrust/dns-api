@@ -79,6 +79,7 @@ func TestProviderEnablementGatesRuntimePermissionsAndAdmission(t *testing.T) {
 						"route53-controller-enabled":          route53,
 						"cloudflare-controller-enabled":       cloudflare,
 						"route53-endpoint-conversion-enabled": route53 && conversion,
+						"external-controller-enabled":        false,
 					} {
 						if !strings.Contains(deployment, "--"+flag+"="+strconv.FormatBool(enabled)) {
 							t.Fatalf("Deployment does not pass %s=%t:\n%s", flag, enabled, deployment)
@@ -89,6 +90,7 @@ func TestProviderEnablementGatesRuntimePermissionsAndAdmission(t *testing.T) {
 						"- cloudflare.dns.appthrust.io\n":       cloudflare,
 						"- secrets\n":                           cloudflare,
 						"- endpoint.route53.dns.appthrust.io\n": route53 && conversion,
+						"- endpoint.external.dns.appthrust.io\n": false,
 						"- gateway.networking.k8s.io\n":         false,
 						"- services\n":                          false,
 						"- namespaces\n":                        true,
@@ -113,6 +115,7 @@ func TestProviderEnablementGatesRuntimePermissionsAndAdmission(t *testing.T) {
 					for declaration, enabled := range map[string]bool{
 						"name: route53.dns.appthrust.io\n":    route53,
 						"name: cloudflare.dns.appthrust.io\n": cloudflare,
+						"name: external.dns.appthrust.io\n":   false,
 						"kind: EndpointProviderCapability\n":  route53 && conversion,
 						"kind: APIService\n":                  route53 && conversion,
 					} {

@@ -47,6 +47,73 @@ ghcr.io/appthrust/dns-api:<version>
 
 For local development or source installs, use the chart in [deploy/charts/dns-api](./deploy/charts/dns-api).
 
+### Customer-managed DNS (external provider)
+
+The external provider is opt-in. It verifies customer-managed `A`, `AAAA`, and
+`CNAME` records without creating, updating, or deleting DNS records and needs no
+identity or provider credentials. Install cert-manager first, then save these
+values as `external-values.yaml` and install from this checkout:
+
+```yaml
+providers:
+  route53:
+    enabled: false
+  cloudflare:
+    enabled: false
+  external:
+    enabled: true
+    controllerName: external.dns.appthrust.io/controller
+    providerName: external.dns.appthrust.io
+    providerVersion: v1alpha1
+    dnsQPS: 40
+    dnsBurst: 80
+webhook:
+  enabled: true
+certManager:
+  enabled: true
+```
+
+```sh
+helm install dns-api ./deploy/charts/dns-api \
+  --namespace dns-api-system \
+  --create-namespace \
+  --values external-values.yaml
+```
+
+Use a controller image built from the same revision (or a release containing the
+external provider). The chart rejects external enablement without both webhook
+and cert-manager support: endpoint conversion uses the webhook Service with
+cert-manager CA injection, never a TLS-verification bypass. External-only installs
+grant no cloud identity or Secret API permissions; serving TLS certificates are
+mounted by Kubernetes. External ZoneClasses must omit `identityRef`.
+
+The chart values map to `--external-controller-enabled`,
+`--external-controller-name`, `--external-provider-name`,
+`--external-provider-version`, `--external-dns-qps`, and `--external-dns-burst`.
+When running the manager directly, the first four accept environment defaults
+`EXTERNAL_CONTROLLER_ENABLED`, `EXTERNAL_CONTROLLER_NAME`,
+`EXTERNAL_PROVIDER_NAME`, and `EXTERNAL_PROVIDER_VERSION`; explicit flags win.
+The defaults are the values above except enablement, which defaults to `false`.
+DNS query limits apply per controller process.
+
+For Kustomize, `app/operator/config/default` remains external-disabled.
+`app/operator/config/external` is the opt-in overlay that adds external controllers,
+Provider, capability, TLS-backed APIService, and conversion-create permission to
+the default Route 53/Cloudflare installation. Disabling cloud providers in a
+custom overlay must also remove their identity admission entries and RBAC (and
+Cloudflare's Secret permission).
+
+For a dedicated-member platform with base domain `B` and **M Projects**, customers
+maintain **M+2 DNS record names**: `B` and `*.B` point at the PMC public edge, and
+each `*.<Project>.B` points at that Project's actual serving Gateway addresses.
+Publish the required A/AAAA sets (or a supported CNAME) for each name; do not point
+a shared wildcard at the union of reserved member VIPs. Verification requires
+exact target sets, including the absence of unexpected address-family answers.
+Wildcard sampling does not replace probing each exact application hostname.
+Cross-namespace wildcard claims also require an explicit `allowedRecordSets.records`
+grant. See the [external provider design](./docs/design/external-provider.md) for
+resolver policy, readiness, and wildcard limits.
+
 ## First Resources
 
 A typical setup has two sides.

@@ -1,0 +1,45 @@
+resources:
+  - ../default
+  - external_extensions.yaml
+  - endpoint_capabilities.yaml
+  - external_endpoint_conversion_apiservice.yaml
+patches:
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: dns-api-controller-manager
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --external-controller-enabled=true
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --external-controller-name=external.dns.appthrust.io/controller
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --external-provider-name=external.dns.appthrust.io
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --external-provider-version=v1alpha1
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --external-dns-qps=40
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --external-dns-burst=80
+  - target:
+      group: rbac.authorization.k8s.io
+      version: v1
+      kind: ClusterRole
+      name: dns-api-controller-manager-role
+    patch: |-
+      - op: add
+        path: /rules/-
+        value:
+          apiGroups:
+            - endpoint.external.dns.appthrust.io
+          resources:
+            - endpointrecordsetconversions
+          verbs:
+            - create

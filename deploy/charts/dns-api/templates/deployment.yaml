@@ -44,6 +44,14 @@ spec:
             - --route53-controller-enabled={{ .Values.providers.route53.enabled }}
             - --cloudflare-controller-enabled={{ .Values.providers.cloudflare.enabled }}
             - --route53-endpoint-conversion-enabled={{ and .Values.providers.route53.enabled .Values.providers.route53.endpoint.conversionAPI.enabled .Values.webhook.enabled }}
+            - --external-controller-enabled={{ .Values.providers.external.enabled }}
+            {{- if .Values.providers.external.enabled }}
+            - {{ printf "--external-controller-name=%s" .Values.providers.external.controllerName | quote }}
+            - {{ printf "--external-provider-name=%s" .Values.providers.external.providerName | quote }}
+            - {{ printf "--external-provider-version=%s" .Values.providers.external.providerVersion | quote }}
+            - --external-dns-qps={{ .Values.providers.external.dnsQPS }}
+            - --external-dns-burst={{ .Values.providers.external.dnsBurst }}
+            {{- end }}
             {{- range .Values.extraArgs }}
             - {{ . | quote }}
             {{- end }}

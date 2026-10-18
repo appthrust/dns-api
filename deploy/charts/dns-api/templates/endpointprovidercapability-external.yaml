@@ -1,0 +1,14 @@
+{{- if .Values.providers.external.enabled }}
+apiVersion: endpoint.dns.appthrust.io/v1alpha1
+kind: EndpointProviderCapability
+metadata:
+  name: {{ printf "external-%s" .Values.providers.external.providerVersion | quote }}
+spec:
+  provider:
+    name: {{ .Values.providers.external.providerName | quote }}
+    version: {{ .Values.providers.external.providerVersion | quote }}
+  conversion:
+    group: endpoint.external.dns.appthrust.io
+    version: v1alpha1
+    resource: endpointrecordsetconversions
+{{- end }}

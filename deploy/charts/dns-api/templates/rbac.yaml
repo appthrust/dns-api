@@ -172,6 +172,14 @@ rules:
     verbs:
       - create
   {{- end }}
+  {{- if .Values.providers.external.enabled }}
+  - apiGroups:
+      - endpoint.external.dns.appthrust.io
+    resources:
+      - endpointrecordsetconversions
+    verbs:
+      - create
+  {{- end }}
   {{- if .Values.gatewayEndpoint.enabled }}
   - apiGroups:
       - gateway.networking.k8s.io
