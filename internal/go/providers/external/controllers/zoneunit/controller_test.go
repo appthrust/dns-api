@@ -87,7 +87,7 @@ func newFixture(t *testing.T, count int, resolver *fakeResolver) (*ZoneReconcile
 	return reconciler, c, &now, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(unit)}
 }
 
-func reconcile(t *testing.T, r *ZoneReconciler, request ctrl.Request) (ctrl.Result, dnsv1alpha1.ZoneUnit) {
+func reconcileOnce(t *testing.T, r *ZoneReconciler, request ctrl.Request) (ctrl.Result, dnsv1alpha1.ZoneUnit) {
 	t.Helper()
 	result, err := r.Reconcile(context.Background(), request)
 	if err != nil {
@@ -116,20 +116,20 @@ func TestMismatchRecoveryDriftAndNoStatusLoop(t *testing.T) {
 		return result, err
 	}}
 	r, _, now, request := newFixture(t, 1, resolver)
-	_, first := reconcile(t, r, request)
+	_, first := reconcileOnce(t, r, request)
 	assertProgrammed(t, first.Status.Zone.Conditions, metav1.ConditionTrue, "VerificationConfigured")
 	assertProgrammed(t, first.Status.RecordSets[0].Conditions, metav1.ConditionFalse, "ResolutionMismatch")
-	_, unchanged := reconcile(t, r, request)
+	_, unchanged := reconcileOnce(t, r, request)
 	if len(resolver.requests) != 1 || unchanged.ResourceVersion != first.ResourceVersion {
-		t.Fatal("unchanged status triggered work or a status patch")
+		t.Fatalf("unchanged status triggered work or a status patch: probes=%d (want 1), resourceVersion=%q -> %q", len(resolver.requests), first.ResourceVersion, unchanged.ResourceVersion)
 	}
 	resolver.answer = matching
 	*now = now.Add(30 * time.Second)
-	_, ready := reconcile(t, r, request)
+	_, ready := reconcileOnce(t, r, request)
 	condition := assertProgrammed(t, ready.Status.RecordSets[0].Conditions, metav1.ConditionTrue, "ResolutionVerified")
 	transition := condition.LastTransitionTime
 	*now = now.Add(120 * time.Second)
-	_, readyAgain := reconcile(t, r, request)
+	_, readyAgain := reconcileOnce(t, r, request)
 	if !assertProgrammed(t, readyAgain.Status.RecordSets[0].Conditions, metav1.ConditionTrue, "ResolutionVerified").LastTransitionTime.Equal(&transition) {
 		t.Fatal("success timestamp changed transition time")
 	}
@@ -137,7 +137,7 @@ func TestMismatchRecoveryDriftAndNoStatusLoop(t *testing.T) {
 		return probe.ProbeResult{}, errors.New("private raw transport details")
 	}
 	*now = now.Add(120 * time.Second)
-	_, failed := reconcile(t, r, request)
+	_, failed := reconcileOnce(t, r, request)
 	assertProgrammed(t, failed.Status.RecordSets[0].Conditions, metav1.ConditionUnknown, "DNSProbeFailed")
 	assertProgrammed(t, failed.Status.Conditions, metav1.ConditionUnknown, "ProviderUnavailable")
 	if failed.Status.RecordSets[0].RecordSetUID != "host-000" || failed.Status.RecordSets[0].ObservedGeneration != 1 {
@@ -148,7 +148,7 @@ func TestMismatchRecoveryDriftAndNoStatusLoop(t *testing.T) {
 func TestPolicyAndSiblingInvalidation(t *testing.T) {
 	resolver := &fakeResolver{answer: matching}
 	r, c, _, request := newFixture(t, 1, resolver)
-	reconcile(t, r, request)
+	reconcileOnce(t, r, request)
 	var class dnsv1alpha1.ZoneClass
 	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "app", Name: "external"}, &class); err != nil {
 		t.Fatal(err)
@@ -162,7 +162,7 @@ func TestPolicyAndSiblingInvalidation(t *testing.T) {
 		result.Views[0].ID = "recursive/192.0.2.54:53"
 		return result, err
 	}
-	_, unit := reconcile(t, r, request)
+	_, unit := reconcileOnce(t, r, request)
 	if len(resolver.requests) != 2 {
 		t.Fatal("policy change retained previous success")
 	}
@@ -173,7 +173,7 @@ func TestPolicyAndSiblingInvalidation(t *testing.T) {
 	if err := c.Update(context.Background(), &unit); err != nil {
 		t.Fatal(err)
 	}
-	_, got := reconcile(t, r, request)
+	_, got := reconcileOnce(t, r, request)
 	if len(resolver.requests) != 3 || len(resolver.requests[2].Expected.AAAA) != 1 {
 		t.Fatal("sibling family did not invalidate combined observation")
 	}
@@ -185,15 +185,15 @@ func TestPolicyAndSiblingInvalidation(t *testing.T) {
 func TestBoundedFairPassAndDeletion(t *testing.T) {
 	resolver := &fakeResolver{answer: matching}
 	r, c, now, request := newFixture(t, 65, resolver)
-	result, unit := reconcile(t, r, request)
+	result, unit := reconcileOnce(t, r, request)
 	if len(resolver.requests) != 32 || result.RequeueAfter != time.Second {
 		t.Fatalf("requests=%d result=%#v", len(resolver.requests), result)
 	}
 	assertProgrammed(t, unit.Status.RecordSets[64].Conditions, metav1.ConditionUnknown, "Reconciling")
 	*now = now.Add(time.Second)
-	reconcile(t, r, request)
+	reconcileOnce(t, r, request)
 	*now = now.Add(time.Second)
-	_, unit = reconcile(t, r, request)
+	_, unit = reconcileOnce(t, r, request)
 	if len(resolver.requests) != 65 {
 		t.Fatalf("requests=%d, want each name once", len(resolver.requests))
 	}
@@ -204,7 +204,7 @@ func TestBoundedFairPassAndDeletion(t *testing.T) {
 	if err := c.Update(context.Background(), &unit); err != nil {
 		t.Fatal(err)
 	}
-	_, got := reconcile(t, r, request)
+	_, got := reconcileOnce(t, r, request)
 	if !got.Status.RecordSets[0].DeletionCompleted || got.Status.RecordSets[0].RecordSetUID != unit.Spec.RecordSets[0].RecordSetUID {
 		t.Fatal("deletion receipt missing incarnation")
 	}
@@ -218,7 +218,7 @@ func TestBoundedFairPassAndDeletion(t *testing.T) {
 	if err := c.Update(context.Background(), &unit); err != nil {
 		t.Fatal(err)
 	}
-	_, got = reconcile(t, r, request)
+	_, got = reconcileOnce(t, r, request)
 	if got.Status.RecordSets[0].DeletionCompleted || got.Status.RecordSets[0].RecordSetUID != "replacement" {
 		t.Fatal("old deletion finalized replacement")
 	}
@@ -240,7 +240,7 @@ func TestStaleAsynchronousResultsDiscarded(t *testing.T) {
 		}
 		return matching(input)
 	}
-	result, unit := reconcile(t, r, request)
+	result, unit := reconcileOnce(t, r, request)
 	if result.RequeueAfter != time.Second || len(unit.Status.RecordSets) != 0 {
 		t.Fatalf("stale result committed: %#v", unit.Status)
 	}
@@ -351,7 +351,7 @@ func TestZoneAuthorityEvidenceSharedAndBlocksRecords(t *testing.T) {
 		result.Views = append(result.Views, authority)
 		return result, err
 	}
-	_, unit := reconcile(t, r, request)
+	_, unit := reconcileOnce(t, r, request)
 	if zoneCalls != 1 || len(resolver.requests) != 3 {
 		t.Fatalf("zoneCalls=%d probes=%d", zoneCalls, len(resolver.requests))
 	}
@@ -361,7 +361,7 @@ func TestZoneAuthorityEvidenceSharedAndBlocksRecords(t *testing.T) {
 	}
 	wrong = true
 	*now = now.Add(30 * time.Second)
-	_, unit = reconcile(t, r, request)
+	_, unit = reconcileOnce(t, r, request)
 	if zoneCalls != 2 || len(resolver.requests) != 4 {
 		t.Fatal("failed authority check still probed child records")
 	}
@@ -376,7 +376,7 @@ func TestZoneAuthorityEvidenceSharedAndBlocksRecords(t *testing.T) {
 func TestNamespacePolicyChangeInvalidatesSuccess(t *testing.T) {
 	resolver := &fakeResolver{answer: matching}
 	r, c, _, request := newFixture(t, 1, resolver)
-	reconcile(t, r, request)
+	reconcileOnce(t, r, request)
 	var namespace corev1.Namespace
 	if err := c.Get(context.Background(), client.ObjectKey{Name: "app"}, &namespace); err != nil {
 		t.Fatal(err)
@@ -385,7 +385,7 @@ func TestNamespacePolicyChangeInvalidatesSuccess(t *testing.T) {
 	if err := c.Update(context.Background(), &namespace); err != nil {
 		t.Fatal(err)
 	}
-	reconcile(t, r, request)
+	reconcileOnce(t, r, request)
 	if len(resolver.requests) != 2 {
 		t.Fatal("namespace-policy fingerprint was not invalidated")
 	}
@@ -394,7 +394,7 @@ func TestNamespacePolicyChangeInvalidatesSuccess(t *testing.T) {
 func TestStaleConditionGenerationCannotUseScheduledSuccess(t *testing.T) {
 	resolver := &fakeResolver{answer: matching}
 	r, c, _, request := newFixture(t, 1, resolver)
-	_, unit := reconcile(t, r, request)
+	_, unit := reconcileOnce(t, r, request)
 	for i := range unit.Status.RecordSets[0].Conditions {
 		if unit.Status.RecordSets[0].Conditions[i].Type == "Programmed" {
 			unit.Status.RecordSets[0].Conditions[i].ObservedGeneration = 0
@@ -403,12 +403,50 @@ func TestStaleConditionGenerationCannotUseScheduledSuccess(t *testing.T) {
 	if err := c.Status().Update(context.Background(), &unit); err != nil {
 		t.Fatal(err)
 	}
-	_, current := reconcile(t, r, request)
+	_, current := reconcileOnce(t, r, request)
 	if len(resolver.requests) != 2 {
 		t.Fatal("stale condition reused a future scheduling receipt")
 	}
 	condition := assertProgrammed(t, current.Status.RecordSets[0].Conditions, metav1.ConditionTrue, "ResolutionVerified")
 	if condition.ObservedGeneration != 1 {
 		t.Fatal("stale result was rebadged instead of reprobed")
+	}
+}
+
+func TestUnchangedSchedulerJSONDoesNotPatch(t *testing.T) {
+	for _, probeFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("probeFails=%t", probeFails), func(t *testing.T) {
+			resolver := &fakeResolver{answer: matching}
+			if probeFails {
+				resolver.answer = func(probe.ProbeRequest) (probe.ProbeResult, error) {
+					return probe.ProbeResult{}, errors.New("transport")
+				}
+			}
+			r, c, now, request := newFixture(t, 1, resolver)
+			_, first := reconcileOnce(t, r, request)
+
+			// Model an API round-trip that changes JSON formatting/key order,
+			// but neither desired inputs nor the persisted scheduling receipt.
+			var state map[string]any
+			if err := json.Unmarshal(first.Status.Provider.State.Raw, &state); err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.MarshalIndent(state, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			first.Status.Provider.State.Raw = encoded
+			if err := c.Status().Update(context.Background(), &first); err != nil {
+				t.Fatal(err)
+			}
+			version := first.ResourceVersion
+			for range 3 {
+				*now = now.Add(time.Second)
+				_, unchanged := reconcileOnce(t, r, request)
+				if len(resolver.requests) != 1 || unchanged.ResourceVersion != version {
+					t.Fatalf("unchanged scheduling receipt: probes=%d (want 1), resourceVersion=%q -> %q", len(resolver.requests), version, unchanged.ResourceVersion)
+				}
+			}
+		})
 	}
 }

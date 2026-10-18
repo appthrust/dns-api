@@ -214,9 +214,11 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 			}
 		}
 	}
+	prunedSchedule := false
 	for name := range state.Names {
 		if !active[name] {
 			delete(state.Names, name)
+			prunedSchedule = true
 		}
 	}
 	due := selectDue(groups, state, now)
@@ -306,11 +308,16 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 	if blocked != nil || fresh == nil || fresh.fingerprint != env.fingerprint || (fresh.policyError != nil) != (env.policyError != nil) {
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
-	stateBytes, err := json.Marshal(state)
-	if err != nil {
-		return ctrl.Result{}, err
+	// Preserve the stored RawExtension unless scheduling actually changed.
+	// Re-encoding unchanged state can reorder API-normalized JSON keys and
+	// make the status equality guard issue an otherwise empty patch.
+	if zoneProbed || len(due) != 0 || prunedSchedule {
+		stateBytes, err := json.Marshal(state)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		unit.Status.Provider = &dnsv1alpha1.ProviderStatus{State: runtime.RawExtension{Raw: stateBytes}}
 	}
-	unit.Status.Provider = &dnsv1alpha1.ProviderStatus{State: runtime.RawExtension{Raw: stateBytes}}
 	setAggregate(&unit, r.Options.Clock())
 	r.updatePending(&unit)
 	return ctrl.Result{RequeueAfter: nextRequeue(groups, state, r.Options.Clock())}, r.patch(ctx, base, &unit)
