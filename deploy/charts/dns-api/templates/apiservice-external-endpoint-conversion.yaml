@@ -1,0 +1,22 @@
+{{- if .Values.providers.external.enabled }}
+{{- if not (and .Values.webhook.enabled .Values.certManager.enabled) }}
+{{- fail "providers.external.enabled requires webhook.enabled=true and certManager.enabled=true" }}
+{{- end }}
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1alpha1.endpoint.external.dns.appthrust.io
+  labels:
+    {{- include "dns-api.labels" . | nindent 4 }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "dns-api.webhookCertificateName" . }}
+spec:
+  group: endpoint.external.dns.appthrust.io
+  version: v1alpha1
+  groupPriorityMinimum: 1000
+  versionPriority: 15
+  service:
+    name: {{ include "dns-api.webhookServiceName" . }}
+    namespace: {{ .Release.Namespace }}
+    port: {{ .Values.webhook.service.port }}
+{{- end }}

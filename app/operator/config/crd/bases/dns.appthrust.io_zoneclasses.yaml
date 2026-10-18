@@ -121,8 +121,9 @@ spec:
                 - message: controllerName is immutable
                   rule: self == oldSelf
               identityRef:
-                description: IdentityRef selects the provider identity resource in
-                  the ZoneClass namespace.
+                description: |-
+                  IdentityRef selects the provider identity resource in the ZoneClass namespace.
+                  Required when the selected Provider version declares identity; forbidden otherwise.
                 properties:
                   name:
                     description: Name is the referenced object name in the same namespace
@@ -154,7 +155,6 @@ spec:
             required:
             - allowedZones
             - controllerName
-            - identityRef
             - parameters
             - provider
             type: object

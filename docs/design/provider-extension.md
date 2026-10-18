@@ -16,6 +16,8 @@ The manager exposes startup flags and matching environment variables for the ini
 
 `route53-controller-name` and `cloudflare-controller-name` configure the controller name compared with `ZoneClass.spec.controllerName`. Defaults are `route53.dns.appthrust.io/controller` and `cloudflare.dns.appthrust.io/controller`. Provider controllers must not hard-code controller name as their only supported runtime binding; forks and multi-instance deployments can use these settings to claim a different `ZoneClass.spec.controllerName` while still using the same Provider contract.
 
+The external provider uses the same binding convention with `--external-controller-name` / `EXTERNAL_CONTROLLER_NAME`, `--external-provider-name` / `EXTERNAL_PROVIDER_NAME`, and `--external-provider-version` / `EXTERNAL_PROVIDER_VERSION`, defaulting to `external.dns.appthrust.io/controller`, `external.dns.appthrust.io`, and `v1alpha1`. Provider binding flags select a contract; they are not enable switches. Manager registration, chart enable values, identity admission, conversion handlers, and provider-only RBAC must be gated together as defined in [Provider Enablement](controllers-webhooks.md#provider-enablement-required-contract-not-implemented-at-87aa1dc).
+
 `Provider.spec` fields:
 
 - `display.name`: provider display name. Required.
@@ -26,6 +28,7 @@ The manager exposes startup flags and matching environment variables for the ini
 - `versions[].served`: whether the version can be referenced on create or spec update.
 - `versions[].storage`: whether the version is the provider storage version used in `ZoneUnit`.
 - `versions[].deprecated`: whether the UI and validation messages should treat the version as deprecated.
+- `versions[].identity`: optional identity declaration. Omitted for credentialless providers; an empty identity object is not valid.
 - `versions[].identity.resource.group`: API group of the provider identity resource selected by `ZoneClass.spec.identityRef`.
 - `versions[].identity.resource.kind`: kind of the provider identity resource selected by `ZoneClass.spec.identityRef`.
 - `versions[].identity.resource.scope`: identity resource scope. Initial supported value: `Namespaced`.
@@ -137,7 +140,7 @@ Provider admission error messages identify the failing field path and state that
 
 Provider admission validates conversion CEL expressions separately. A conversion CEL expression must compile in the Provider conversion environment, where `self` is the provider-owned payload object and the expression result must be an object that can be validated against the storage target schema after defaulting. Conversion CEL expressions do not return `bool`.
 
-`versions[].identity.resource` is required for provider versions that use provider identity CRDs. The initial dns-api providers use identity CRDs, so Route 53 and Cloudflare both declare it. The declaration is discovery and contract metadata: the core API can validate the `identityRef.name` shape and UI can link to the correct identity kind, while the provider controller remains responsible for resolving the identity object, checking provider-specific readiness, and applying provider-specific credential rules.
+`versions[].identity.resource` is required when `versions[].identity` is present. Route 53 and Cloudflare declare it; the external verification provider omits it. The declaration is discovery and contract metadata: core admission requires a nonempty `ZoneClass.spec.identityRef.name` if and only if the selected version declares identity, and rejects `identityRef` otherwise. It does not manufacture an identity for credentialless providers. UI can link to the declared identity kind, while the provider controller remains responsible for resolving that object, checking provider-specific readiness, and applying credential rules.
 
 Provider admission validates `versions[].recordSet.supportedTypes` independently of any `RecordSet`. It rejects unknown types and types that do not have a core `RecordSet.spec` body in the current API version. A provider package must not claim `SRV` or another future type until the core API adds the matching body field, validation rules, examples, and provider schema support. This keeps `RecordSet.spec.type`, the required body field, and Provider capability metadata consistent.
 
@@ -200,13 +203,26 @@ Provider runtime interfaces are local to each provider controller package. A pro
 - Route 53 uses a hosted zone and record-set change-batch model. Its runtime interface may combine hosted zone operations, change polling, tagging, record-set listing, and record-set batch changes.
 - Cloudflare uses separate zone and DNS record APIs. Its runtime interfaces may separate zone operations from DNS record operations.
 
-Provider factories are also provider-specific. They resolve provider identity resources, credentials, SDK clients, and provider-specific readiness requirements before returning the local runtime interface. The core API only requires that `ZoneClass.spec.identityRef.name` points to the identity kind declared by the selected Provider version; the provider controller owns runtime identity resolution.
+Provider factories are also provider-specific. When an identity is declared, they resolve provider identity resources, credentials, SDK clients, and provider-specific readiness requirements before returning the local runtime interface. Core requires `ZoneClass.spec.identityRef.name` to select the identity kind declared by the selected Provider version and forbids the reference when no identity is declared; the provider controller owns runtime identity resolution. A credentialless verifying provider instead uses a local read-only resolver interface, with no identity factory or DNS mutation methods.
 
 Fake providers are test boundaries, not public extension points. Unit tests and envtest-style controller tests use fake implementations of the provider package interfaces to verify finalizers, conditions, events, status provider data, adoption checks, provider error mapping, and retry behavior without calling real cloud APIs. These fakes should stay close to the controller package unless repeated cross-provider test logic proves that a shared helper removes real duplication.
 
 Common code may be shared for provider reference parsing, Provider version resolution, condition reason naming, status provider data encoding, and validation helpers. It must not force Route 53, Cloudflare, or future providers into a single CRUD-shaped DNS provider abstraction.
 
-Example:
+### External Verify-Only Runtime
+
+`internal/go/providers/external` implements the credentialless `external.dns.appthrust.io/v1alpha1` contract. Its manifest advertises exactly A, AAAA, and CNAME. ZoneClass parameters choose Cluster pod DNS or up to three explicit Recursive IP:port views and optionally up to sixteen expected authoritative nameservers. All configured views must agree; there is no OS or public-resolver fallback. Provider OpenAPI/CEL rejects noncanonical endpoints, noncanonical nameservers, nonempty adoption/options, and incompatible resolver settings.
+
+The read-only boundary is `probe.Resolver.Probe(context.Context, probe.ProbeRequest) (probe.ProbeResult, error)`. The wire implementation sends QUERY only, uses UDP then TCP on truncation, follows at most eight CNAME links, and checks both address families against complete exact sets. A wildcard uses a stable concrete witness derived from the ZoneUnit identity, Zone reference, and sorted claim UID/generation tuple; it is sampled evidence, not a guarantee about every descendant name. The provider consumes the core ledger, never writes claim specs/status, and never reads DNS credentials.
+
+Manager wiring uses `zoneclass.ZoneClassReconciler.SetupWithManager`, `zoneunit.NewReconciler(client.Client, zoneunit.Options)` followed by `SetupWithManager`, and `conversion.NewHandler().Register(webhookServer)`. `Options` carries binding strings, optional injected Resolver/Clock/Jitter/EffectivePolicy, and QPS/Burst (defaults 40/80). The controller admits at most four names concurrently across units and thirty-two due names per pass. One cycle-local Zone probe shares NS/SOA and NS-host work across its names. It persists advisory due times/fingerprints and resumes a backlog after one second; completed names retain a 30–300 second polling floor/cap, ±10% jitter, and failure backoff of 30/60/120/300 seconds.
+
+Public verification data includes bounded typed actual/missing/extra previews, chain/views, observed TTL and optional SOA negative expiry, checkedName, sampledWildcard, and last/next probe times. A later failed observation clears success. ZoneUnit aggregate reasons map to core's fixed allowlist, with False taking precedence over Unknown. Deletion completes only UID-bound Kubernetes bookkeeping: it never removes customer DNS and is not proof that a retired VIP is safe to reuse.
+
+The endpoint conversion group is `endpoint.external.dns.appthrust.io/v1alpha1`, resource `endpointrecordsetconversions`. It preserves request UID and name, emits sorted canonical A then AAAA fragments or one CNAME fragment, and uses TTL 300 without modifying customer TTLs. Mixed IP/hostname targets, multiple distinct hostname targets, incompatible preferences, and apex CNAME are rejected. Provider and capability declarations are in `internal/go/providers/external/manifest`; manager/chart registration is separate from these runtime packages.
+
+
+### Provider Declaration Example
 
 ```yaml
 apiVersion: dns.appthrust.io/v1alpha1

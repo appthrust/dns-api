@@ -1437,6 +1437,47 @@ func TestCloudflareProviderIDSchemaValidation(t *testing.T) {
 	})
 }
 
+func TestZoneClassValidationRequiresIdentityOnlyWhenDeclared(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		hasIdentity bool
+		identityRef *dnsv1alpha1.LocalObjectReference
+		wantErr     string
+	}{
+		{name: "route53 missing", hasIdentity: true, wantErr: "spec.identityRef.name is required"},
+		{name: "route53 empty", hasIdentity: true, identityRef: &dnsv1alpha1.LocalObjectReference{}, wantErr: "spec.identityRef.name is required"},
+		{name: "route53 blank", hasIdentity: true, identityRef: &dnsv1alpha1.LocalObjectReference{Name: " "}, wantErr: "spec.identityRef.name is required"},
+		{name: "route53 present", hasIdentity: true, identityRef: &dnsv1alpha1.LocalObjectReference{Name: "route53-dev"}},
+		{name: "credentialless absent"},
+		{name: "credentialless empty", identityRef: &dnsv1alpha1.LocalObjectReference{}, wantErr: "spec.identityRef is forbidden when the Provider version does not declare identity"},
+		{name: "credentialless present", identityRef: &dnsv1alpha1.LocalObjectReference{Name: "sentinel"}, wantErr: "spec.identityRef is forbidden when the Provider version does not declare identity"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider := route53Provider(t)
+			zoneClass := route53ZoneClass(t)
+			if !test.hasIdentity {
+				// Select a credentialless served version beside the identity-backed version.
+				version := *provider.Spec.Versions[0].DeepCopy()
+				version.Name = "v1credentialless"
+				version.Storage = false
+				version.Identity = nil
+				provider.Spec.Versions = append(provider.Spec.Versions, version)
+				zoneClass.Spec.Provider.Version = version.Name
+			}
+			zoneClass.Spec.IdentityRef = test.identityRef
+			validator := newTestValidator(t, provider)
+			err := validator.validateZoneClass(context.Background(), zoneClass)
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateZoneClass returned error: %v", err)
+				}
+			} else if err == nil || err.Error() != test.wantErr {
+				t.Fatalf("validateZoneClass error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestZoneClassValidationAppliesExtensionCELRules(t *testing.T) {
 	ctx := context.Background()
 	extension := route53Provider(t)
@@ -1791,8 +1832,8 @@ func TestProviderValidationChecksSchemaDescriptions(t *testing.T) {
 }
 
 func TestBuiltInProviderManifestsPassValidation(t *testing.T) {
-	for _, name := range []string{"route53_extensions.yaml", "cloudflare_extensions.yaml"} {
-		t.Run(name, func(t *testing.T) {
+	for _, name := range []string{"route53_extensions.yaml", "cloudflare_extensions.yaml", filepath.Join("..", "external", "external_extensions.yaml")} {
+		t.Run(filepath.Base(name), func(t *testing.T) {
 			provider := builtInProviderManifest(t, name)
 			if err := validateProvider(&provider); err != nil {
 				t.Fatalf("validateProvider(%s) returned error: %v", name, err)
@@ -2136,7 +2177,7 @@ func route53ZoneClass(t *testing.T) *dnsv1alpha1.ZoneClass {
 		Spec: dnsv1alpha1.ZoneClassSpec{
 			Provider:       route53v1alpha1.ProviderRef,
 			ControllerName: "route53.dns.appthrust.io/controller",
-			IdentityRef:    dnsv1alpha1.LocalObjectReference{Name: "route53-dev"},
+			IdentityRef:    &dnsv1alpha1.LocalObjectReference{Name: "route53-dev"},
 			Parameters:     raw(t, map[string]any{}),
 			AllowedZones: dnsv1alpha1.ZoneClassAllowedZones{
 				Namespaces: dnsv1alpha1.NamespacePolicy{From: dnsv1alpha1.NamespacesFromSame},

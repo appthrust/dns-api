@@ -81,7 +81,7 @@ func (r *ZoneClassReconciler) acceptZoneClass(ctx context.Context, zoneClass *dn
 			return metav1.ConditionFalse, "InvalidParameters", "zoneType Private requires zoneDeletionPolicy Retain", nil
 		}
 	}
-	if zoneClass.Spec.IdentityRef.Name == "" {
+	if zoneClass.Spec.IdentityRef == nil || zoneClass.Spec.IdentityRef.Name == "" {
 		return metav1.ConditionFalse, "InvalidIdentityRef", "spec.identityRef.name is required", nil
 	}
 
@@ -155,7 +155,7 @@ func (r *ZoneClassReconciler) mapIdentityToZoneClasses(ctx context.Context, obj 
 		if err != nil || zoneClass.Spec.ControllerName != r.controllerName() || provider == nil || version == nil || provider.Name != r.providerReference().Name {
 			continue
 		}
-		if zoneClass.Spec.IdentityRef.Name == identity.Name {
+		if zoneClass.Spec.IdentityRef != nil && zoneClass.Spec.IdentityRef.Name == identity.Name {
 			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&zoneClass)})
 		}
 	}

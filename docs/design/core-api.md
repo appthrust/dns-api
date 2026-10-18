@@ -9,13 +9,13 @@
 - `provider.name`: `Provider.metadata.name`. Immutable. Because it references cluster-scoped `Provider`, it does not include namespace or kind.
 - `provider.version`: `Provider.spec.versions[].name`. Immutable.
 - `controllerName`: provider controller instance that reconciles `ZoneUnit` resources reachable through this class. Required and immutable.
-- `identityRef`: provider identity reference. Required. `identityRef.name` references the provider identity resource declared by the selected Provider version in the same namespace as the `ZoneClass`.
+- `identityRef`: optional provider identity reference. Required with a nonempty `name` if and only if the selected Provider version declares `identity`; forbidden otherwise. When present, it references the declared identity resource in the same namespace as the `ZoneClass`.
 - `parameters`: provider-specific inline settings. Validated by the referenced Provider version `zoneClass.schemas.parameters`.
 - `allowedZones`: namespace conditions for `Zone` resources that may use this `ZoneClass`.
 
 `ZoneClass.spec.controllerName` uses the Gateway API-style domain-prefixed path form. It must include both a DNS subdomain prefix and a path part after `/`. Valid examples are `route53.dns.appthrust.io/controller` and `cloudflare.dns.appthrust.io/prod-a`; `route53.dns.appthrust.io` is invalid.
 
-`ZoneClass.spec.identityRef` contains only `name`. It does not contain namespace, group, or kind. Cross-namespace identity references are not part of the initial design; identity resources live with the `ZoneClass` in the same platform namespace. The referenced Provider version declares the identity `group` and `kind`, so repeating them in every `ZoneClass` would create an unnecessary mismatch surface.
+`ZoneClass.spec.identityRef`, when present, contains only `name`. It does not contain namespace, group, or kind. Cross-namespace identity references are not part of the initial design; identity resources live with the `ZoneClass` in the same platform namespace. The referenced Provider version declares the identity `group` and `kind`, so repeating them in every `ZoneClass` would create an unnecessary mismatch surface. Credentialless providers omit the field rather than using an empty or sentinel reference. The Go field is `IdentityRef *LocalObjectReference` with JSON tag `identityRef,omitempty`; both CRD distributions omit the structural requirement, while core admission enforces the Provider-dependent requirement. Upgrade separately managed CRD carriers with the controller; Helm does not upgrade existing CRDs during a normal chart upgrade.
 
 `ZoneClass.status.conditions` contains `Accepted`. `Accepted=True` means `provider`, `identityRef`, `parameters`, and `allowedZones` are statically acceptable. `Accepted=False` reasons are `InvalidProvider`, `InvalidIdentityRef`, `InvalidParameters`, and `DeniedByPolicy`. `Accepted=Unknown` reasons are `IdentityNotResolved`, `ProviderStorageVersionNotResolved`, and `ReconcileError`.
 
@@ -53,7 +53,7 @@ spec:
 
 `ZoneClass` is not reconciled by a core controller. The core validating webhook reads the referenced Provider version and validates `spec.identityRef`, `spec.parameters`, and `spec.allowedZones`.
 
-Provider controllers reconcile only `ZoneClass` resources whose `spec.controllerName` matches their own controller name. If it does not match, they do not update status. They interpret `identityRef` according to the Provider version identity resource declaration, interpret provider-specific `parameters`, and set `ZoneClass.status.conditions[Accepted]` to `True` when the class is statically acceptable.
+Provider controllers reconcile only `ZoneClass` resources whose `spec.controllerName` matches their own controller name. If it does not match, they do not update status. They interpret `identityRef` only when the Provider version declares an identity resource, interpret provider-specific `parameters`, and set `ZoneClass.status.conditions[Accepted]` to `True` when the class is statically acceptable. Credentialless providers perform no identity lookup. Route 53 and Cloudflare still reject absent or empty references controller-side as `Accepted=False/InvalidIdentityRef`.
 
 ## Zone
 

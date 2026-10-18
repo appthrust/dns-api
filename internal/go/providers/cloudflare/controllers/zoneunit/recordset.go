@@ -627,7 +627,7 @@ func cloudflareRecordValueKey(record CloudflareDNSRecord) string {
 }
 
 func (r *recordSetReconciler) identityForZoneClass(ctx context.Context, recordSet *dnsv1alpha1.RecordSet, zoneClass *dnsv1alpha1.ZoneClass) (*cloudflarev1alpha1.CloudflareIdentity, bool, error) {
-	if zoneClass.Spec.IdentityRef.Name == "" {
+	if zoneClass.Spec.IdentityRef == nil || zoneClass.Spec.IdentityRef.Name == "" {
 		return nil, false, r.setAccepted(ctx, recordSet, metav1.ConditionFalse, "InvalidIdentityRef", "spec.identityRef.name is required")
 	}
 	var identity cloudflarev1alpha1.CloudflareIdentity

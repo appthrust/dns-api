@@ -19,7 +19,7 @@ The `Provider` resource is the Core Provider discovery contract. Core reads Core
 
 ## Initial Scope
 
-The initial implementation targets Route 53 public hosted zones. dns-api handles Public DNS only. Private DNS, VPC association, split-horizon DNS, and DNS propagation checks are out of scope initially. The API is not Route 53-specific and must allow future providers such as Google Cloud DNS, Cloudflare, and Azure DNS.
+The initial Route 53 milestone targets public hosted zones. Private DNS, VPC association, split-horizon DNS, and DNS propagation checks are outside that milestone. The external verification provider adds DNS-query observation of customer-managed records in operator-selected public or private resolver views under the existing `Programmed` condition, without new condition types. The API is not Route 53-specific; provider contracts define their supported scope.
 
 The initial milestone is the ability to use a development AWS profile to create public hosted zones, standard A records, standard AAAA records, standard TXT records, standard CNAME records, standard MX records, standard CAA records, delegated NS records, and Route 53 ALIAS records from `Provider`, `ZoneClass`, `Route53Identity`, `Zone`, and `RecordSet`. DNS propagation checks are not part of this milestone.
 
@@ -29,11 +29,11 @@ Core API resources:
 
 - `ZoneClass`: a DNS zone creation menu.
 - `Provider`: provider capability, schema, validation, and display metadata.
-- `Zone`: a management unit corresponding to a hosted zone / zone on the DNS provider.
+- `Zone`: a management unit corresponding to a hosted zone / zone on a writing DNS provider, or a logical suffix for external verification.
 - `RecordSet`: a DNS record set.
 - `ZoneUnit`: the zone-scoped desired-state and ownership ledger built from accepted `Zone` and `RecordSet` claims.
 - Provider-specific identity CRDs: which provider account, IAM role, or service account is used for operations.
 
-Provider identity details live in provider-specific identity CRDs. `ZoneClass.spec.identityRef` selects a provider identity by name, and `ZoneClass.spec.parameters` holds provider-specific policy as an inline object. The core API has no provider-specific account or credential schema. The provider version declares the identity resource kind so UI, documentation, and generic reference display can discover which identity kind a `ZoneClass` uses.
+Provider identity details live in provider-specific identity CRDs. `ZoneClass.spec.identityRef` selects a provider identity by name when the Provider version declares one; credentialless providers omit it. `ZoneClass.spec.parameters` holds provider-specific policy as an inline object. The core API has no provider-specific account or credential schema. When an identity is declared, the provider version supplies its resource kind so UI, documentation, and generic reference display can discover which identity kind a `ZoneClass` uses.
 
-Standard condition types are `Accepted` and `Programmed`. `Accepted` is the result of composition acceptance and provider acceptance. `Programmed` describes whether the external provider's observed state matches desired state. Conditions such as `Propagated` or `Resolvable` that require DNS-query observation are not part of the initial core API.
+Standard condition types are `Accepted` and `Programmed`. `Accepted` is the result of composition acceptance and provider acceptance. `Programmed` describes whether the external provider's observed state matches desired state. Conditions such as `Propagated` or `Resolvable` that require DNS-query observation are not part of the initial core API. DNS-query observation is a provider-specific `Programmed` criterion, not a core condition.

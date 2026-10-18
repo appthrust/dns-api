@@ -62,6 +62,13 @@ providers:
         enabled: true
   cloudflare:
     enabled: true
+  external:
+    enabled: false
+    controllerName: external.dns.appthrust.io/controller
+    providerName: external.dns.appthrust.io
+    providerVersion: v1alpha1
+    dnsQPS: 40
+    dnsBurst: 80
 
 extraArgs: []
 extraEnv: []
