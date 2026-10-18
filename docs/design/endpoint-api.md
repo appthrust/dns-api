@@ -36,6 +36,12 @@ manifest has been rewritten.
 
 - `hostnames`: fully qualified DNS hostnames to publish.
 - `targets`: endpoint addresses. The initial target types are `Hostname` and `IPAddress`.
+- `retiredTargets`: map-list keyed by `id`, at most 64 entries, each containing `sourceGeneration`, removed canonical IP `address`, and a nonempty snapshot of at most 256 old `hostnames`.
+- `retiredHostnames`: map-list keyed by `id`, at most 256 entries, each containing `sourceGeneration`, removed `hostname`, and a nonempty snapshot of at most 64 old IP `addresses`.
+
+Retirement IDs bind the ERS UID, pre-update generation, entry kind, and removed value. Snapshots preserve old associations: simultaneous removal of H1 and replacement V1→V2 retains `(H1,V1)`, not `(H1,V2)`. Sources append and preserve existing entries with resourceVersion concurrency; only the endpoint controller prunes captured intent.
+
+CEL requires either nonempty live hostnames **and** targets, or a nonempty retirement collection (`nonempty hostname and target intent or retirement entries are required`). A retire-only object may omit either live side. There is no ERS admission webhook; trusted source writes enforce the retirement protocol.
 
 It does not contain:
 
@@ -89,13 +95,15 @@ prior-generation child status is not ready. Each generated child status exposes
 both its current metadata `generation` and mirrored `observedGeneration` so a
 consumer can independently verify the aggregate.
 
-The endpoint controller holds the
-`endpoint.dns.appthrust.io/generated-recordsets` finalizer while generated
-`RecordSet` resources exist. On deletion it requests deletion of every generated
-child and removes the finalizer only after a label-selected read proves that no
-child remains in the Kubernetes API. Provider cleanup failures therefore retain
-both the child provider finalizer and the parent endpoint finalizer; parent
-disappearance alone is never used as inferred provider cleanup evidence.
+Sources install `endpoint.dns.appthrust.io/generated-recordsets` at ERS creation, before first endpoint reconciliation; the endpoint controller also ensures it on existing active objects. This closes the source-create/direct-delete capture gap.
+
+Before pruning retirement entries or deleting generated children, the endpoint controller resolves each retired hostname/IP pair to its retained publication Zone binding, or the ordinary single-pair publication resolution/conversion/fallback path. For a Provider version supporting withdrawal it durably creates a deterministic independent `RecordWithdrawal`; successful Create is persisted evidence, and AlreadyExists requires Get plus exact immutable shape, lifecycle, address label, and provenance checks. Duplicate pairs at the same retirement generation share a claim. Missing resolution, collisions, write failures, and collection overflow hold capture rather than discard intent. A known non-supporting Provider requires no withdrawal claim.
+
+Active ERSs clear captured retirement collections with an optimistic-lock patch; a concurrent append conflicts instead of being lost. Retire-only ERSs retain entries until DELETE and report current-generation `WithdrawalCaptured=True/Captured`, message `Every retired hostname/address pair has been durably captured.` Their `Resolved`, `Accepted`, `Programmed`, and `Ready` conditions are `False/Retiring`, message `EndpointRecordSet is retiring; no active records are published.` They issue no empty conversion request or RecordSet. Capture failure reports `WithdrawalCapturePending` and `Ready=False`; source overflow leaves the old spec unchanged and is never truncated.
+
+`WithdrawalProtected` defaults closed: only current-generation `False` after all hostname providers resolve without withdrawal support permits the old unprotected cleanup path. Once True, protection is sticky for that ERS incarnation. `WithdrawalCaptured=True` is accepted only at the current ERS generation. Capture acknowledgment proves independent obligation persistence, not DNS withdrawal.
+
+Direct ERS deletion captures every live IP/hostname pair and all retirement entries before normal child deletion. The endpoint finalizer is removed only after a label-selected read proves no generated RecordSet remains. Capture/provider cleanup failures retain finalizers. Independent withdrawal claims survive parent deletion and do not delay ordinary deletion while the customer changes DNS.
 
 ## EndpointProviderCapability
 

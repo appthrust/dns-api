@@ -91,6 +91,20 @@ If composition acceptance is `False`, the claim `Accepted` is `False` and the it
 
 `Accepted=False` means the controller has enough information to reject the claim. `Accepted=Unknown` means the validation material is incomplete or temporarily unavailable, such as missing `Zone`, missing `ZoneClass`, missing provider identity state, missing owner state during GitOps recovery, unavailable Provider storage version, unavailable Provider conversion webhook, or a transient core error.
 
+## Withdrawal Composition and Projection
+
+Core composes independent `RecordWithdrawal` claims into `ZoneUnit.spec.withdrawals[]`; providers do not read those claims, waivers, EndpointRecordSets, or platform kinds. Core alone writes public withdrawal/waiver status. The Endpoint App only creates retained pair claims; source Apps only preserve endpoint retirement intent.
+
+Composition resolves the live Zone, Class UID/generation, served input and storage Provider versions, and exact current nondeleting Unit binding. Both input and storage versions must support `recordWithdrawal`. Core applies `allowedZones` and the corresponding A/AAAA `allowedRecordSets` grants based on address family. Cross-namespace access and wildcard access require explicit grants. Withdrawals reserve no DNS record ownership and do not conflict with replacement publication.
+
+Acceptance is `True/Accepted` or `False/InvalidWithdrawal`, `NotAllowed`, or `UnsupportedProvider`; unlike ordinary unresolved claim acceptance, an unavailable withdrawal binding is `False/InvalidWithdrawal`. Valid-shaped rejected claims remain in the Unit with `allowed=false`. If the Zone inventory exceeds 256 claims, Core rejects the inventory as a whole, retains previous Unit entries disallowed with waivers removed, and never truncates obligations.
+
+Core validates waiver claim UID, immutable-spec digest, canonical address, and namespace scope directly before attachment; deterministic namespace/name ordering selects the first matching waiver. An independent waiver reconciler maintains `Accepted` even if the claim or Zone disappears. No SubjectAccessReview, client-supplied audit identity, or receiving platform-resource lookup is involved.
+
+Projection requires current Unit `status.observedGeneration`, Class UID/generation, exact current desired item including authorization/waiver, matching claim keys/UID/generation, and current `Withdrawn`/`Ready` condition generations. It preserves provider messages and public evidence, never private provider state. Override projection additionally requires the exact composed waiver name/UID/digest/reservation reference and current `OverrideAccepted=True/OperatorAuthorizedRelease`. Missing or stale results yield `Withdrawn=Unknown`, `Ready=False`, reason `DNSProbeFailed`, message `No current identity-bound withdrawal observation is available`. Same-name recreation cannot inherit success.
+
+Core retains every withdrawal as a Zone deletion dependency, including verified claims, and continues composition/verification while the Zone waits for explicit evidence archival. Pending withdrawal status does not change unrelated Zone/RecordSet `Programmed`.
+
 ## Admission Webhook
 
 Admission webhook is the API input boundary. It validates core schema, immutable fields, object-local references, object-local policy shape, and provider schema / CEL validation. It does not call DNS provider APIs, evaluate cross-object namespace / record access policy, or update status.
@@ -103,7 +117,7 @@ The webhook server runs as part of the controller-runtime manager and listens on
 
 Webhook TLS certificates are issued by cert-manager. Tilt installs cert-manager as a Helm chart. dns-api manifests apply `Certificate`, `Issuer`, and `ValidatingWebhookConfiguration`. cert-manager CA injection sets the webhook `caBundle`.
 
-Core validating webhook covers at least spec create/update for `Provider`, `ZoneClass`, `Zone`, `RecordSet`, and `ZoneUnit`, and status update for `ZoneClass`, `Zone`, `RecordSet`, and `ZoneUnit`. Provider-specific validating webhooks cover enabled provider-specific resources such as `Route53Identity` and `CloudflareIdentity`; external has no identity admission handler. The core webhook must not import provider API packages such as `api/route53` or `api/cloudflare`.
+Core validating webhook covers spec create/update and status update for `RecordWithdrawal` and `RecordWithdrawalWaiver` in addition to `Provider`, `ZoneClass`, `Zone`, `RecordSet`, and `ZoneUnit` as applicable. Withdrawal admission validates canonical relative name/address, required address-label consistency, no ownerReferences/finalizers, immutable spec, reference/digest shapes, and bounded conditions/evidence. It performs no DNS queries or cross-object grant checks. Unit withdrawal map keys must match nested claim identity; same-incarnation immutable shape cannot change. Status validates generation, the closed withdrawal reason table, 2048-byte messages, and public provider data against `recordWithdrawal.schemas.statusProviderData`; claim `provider.state` is forbidden. Provider-specific validating webhooks cover enabled resources such as `Route53Identity` and `CloudflareIdentity`; external has no identity handler. Core does not import provider API packages.
 
 Provider controllers do not fully trust the webhook. The webhook is the primary user feedback boundary, but controllers keep minimal safety checks. Controller-side validation failure is returned as `Accepted=False` or `Programmed=False`.
 

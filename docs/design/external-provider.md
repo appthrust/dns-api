@@ -6,7 +6,7 @@ The external provider verifies customer-managed DNS. The customer owns authorita
 
 This document defines the stage-1 design, not evidence that the implementation or a deployment has passed verification. Stage 1 preserves the normal EndpointRecordSet → generated RecordSet → ZoneUnit → Accepted/Programmed path. The platform's Phase 4 acceptance is a remote-member HTTPPublish becoming Ready through real resolution and HTTPS, not merely creating a Provider or reporting a configured Zone. Platform wiring and that acceptance proof are outside this provider's implementation boundary.
 
-Verified-withdrawal evidence before retired VIP reuse is not part of this provider. Until a `Withdrawn` receipt contract exists, member replacement and deletion under the platform's `external` mode are unsupported. Kubernetes claim deletion described below is supported, but does not make member retirement or address reuse safe.
+The provider verifies retired-address exclusion through independent Core `RecordWithdrawal` claims and `ZoneUnit.spec/status.withdrawals[]`. This evidence is separate from ordinary Kubernetes deletion bookkeeping. Platform retirement and address reuse require their own current-result consumption and allocation/drain gates; this document does not establish deployment acceptance or global cache eradication.
 
 ## Provider Declaration
 
@@ -265,7 +265,45 @@ Process at most 32 due names per ZoneUnit reconcile. Resume fairly through priva
 
 External owns no DNS object. For a matching-UID ledger item with `DeletionRequested=true`, stop probes and mark `DeletionCompleted=true` after Kubernetes bookkeeping. Complete ZoneUnit finalization without a DNS delete call and without waiting for the customer to remove a wildcard. Existing core claim/endpoint finalizers still wait for the appropriate Kubernetes receipts and generated-child disappearance. Old-incarnation deletion completion must not finalize a replacement claim.
 
-**Deletion completion is not verified DNS withdrawal.** Neither claim disappearance, observedGeneration, a completed verifier finalizer, nor a timer establishes that retired targets have disappeared from DNS or caches. A separate `Withdrawn` condition/receipt contract is required before retired VIP reuse; its schema, persistence, consumers, and cache-safety protocol are outside this provider's scope. The provider does not emit or accept `Withdrawn`. Platform member replacement/deletion under external remains unsupported until that contract exists; allocations must not be released based on this bookkeeping-only completion.
+**Deletion completion is not verified DNS withdrawal.** Claim disappearance, observedGeneration, a completed verifier finalizer, and timer expiry do not prove address exclusion. Independent retained `RecordWithdrawal` claims continue verification after generated RecordSets and EndpointRecordSets disappear. Pending withdrawals do not affect unrelated active Zone/RecordSet `Programmed` aggregation. Every retained withdrawal, including a verified one, blocks Zone/ZoneUnit deletion until explicitly archived or removed.
+
+### Withdrawal Verification
+
+Withdrawal uses a separate exclusion evaluator, not the active exact-set evaluator:
+
+```text
+excluded(address) := address ∉ normalize(terminal A ∪ terminal AAAA)
+```
+
+Every checked name is probed in both families through every effective Cluster/Recursive resolver and, with `expectedNameservers`, every discovered authority endpoint via every configured resolver. Required NS/SOA/delegation and authoritative-answer checks still apply. Replacement addresses may remain and differ between views. Complete NOERROR replacement answers prove current exclusion; NODATA/NXDOMAIN require valid negative SOA evidence. Missing views/families, failures, malformed or unresolved chains, loops, and CNAME/probe limits are Unknown, never partial success. A foreign CNAME boundary is not sufficient exclusion evidence: complete terminal A/AAAA evidence is required.
+
+A wildcard uses a stable concrete `dns-retire-` witness derived from the claim UID, Zone reference, and Unit UID, plus any retained publication witness for that address. Recreated claims use a different witness. `sampledWildcard=true` describes sampling, not exhaustive proof for descendants or explicit owners.
+
+The first complete all-view exclusion starts `absentSince=t0`. `notBefore` is the maximum of t0, retained positive-address/CNAME expiry bounds, and `t0 + negativeTTL` for every required negative observation; negative TTL is `min(SOA TTL, SOA.MINIMUM)`. Complete per-view/per-family evidence drives this calculation, not bounded diagnostic previews or minimum-TTL summaries. Repeated identical negatives do not slide t0; larger bounds extend but never shorten the window. Public horizons round up to a whole second. A separate complete probe at or after `notBefore`, later than the preceding attempt, is required even for zero TTL. Polling caps never shorten a cache horizon.
+
+Reappearance, failed/incomplete observations, changed policy/views, clock reversal, or a schedule stale beyond `nextProbeTime + 300s` invalidates success and the absence window while retaining known positive horizons. Restart preserves only matching persisted identity/policy/window evidence. Required resolver, expected-nameserver, and discovered-view history remains a floor: weakening or missing historical evidence reports `PolicyChanged` rather than proving equivalence. Retained claims are reverified; consumers also reject stale/future/missing timestamps and mismatched bindings, and require `verifiedAt >= notBefore`.
+
+`Accepted=True/Accepted` means valid authorized intent; rejection uses `InvalidWithdrawal` or `NotAllowed`. Core also reports `UnsupportedProvider`. Provider `Withdrawn` and `Ready` use:
+
+| Withdrawn | Ready | Reason |
+| --- | --- | --- |
+| False | False | `DNSStillResolves` |
+| False | False | `NegativeTTLNotElapsed` |
+| Unknown | False | `DNSProbeFailed` |
+| Unknown | False | `PolicyChanged` |
+| True | True | `WithdrawalVerified` |
+
+Messages retain these templates, with bounded 2048-byte diagnostics:
+
+- `DNS <checkedName> still resolves to retired address <address> in <view> (<qtype>).`
+- `Retired address <address> is absent in every required view; waiting until <notBefore> for cache safety and a confirming probe.`
+- `Retired address <address> was verified absent from <name> in every required view at <verifiedAt>.`
+- `External DNS withdrawal cannot be verified for <name> in <view>: <closedFailureCode>.`
+- `External DNS withdrawal policy changed for <name>; the prior required view policy remains a floor.`
+
+Core supplies a validated waiver's exact name, UID, immutable-spec digest, and receiving reservation namespace/name/UID. The provider echoes that scope and emits `OverrideAccepted=True/OperatorAuthorizedRelease` with message `Core-validated withdrawal waiver is bound to its exact UID and immutable scope.` This never changes `Withdrawn` or `Ready` into DNS success and performs no platform-object lookup.
+
+Withdrawal work shares the existing limiter, concurrency, transport, deadlines, jitter, and retry intervals. A separate persisted fair cursor schedules claims; each concrete checked name consumes one name-budget slot. When active and withdrawal work are both due, withdrawal selection receives half the pass budget and active work uses the remaining budget. Requeue uses the earlier active/withdrawal deadline (at least one second); a deleting Unit still verifies retained withdrawals. There is no timeout-based release. `dns_external_withdrawals_pending{reason}` counts nonverified claims with the closed labels `DNSStillResolves`, `NegativeTTLNotElapsed`, `DNSProbeFailed`, `PolicyChanged`, `InvalidWithdrawal`, `NotAllowed`, and `UnsupportedProvider`; other reasons fold into `DNSProbeFailed`. Existing probe, duration, and queue-delay metrics remain shared.
 
 ## Admission and Security
 

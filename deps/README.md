@@ -6,4 +6,4 @@ Use [the template](./dep-template.md) for a new proposal. Single Markdown files 
 
 | DEP | Title | Status |
 | --- | --- | --- |
-| [0003](./dep-0003-record-withdrawal.md) | Verified record withdrawal before address reuse | Draft |
+| [0003](./dep-0003-record-withdrawal.md) | Verified record withdrawal before address reuse | Accepted |

@@ -1,14 +1,17 @@
 # DEP-0003: Verified record withdrawal before address reuse
 
-- Status: Draft
+- Status: Accepted
 - Owner: dns-api maintainers (Core, Endpoint App, and external provider)
 - Created: 2026-10-18
+- Accepted: 2026-10-18
+
+The accepted contract is now carried by `docs/design/`; this DEP retains rationale, alternatives, and compatibility history.
 
 ## Summary
 
 Introduce independent Core `RecordWithdrawal` and `RecordWithdrawalWaiver` claims, Core composition/projection through `ZoneUnit`, and external-provider exclusion verification. Endpoint sources preserve retired hostname/address pairs until the Endpoint App durably creates claims. Platform consumers use verified results before member retirement and address reuse; exceptional operator risk acceptance remains distinct from DNS verification.
 
-This is the dns-api part of the reviewed **Phase 4b: verified external-DNS withdrawal before VIP reuse** design, especially §§3.2–3.4, 4.1–4.3, 6–7, 8.2, and 9. It is a follow-up after PR #16, not additional stage-1 implementation scope. It is proposed behavior, not an implementation or runtime-verification report. Under the [DEP process](../docs/design/common.md#dep-process), committed `docs/design/` remains current specification until acceptance and reflection there.
+This is the dns-api part of the reviewed **Phase 4b: verified external-DNS withdrawal before VIP reuse** design, especially §§3.2–3.4, 4.1–4.3, 6–7, 8.2, and 9. It follows PR #16 rather than expanding stage-1 scope. Acceptance is not a runtime-verification report. Under the [DEP process](../docs/design/common.md#dep-process), `docs/design/` carries the current contract.
 
 ## Motivation
 
