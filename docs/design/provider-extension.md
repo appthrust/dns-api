@@ -209,7 +209,20 @@ Fake providers are test boundaries, not public extension points. Unit tests and 
 
 Common code may be shared for provider reference parsing, Provider version resolution, condition reason naming, status provider data encoding, and validation helpers. It must not force Route 53, Cloudflare, or future providers into a single CRUD-shaped DNS provider abstraction.
 
-Example:
+### External Verify-Only Runtime
+
+`internal/go/providers/external` implements the credentialless `external.dns.appthrust.io/v1alpha1` contract. Its manifest advertises exactly A, AAAA, and CNAME. ZoneClass parameters choose Cluster pod DNS or up to three explicit Recursive IP:port views and optionally up to sixteen expected authoritative nameservers. All configured views must agree; there is no OS or public-resolver fallback. Provider OpenAPI/CEL rejects noncanonical endpoints, noncanonical nameservers, nonempty adoption/options, and incompatible resolver settings.
+
+The read-only boundary is `probe.Resolver.Probe(context.Context, probe.ProbeRequest) (probe.ProbeResult, error)`. The wire implementation sends QUERY only, uses UDP then TCP on truncation, follows at most eight CNAME links, and checks both address families against complete exact sets. A wildcard uses a stable concrete witness derived from the ZoneUnit identity, Zone reference, and sorted claim UID/generation tuple; it is sampled evidence, not a guarantee about every descendant name. The provider consumes the core ledger, never writes claim specs/status, and never reads DNS credentials.
+
+Manager wiring uses `zoneclass.ZoneClassReconciler.SetupWithManager`, `zoneunit.NewReconciler(client.Client, zoneunit.Options)` followed by `SetupWithManager`, and `conversion.NewHandler().Register(webhookServer)`. `Options` carries binding strings, optional injected Resolver/Clock/Jitter/EffectivePolicy, and QPS/Burst (defaults 40/80). The controller admits at most four names concurrently across units and thirty-two due names per pass. One cycle-local Zone probe shares NS/SOA and NS-host work across its names. It persists advisory due times/fingerprints and resumes a backlog after one second; completed names retain a 30–300 second polling floor/cap, ±10% jitter, and failure backoff of 30/60/120/300 seconds.
+
+Public verification data includes bounded typed actual/missing/extra previews, chain/views, observed TTL and optional SOA negative expiry, checkedName, sampledWildcard, and last/next probe times. A later failed observation clears success. ZoneUnit aggregate reasons map to core's fixed allowlist, with False taking precedence over Unknown. Deletion completes only UID-bound Kubernetes bookkeeping: it never removes customer DNS and is not proof that a retired VIP is safe to reuse.
+
+The endpoint conversion group is `endpoint.external.dns.appthrust.io/v1alpha1`, resource `endpointrecordsetconversions`. It preserves request UID and name, emits sorted canonical A then AAAA fragments or one CNAME fragment, and uses TTL 300 without modifying customer TTLs. Mixed IP/hostname targets, multiple distinct hostname targets, incompatible preferences, and apex CNAME are rejected. Provider and capability declarations are in `internal/go/providers/external/manifest`; manager/chart registration is separate from these runtime packages.
+
+
+### Provider Declaration Example
 
 ```yaml
 apiVersion: dns.appthrust.io/v1alpha1
