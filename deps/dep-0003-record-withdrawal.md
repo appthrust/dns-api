@@ -209,6 +209,8 @@ Two claim creators are intentional: platform CapacityReservation creates the man
 
 The dns-api Core follow-up release, reviewed platform import, and CRD delivery precede platform Phase 4b support. Missing CRD/watch/verifier, denied/truncated reads, missing/stale results, or a mode switch cannot erase held external obligations. Pre-4b retirements that already lost history are not reconstructed by epochs or synthetic success.
 
+`ZoneUnit.spec.zone` binds the ZoneClass UID and observed generation; withdrawal projection requires current Unit status generation and current Class binding, and consumers compare the live Class UID/generation before consuming results.
+
 ## Documentation
 
 On acceptance, reflect this contract in present tense into:

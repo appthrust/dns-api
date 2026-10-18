@@ -229,6 +229,10 @@ func (r *ZoneUnitCompositionReconciler) reconcileZone(ctx context.Context, req c
 			if unitExists {
 				providerStatus = existing.Status.Zone
 			}
+			dependencyMessage := fmt.Sprintf("%d RecordSet resources still reference this Zone; delete or move them before Zone cleanup can continue", len(recordSets))
+			if len(withdrawals) > 0 {
+				dependencyMessage = fmt.Sprintf("%d RecordSet and %d RecordWithdrawal resources still reference this Zone; archive dependent claims before Zone cleanup can continue", len(recordSets), len(withdrawals))
+			}
 			return ctrl.Result{}, r.setZoneClaimStatusWithMessages(
 				ctx,
 				&zone,
@@ -237,7 +241,7 @@ func (r *ZoneUnitCompositionReconciler) reconcileZone(ctx context.Context, req c
 				"Zone is accepted",
 				metav1.ConditionFalse,
 				"ProviderChangePending",
-				fmt.Sprintf("%d RecordSet and %d RecordWithdrawal resources still reference this Zone; archive dependent claims before Zone cleanup can continue", len(recordSets), len(withdrawals)),
+				dependencyMessage,
 				providerStatus,
 			)
 		}
