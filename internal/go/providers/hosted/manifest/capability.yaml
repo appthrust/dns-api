@@ -1,0 +1,12 @@
+apiVersion: endpoint.dns.appthrust.io/v1alpha1
+kind: EndpointProviderCapability
+metadata:
+  name: hosted-v1alpha1
+spec:
+  provider:
+    name: hosted.dns.appthrust.io
+    version: v1alpha1
+  conversion:
+    group: endpoint.hosted.dns.appthrust.io
+    version: v1alpha1
+    resource: endpointrecordsetconversions
