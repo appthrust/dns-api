@@ -398,7 +398,16 @@ func TestDefaultDelegationAlwaysReported(t *testing.T) {
 		if in.Policy.Mode != "Cluster" || len(in.Policy.Servers) != 1 {
 			t.Fatalf("default delegation policy=%+v", in.Policy)
 		}
-		return dnsprobe.ProbeResult{Zone: &dnsprobe.ZoneEvidence{Views: []dnsprobe.AuthorityObservation{{Nameservers: []string{"NS.EXAMPLE.TEST."}}}}}, nil
+		// Shape of a real probe: the recursive view, then the authority view
+		// reached through glue; both must agree and the authority answers AA.
+		return dnsprobe.ProbeResult{Zone: &dnsprobe.ZoneEvidence{
+			Zone:        in.Zone,
+			Authorities: []string{"192.0.2.10:53"},
+			Views: []dnsprobe.AuthorityObservation{
+				{ID: "recursive/" + in.Policy.Servers[0], Nameservers: []string{"NS.EXAMPLE.TEST."}, SOAOwner: in.Zone},
+				{ID: "authority/192.0.2.10:53", Nameservers: []string{"ns.example.test"}, SOAOwner: in.Zone, Authoritative: true},
+			},
+		}}, nil
 	}
 	_, unit := reconcileOnce(t, r, req)
 	var data zoneData

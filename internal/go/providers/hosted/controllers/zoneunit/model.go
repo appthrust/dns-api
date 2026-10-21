@@ -15,6 +15,7 @@ import (
 	"github.com/appthrust/dns-api/internal/go/providers/hosted/withdrawal"
 	dnsv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/dns/v1alpha1"
 	hostedv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/hosted/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -110,15 +111,21 @@ func (r *ZoneReconciler) observeDelegation(ctx context.Context, unit *dnsv1alpha
 		observed, err = r.Options.Resolver.Probe(ctx, request)
 	}
 	data := delegationData{ObservedNameServers: []string{}, LastProbeTime: r.Options.Clock()}
-	if err != nil || observed.Zone == nil || len(observed.Zone.Views) != len(policy.Servers) {
+	if err != nil {
+		// Transport errors may carry private network details; publish only the class.
 		data.Error = "DNSProbeFailed"
-	}
-	if observed.Zone != nil {
-		for _, view := range observed.Zone.Views {
-			data.ObservedNameServers = append(data.ObservedNameServers, view.Nameservers...)
-			if view.Failure != "" {
-				data.Error = "DNSProbeFailed"
+	} else {
+		// The probe appends authority views after the recursive views, so the
+		// view count is not a failure signal; the shared evaluator decides
+		// (every required view answered, consistent NS/SOA, authorities AA).
+		decision := dnsprobe.EvaluateZone(request, observed.Zone)
+		if observed.Zone != nil {
+			for _, view := range observed.Zone.Views {
+				data.ObservedNameServers = append(data.ObservedNameServers, view.Nameservers...)
 			}
+		}
+		if decision.Status != metav1.ConditionTrue {
+			data.Error = boundedError(decision.Reason + ": " + decision.Message)
 		}
 	}
 	data.ObservedNameServers = dnsprobe.Names(data.ObservedNameServers)
@@ -235,4 +242,12 @@ func retainPublication(state *schedulerState, spec hostedv1alpha1.HostedZoneSpec
 			current = next
 		}
 	}
+}
+
+// boundedError keeps delegation diagnostics within the 512-byte public schema.
+func boundedError(message string) string {
+	if len(message) > 512 {
+		return message[:512]
+	}
+	return message
 }
