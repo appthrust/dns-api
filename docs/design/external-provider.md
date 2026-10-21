@@ -152,7 +152,7 @@ The external ZoneClass controller matches controllerName and Provider binding, r
 
 The external ZoneUnit controller watches ZoneUnit, matching ZoneClass, Provider, and namespace-policy changes. It reconciles only the configured provider/storage version through the matching class. Core remains the sole composer and public Zone/RecordSet status writer. The provider respects `Allowed`, `DeletionRequested`, claim UID, and claim observedGeneration; it does not probe denied ledger items or use old deletion receipts for a new incarnation.
 
-The local read-only test/runtime boundary is `Resolver.Probe(ctx context.Context, request ProbeRequest) (ProbeResult, error)`, with injected clock and jitter. Requests contain checked names, expected RRsets, and effective resolver policy; results contain per-view RCODE, answers, AA, TTL/SOA, and authority evidence. There are no DNS Create/Update/Delete methods. The provider does not use a generic cloud provider interface or call a cloud API.
+The shared read-only test/runtime boundary lives in `internal/go/core/dnsprobe`: `dnsprobe.Resolver.Probe(ctx context.Context, request dnsprobe.ProbeRequest) (dnsprobe.ProbeResult, error)`, with injected clock and jitter. External and hosted providers reuse this QUERY-only helper, not a provider abstraction. `ProbeRequest.Policy` and `WireResolver.EffectivePolicy` use provider-neutral `dnsprobe.Policy{Mode, Servers, ExpectedNameservers}`; the external controller converts its API parameters with `config.ProbePolicy`. Results contain per-view RCODE, answers, AA, TTL/SOA, and authority evidence. Exact-set publication evaluation and external pending metrics belong to `internal/go/providers/external/verification`; shared withdrawal exclusion and wire transport do not import provider packages or APIs. There are no DNS Create/Update/Delete methods or cloud API calls.
 
 ## Zone Semantics
 
@@ -361,10 +361,10 @@ Use the existing manager metrics registry/server:
 
 | Metric | Type and labels |
 | --- | --- |
-| `dns_external_probes_total{outcome,qtype}` | Counter; qtype is A, AAAA, CNAME, NS, or SOA; outcome is verified, mismatch, negative, or failed. |
-| `dns_external_probe_duration_seconds{outcome}` | Histogram of completed probe durations. |
+| `dns_probe_total{provider,outcome,qtype}` | Shared counter; provider is the static controller identity (`external` or `hosted`), qtype identifies the query, and outcome is transport evidence `observed` or `failed`, not publication success. |
+| `dns_probe_duration_seconds{provider,outcome}` | Shared histogram of completed probe durations. |
 | `dns_external_pending_records{reason}` | Gauge of active unverified record claims, using only the closed reason set above plus Reconciling. |
-| `dns_external_probe_queue_delay_seconds` | Histogram of delay from due time to attempt start. |
+| `dns_probe_queue_delay_seconds{provider}` | Shared histogram of delay from due time to attempt start. |
 
 No hostname, namespace, IP, UID, or resolver-address labels. Do not expose packet/credential content in logs or metrics.
 

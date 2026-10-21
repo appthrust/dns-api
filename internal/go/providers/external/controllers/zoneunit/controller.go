@@ -9,11 +9,11 @@ import (
 	"time"
 
 	"github.com/appthrust/dns-api/internal/go/core/declaration"
+	probe "github.com/appthrust/dns-api/internal/go/core/dnsprobe"
 	"github.com/appthrust/dns-api/internal/go/core/providercontract"
 	"github.com/appthrust/dns-api/internal/go/providers/external/config"
-	"github.com/appthrust/dns-api/internal/go/providers/external/probe"
+	"github.com/appthrust/dns-api/internal/go/providers/external/verification"
 	dnsv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/dns/v1alpha1"
-	externalv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/external/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -35,7 +35,7 @@ type Options struct {
 	// Jitter returns a value in [-1,1], scaled to +/-10 percent.
 	Jitter func() float64
 	// EffectivePolicy resolves pod DNS without using the OS DNS lookup fallback.
-	EffectivePolicy func(externalv1alpha1.ExternalZoneClassParameters) (externalv1alpha1.ExternalZoneClassParameters, error)
+	EffectivePolicy func(probe.Policy) (probe.Policy, error)
 }
 
 type ZoneReconciler struct {
@@ -47,7 +47,7 @@ type ZoneReconciler struct {
 
 func NewReconciler(k8sClient client.Client, options Options) (*ZoneReconciler, error) {
 	if options.Resolver == nil {
-		wire, err := probe.NewWireResolver(probe.WireOptions{QPS: options.QPS, Burst: options.Burst})
+		wire, err := probe.NewWireResolver(probe.WireOptions{QPS: options.QPS, Burst: options.Burst, Provider: "external"})
 		if err != nil {
 			return nil, err
 		}
@@ -68,7 +68,7 @@ func NewReconciler(k8sClient client.Client, options Options) (*ZoneReconciler, e
 type environment struct {
 	class       dnsv1alpha1.ZoneClass
 	provider    dnsv1alpha1.Provider
-	policy      externalv1alpha1.ExternalZoneClassParameters
+	policy      probe.Policy
 	fingerprint string
 	policyError error
 }
@@ -127,9 +127,9 @@ func (r *ZoneReconciler) observe(ctx context.Context, c client.Client, unit *dns
 	if !emptyObject(unit.Spec.Zone.Adoption) {
 		return nil, &acceptance{metav1.ConditionFalse, "InvalidProviderPayload", "external DNS does not support adoption"}, nil
 	}
-	env.policy = params
+	env.policy = config.ProbePolicy(params)
 	if r.Options.EffectivePolicy != nil {
-		env.policy, env.policyError = r.Options.EffectivePolicy(params)
+		env.policy, env.policyError = r.Options.EffectivePolicy(env.policy)
 	}
 	namespaceNames := []string{unit.Spec.Zone.Ref.Namespace}
 	for _, item := range unit.Spec.RecordSets {
@@ -155,7 +155,7 @@ func (r *ZoneReconciler) observe(ctx context.Context, c client.Client, unit *dns
 		ProviderSpec      dnsv1alpha1.ProviderSpec
 		UnitUID           string
 		Zone              dnsv1alpha1.ZoneUnitZoneSpec
-		Policy            externalv1alpha1.ExternalZoneClassParameters
+		Policy            probe.Policy
 		NamespacePolicies map[string]map[string]string
 	}{string(env.class.UID), env.class.Spec, string(env.provider.UID), env.provider.Spec, string(unit.UID), unit.Spec.Zone, env.policy, namespacePolicies})
 	return env, nil, nil
@@ -165,8 +165,8 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 	var unit dnsv1alpha1.ZoneUnit
 	if err := r.Get(ctx, request.NamespacedName, &unit); err != nil {
 		if apierrors.IsNotFound(err) {
-			probe.SetPending(request.NamespacedName.String(), nil)
-			probe.SetWithdrawalsPending(request.NamespacedName.String(), nil)
+			verification.SetPending(request.NamespacedName.String(), nil)
+			verification.SetWithdrawalsPending(request.NamespacedName.String(), nil)
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -187,9 +187,9 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 		for i := range unit.Status.RecordSets {
 			unit.Status.RecordSets[i].DeletionCompleted = unit.Spec.RecordSets[i].RecordSetUID != ""
 		}
-		probe.SetPending(request.NamespacedName.String(), nil)
+		verification.SetPending(request.NamespacedName.String(), nil)
 		if len(unit.Spec.Withdrawals) == 0 {
-			probe.SetWithdrawalsPending(request.NamespacedName.String(), nil)
+			verification.SetWithdrawalsPending(request.NamespacedName.String(), nil)
 			return ctrl.Result{}, r.patch(ctx, base, &unit)
 		}
 	}
@@ -280,7 +280,7 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 		} else if zoneDecision.Status == metav1.ConditionTrue {
 			probeRequest := probe.ProbeRequest{Name: group.CheckedName, Zone: unit.Spec.Zone.DomainName, Expected: group.Expected, Policy: env.policy, Evidence: evidence, DueTime: dueTime}
 			observed, probeErr := r.Options.Resolver.Probe(ctx, probeRequest)
-			decision = probe.Evaluate(probeRequest, observed)
+			decision = verification.Evaluate(probeRequest, observed)
 			retainPublication(&state, group, probeRequest, observed, r.Options.Clock())
 			if probeErr != nil {
 				decision = probe.Failed(group.CheckedName, "required-views", failureCode(probeErr))

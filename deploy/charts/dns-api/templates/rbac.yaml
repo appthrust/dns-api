@@ -184,6 +184,26 @@ rules:
     verbs:
       - create
   {{- end }}
+  {{- if .Values.providers.hosted.enabled }}
+  - apiGroups:
+      - hosted.dns.appthrust.io
+    resources:
+      - hostedzones
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - endpoint.hosted.dns.appthrust.io
+    resources:
+      - endpointrecordsetconversions
+    verbs:
+      - create
+  {{- end }}
   {{- if .Values.gatewayEndpoint.enabled }}
   - apiGroups:
       - gateway.networking.k8s.io

@@ -1,0 +1,14 @@
+{{- if .Values.providers.hosted.enabled }}
+apiVersion: endpoint.dns.appthrust.io/v1alpha1
+kind: EndpointProviderCapability
+metadata:
+  name: {{ printf "hosted-%s" .Values.providers.hosted.providerVersion | quote }}
+spec:
+  provider:
+    name: {{ .Values.providers.hosted.providerName | quote }}
+    version: {{ .Values.providers.hosted.providerVersion | quote }}
+  conversion:
+    group: endpoint.hosted.dns.appthrust.io
+    version: v1alpha1
+    resource: endpointrecordsetconversions
+{{- end }}

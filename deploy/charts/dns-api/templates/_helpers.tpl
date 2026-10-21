@@ -57,3 +57,12 @@ app.kubernetes.io/component: controller-manager
 {{- printf "%s-selfsigned-issuer" (include "dns-api.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{- define "dns-api.hostedServerName" -}}
+{{- printf "%s-hosted-server" (include "dns-api.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "dns-api.hostedServerSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "dns-api.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: hosted-server
+{{- end -}}

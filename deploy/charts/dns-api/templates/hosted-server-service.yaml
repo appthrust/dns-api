@@ -1,0 +1,34 @@
+{{- if .Values.providers.hosted.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "dns-api.hostedServerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dns-api.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hosted-server
+  {{- with .Values.providers.hosted.server.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.providers.hosted.server.service.type }}
+  {{- with .Values.providers.hosted.server.service.loadBalancerIP }}
+  loadBalancerIP: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.providers.hosted.server.service.ipFamilies }}
+  ipFamilies:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    {{- include "dns-api.hostedServerSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: dns-udp
+      port: 53
+      targetPort: 5353
+      protocol: UDP
+    - name: dns-tcp
+      port: 53
+      targetPort: 5353
+      protocol: TCP
+{{- end }}

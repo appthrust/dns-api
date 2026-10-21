@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/appthrust/dns-api/internal/go/providers/external/config"
+	"github.com/appthrust/dns-api/internal/go/core/dnsprobe"
 	dnsv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/dns/v1alpha1"
 	conversionv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/endpoint/conversion/v1alpha1"
 	endpointv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/endpoint/v1alpha1"
@@ -83,7 +83,7 @@ func convertEndpoint(input endpointv1alpha1.EndpointRecordSetConversionInput) ([
 			}
 		case endpointv1alpha1.EndpointTargetTypeHostname:
 			name := strings.TrimSuffix(strings.ToLower(target.Value), ".")
-			if !config.ValidName(name) {
+			if !dnsprobe.ValidName(name) {
 				return nil, failure("InvalidInput", "hostname target must be a valid DNS name")
 			}
 			hosts = append(hosts, name)

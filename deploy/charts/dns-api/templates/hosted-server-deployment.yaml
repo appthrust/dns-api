@@ -1,0 +1,92 @@
+{{- if .Values.providers.hosted.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dns-api.hostedServerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dns-api.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hosted-server
+spec:
+  replicas: {{ .Values.providers.hosted.server.replicas }}
+  selector:
+    matchLabels:
+      {{- include "dns-api.hostedServerSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "dns-api.hostedServerSelectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "dns-api.hostedServerName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: hosted-server
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/hosted-server"]
+          args:
+            - --listen-address=:5353
+            - {{ printf "--watch-namespace=%s" .Values.providers.hosted.server.watchNamespace | quote }}
+            - --metrics-bind-address=:{{ .Values.metrics.port }}
+            - --health-probe-bind-address=:{{ .Values.health.port }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: dns-udp
+              containerPort: 5353
+              protocol: UDP
+            - name: dns-tcp
+              containerPort: 5353
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            - name: healthz
+              containerPort: {{ .Values.health.port }}
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: healthz
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+          {{- with .Values.providers.hosted.server.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

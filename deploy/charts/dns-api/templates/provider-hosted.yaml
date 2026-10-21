@@ -1,0 +1,314 @@
+{{- if .Values.providers.hosted.enabled }}
+apiVersion: dns.appthrust.io/v1alpha1
+kind: Provider
+metadata:
+  name: {{ .Values.providers.hosted.providerName | quote }}
+spec:
+  display:
+    name: Hosted DNS
+    description: Serves zones authoritatively from Kubernetes; no external DNS provider.
+  versions:
+    - name: {{ .Values.providers.hosted.providerVersion | quote }}
+      served: true
+      storage: true
+      zoneClass:
+        schemas:
+          parameters:
+            openAPIV3Schema:
+              type: object
+              description: Authoritative nameservers, SOA policy, and read-only verification views.
+              additionalProperties: false
+              required: [nameServers]
+              properties:
+                nameServers:
+                  type: array
+                  description: Authoritative names and deterministic glue addresses.
+                  minItems: 1
+                  maxItems: 8
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [name, addresses]
+                    properties:
+                      name:
+                        type: string
+                        description: Canonical lowercase FQDN without a trailing root dot.
+                        minLength: 1
+                        maxLength: 253
+                        pattern: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$'
+                      addresses:
+                        type: array
+                        description: Canonical IPv4 or IPv6 glue addresses.
+                        minItems: 1
+                        maxItems: 8
+                        items:
+                          type: string
+                          minLength: 2
+                          maxLength: 45
+                soa:
+                  type: object
+                  description: SOA policy; mname is the first nameserver and serial is controller-owned.
+                  additionalProperties: false
+                  properties:
+                    rname:
+                      type: string
+                      description: Canonical mailbox name; omitted means hostmaster.<domainName>.
+                      minLength: 1
+                      maxLength: 253
+                      pattern: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$'
+                    refresh:
+                      type: integer
+                      minimum: 1
+                      maximum: 2419200
+                      default: 3600
+                    retry:
+                      type: integer
+                      minimum: 1
+                      maximum: 2419200
+                      default: 900
+                    expire:
+                      type: integer
+                      minimum: 1
+                      maximum: 2419200
+                      default: 1209600
+                    minimum:
+                      type: integer
+                      minimum: 1
+                      maximum: 2419200
+                      default: 300
+                defaultTTL:
+                  type: integer
+                  description: TTL of apex NS, glue, and endpoint-converted RRsets.
+                  minimum: 1
+                  maximum: 86400
+                  default: 60
+                verification:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    views:
+                      type: array
+                      description: Canonical IP:port DNS endpoints; omitted views use the hosted server Service.
+                      maxItems: 3
+                      uniqueItems: true
+                      items:
+                        type: string
+                        minLength: 3
+                        maxLength: 64
+                        pattern: '^(\[[0-9a-f:.]+\]|[0-9.]+):[1-9][0-9]{0,4}$'
+                    delegation:
+                      type: object
+                      description: Resolver policy for read-only observation of parent NS delegation.
+                      additionalProperties: false
+                      properties:
+                        resolver:
+                          type: object
+                          description: Resolver view used for every parent delegation query.
+                          additionalProperties: false
+                          properties:
+                            mode:
+                              type: string
+                              description: Cluster uses pod DNS; Recursive uses every configured server. Omitted means Cluster.
+                              enum: [Cluster, Recursive]
+                            servers:
+                              type: array
+                              description: Explicit recursive DNS IP endpoints; never authoritative NS names.
+                              maxItems: 3
+                              uniqueItems: true
+                              items:
+                                type: string
+                                description: One recursive resolver endpoint as IPv4:port or [IPv6]:port.
+                                minLength: 3
+                                maxLength: 64
+                                pattern: '^(\[[0-9a-f:.]+\]|[0-9.]+):[1-9][0-9]{0,4}$'
+        validationRules:
+          - rule: >-
+              self.spec.parameters.nameServers.all(n,
+                !isIP(n.name) && n.addresses.all(a, isIP(a) && ip.isCanonical(a)))
+            message: nameServers must contain DNS names and canonical IP addresses
+          - rule: >-
+              !has(self.spec.parameters.soa) || !has(self.spec.parameters.soa.rname) ||
+              !isIP(self.spec.parameters.soa.rname)
+            message: soa.rname must be a DNS mailbox name, not an IP address
+          - rule: >-
+              !has(self.spec.parameters.verification) || !has(self.spec.parameters.verification.views) ||
+              self.spec.parameters.verification.views.all(s,
+                cel.bind(host, s.startsWith('[') ? s.split(']')[0].substring(1) : s.split(':')[0],
+                cel.bind(port, s.startsWith('[') ? s.split(']:')[1] : s.split(':')[1],
+                  isIP(host) && ip.isCanonical(host) &&
+                  (s.startsWith('[') ? ip(host).family() == 6 : ip(host).family() == 4) &&
+                  int(port) >= 1 && int(port) <= 65535)))
+            message: verification.views must contain canonical IP addresses and ports from 1 through 65535
+          - rule: >-
+              has(self.spec.parameters.verification) &&
+              has(self.spec.parameters.verification.delegation) &&
+              has(self.spec.parameters.verification.delegation.resolver) &&
+              has(self.spec.parameters.verification.delegation.resolver.mode) &&
+              self.spec.parameters.verification.delegation.resolver.mode == 'Recursive'
+                ? (has(self.spec.parameters.verification.delegation.resolver.servers) && size(self.spec.parameters.verification.delegation.resolver.servers) > 0)
+                : (!has(self.spec.parameters.verification) || !has(self.spec.parameters.verification.delegation) ||
+                   !has(self.spec.parameters.verification.delegation.resolver) ||
+                   !has(self.spec.parameters.verification.delegation.resolver.servers) ||
+                   size(self.spec.parameters.verification.delegation.resolver.servers) == 0)
+            message: verification.delegation.resolver.servers must be nonempty for Recursive and empty for Cluster
+          - rule: >-
+              !has(self.spec.parameters.verification) || !has(self.spec.parameters.verification.delegation) ||
+              !has(self.spec.parameters.verification.delegation.resolver) ||
+              !has(self.spec.parameters.verification.delegation.resolver.servers) ||
+              self.spec.parameters.verification.delegation.resolver.servers.all(s,
+                cel.bind(host, s.startsWith('[') ? s.split(']')[0].substring(1) : s.split(':')[0],
+                cel.bind(port, s.startsWith('[') ? s.split(']:')[1] : s.split(':')[1],
+                  isIP(host) && ip.isCanonical(host) &&
+                  (s.startsWith('[') ? ip(host).family() == 6 : ip(host).family() == 4) &&
+                  int(port) >= 1 && int(port) <= 65535)))
+            message: verification.delegation.resolver.servers must contain canonical IP addresses and ports from 1 through 65535
+      zone:
+        schemas:
+          adoption: &empty
+            openAPIV3Schema:
+              type: object
+              additionalProperties: false
+              properties: {}
+          statusProviderData:
+            openAPIV3Schema:
+              type: object
+              description: Current hosted snapshot and bounded serving and delegation observations.
+              additionalProperties: false
+              properties:
+                serial:
+                  type: integer
+                  description: Serial of the current desired hosted snapshot.
+                  minimum: 1
+                  maximum: 4294967295
+                contentDigest:
+                  type: string
+                  description: SHA-256 digest binding the desired serial to exact rendered zone content.
+                  pattern: '^sha256:[0-9a-f]{64}$'
+                servers:
+                  type: array
+                  description: Up to sixty-four observed hosted server acknowledgements.
+                  maxItems: 64
+                  items:
+                    type: object
+                    description: Exact snapshot acknowledged by one hosted server.
+                    additionalProperties: false
+                    required: [endpoint, serial, contentDigest, observedAt]
+                    properties:
+                      endpoint:
+                        type: string
+                        description: Server pod identity as namespace/name, not a DNS resolver endpoint.
+                        minLength: 1
+                      serial:
+                        type: integer
+                        description: Snapshot serial loaded by this server.
+                        minimum: 1
+                        maximum: 4294967295
+                      contentDigest:
+                        type: string
+                        description: SHA-256 digest of the exact snapshot loaded by this server.
+                        pattern: '^sha256:[0-9a-f]{64}$'
+                      observedAt:
+                        type: string
+                        description: Time at which this server acknowledged its loaded snapshot.
+                        format: date-time
+                delegation:
+                  type: object
+                  description: Latest parent delegation observation; never changes Programmed.
+                  additionalProperties: false
+                  required: [observedNameServers, matches, lastProbeTime]
+                  properties:
+                    observedNameServers:
+                      type: array
+                      description: Up to sixteen observed apex NS names, normalized to lowercase without a trailing dot.
+                      maxItems: 16
+                      items:
+                        type: string
+                        description: One normalized authoritative nameserver name observed at the zone apex.
+                        maxLength: 253
+                    matches:
+                      type: boolean
+                      description: observed apex NS name set (lowercase, no trailing dot) equals the configured nameServers[].name set
+                    lastProbeTime:
+                      type: string
+                      description: Time of the last completed delegation probe attempt, including failures.
+                      format: date-time
+                    error:
+                      type: string
+                      description: Bounded public diagnostic for a failed delegation probe; omitted on success.
+                      maxLength: 512
+        additionalConditionReasons:
+          - {conditionType: Programmed, status: 'False', reason: ServingPending, description: No hosted server has acknowledged the current snapshot.}
+          - {conditionType: Programmed, status: 'False', reason: SnapshotRejected, description: The API server rejected the snapshot or an unowned snapshot shadows the unit.}
+      recordSet:
+        supportedTypes: [A, AAAA, CNAME, TXT, MX, CAA, NS]
+        schemas:
+          options: *empty
+          adoption: *empty
+          statusProviderData:
+            openAPIV3Schema:
+              type: object
+              description: Snapshot publication evidence for this record set generation.
+              additionalProperties: false
+              required: [serial]
+              properties:
+                serial:
+                  type: integer
+                  description: First snapshot serial containing this record set generation.
+                  minimum: 1
+                  maximum: 4294967295
+                servedAt:
+                  type: string
+                  format: date-time
+                  description: Time that a hosted server acknowledged this generation's snapshot; omitted while serving is pending.
+        additionalConditionReasons:
+          - {conditionType: Programmed, status: 'False', reason: ServingPending, description: No hosted server has acknowledged the snapshot containing this generation.}
+        validationRules:
+          - rule: "!(self.spec.name == '@' && self.spec.type == 'NS')"
+            message: apex NS is owned by the ZoneClass nameServers parameter
+      zoneUnit:
+        validationRules:
+          - rule: "!(self.name == '@' && self.type == 'NS') && !(other.name == '@' && other.type == 'NS')"
+            message: apex NS is owned by the ZoneClass nameServers parameter
+      recordWithdrawal:
+        supported: true
+        schemas:
+          statusProviderData:
+            openAPIV3Schema:
+              type: object
+              description: Bounded withdrawal diagnostics; complete typed evidence drives verification.
+              additionalProperties: false
+              properties:
+                views:
+                  type: object
+                  description: Sorted bounded diagnostic preview; equality uses the complete observation.
+                  additionalProperties: false
+                  required: [total, truncated]
+                  properties:
+                    values:
+                      type: array
+                      description: Up to sixteen typed values or diagnostic entries.
+                      maxItems: 16
+                      items:
+                        type: string
+                        description: One bounded value or diagnostic entry.
+                        maxLength: 512
+                    total:
+                      type: integer
+                      description: Total entries before truncation.
+                      minimum: 0
+                    truncated:
+                      type: boolean
+                      description: Whether values omits entries from the complete observation.
+        additionalConditionReasons:
+          - {conditionType: Withdrawn, status: 'False', reason: DNSStillResolves, description: A required observation still returns the retired address.}
+          - {conditionType: Ready, status: 'False', reason: DNSStillResolves, description: A required observation still returns the retired address.}
+          - {conditionType: Withdrawn, status: 'False', reason: NegativeTTLNotElapsed, description: Cache safety and a separate confirming attempt are pending.}
+          - {conditionType: Ready, status: 'False', reason: NegativeTTLNotElapsed, description: Cache safety and a separate confirming attempt are pending.}
+          - {conditionType: Withdrawn, status: 'Unknown', reason: DNSProbeFailed, description: Required exclusion evidence is incomplete.}
+          - {conditionType: Ready, status: 'False', reason: DNSProbeFailed, description: Required exclusion evidence is incomplete.}
+          - {conditionType: Withdrawn, status: 'Unknown', reason: PolicyChanged, description: The binding or required view policy changed.}
+          - {conditionType: Ready, status: 'False', reason: PolicyChanged, description: The binding or required view policy changed.}
+          - {conditionType: Withdrawn, status: 'True', reason: WithdrawalVerified, description: Complete exclusion verified after the cache horizon.}
+          - {conditionType: Ready, status: 'True', reason: WithdrawalVerified, description: Complete exclusion verified after the cache horizon.}
+          - {conditionType: OverrideAccepted, status: 'True', reason: OperatorAuthorizedRelease, description: An exact separately authorized waiver accepts stale DNS risk.}
+{{- end }}

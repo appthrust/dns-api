@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	externalv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/external/v1alpha1"
+	hostedv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/hosted/v1alpha1"
 )
 
 func TestProviderEnablementEnvironmentDefaults(t *testing.T) {
@@ -17,6 +18,7 @@ func TestProviderEnablementEnvironmentDefaults(t *testing.T) {
 		"CLOUDFLARE_CONTROLLER_ENABLED":       true,
 		"ROUTE53_ENDPOINT_CONVERSION_ENABLED": true,
 		"EXTERNAL_CONTROLLER_ENABLED":         false,
+		"HOSTED_CONTROLLER_ENABLED":           false,
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, test := range []struct {
@@ -39,6 +41,12 @@ func TestProviderEnablementEnvironmentDefaults(t *testing.T) {
 func TestExternalSchemeRegistered(t *testing.T) {
 	if !scheme.IsVersionRegistered(externalv1alpha1.SchemeGroupVersion) {
 		t.Fatal("external API scheme is not registered")
+	}
+}
+
+func TestHostedSchemeRegistered(t *testing.T) {
+	if !scheme.IsVersionRegistered(hostedv1alpha1.SchemeGroupVersion) {
+		t.Fatal("hosted API scheme is not registered")
 	}
 }
 
@@ -82,6 +90,11 @@ func TestManagerProviderFlags(t *testing.T) {
 		"external-provider-version":           "v1alpha1",
 		"external-dns-qps":                    "40",
 		"external-dns-burst":                  "80",
+		"hosted-controller-enabled":           "false",
+		"hosted-controller-name":              "hosted.dns.appthrust.io/controller",
+		"hosted-provider-name":                "hosted.dns.appthrust.io",
+		"hosted-provider-version":             "v1alpha1",
+		"hosted-endpoint-ttl":                 "60",
 	}
 	for _, mode := range []string{"defaults", "environment", "flags-override-environment"} {
 		t.Run(mode, func(t *testing.T) {
@@ -98,6 +111,8 @@ func TestManagerProviderFlags(t *testing.T) {
 						if fallback == "false" {
 							value = "true"
 						}
+					} else if name == "hosted-endpoint-ttl" {
+						value = "120"
 					} else {
 						value = "environment-" + name
 					}
@@ -133,6 +148,19 @@ func TestManagerProviderFlags(t *testing.T) {
 				if actual[name] != want {
 					t.Errorf("--%s = %q, want %q", name, actual[name], want)
 				}
+			}
+		})
+	}
+}
+
+func TestHostedEndpointTTLRejectedBeforeManagerStartup(t *testing.T) {
+	for _, value := range []string{"0", "86401"} {
+		t.Run(value, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestManagerFlagsProcess$", "--", "--hosted-controller-enabled=true", "--hosted-endpoint-ttl="+value)
+			cmd.Env = append(os.Environ(), "DNS_API_TEST_MANAGER_FLAGS=1", "HOSTED_ENDPOINT_TTL=")
+			output, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), "hosted endpoint TTL must be between 1 and 86400 seconds") {
+				t.Fatalf("unexpected invalid TTL result: %v\n%s", err, output)
 			}
 		})
 	}

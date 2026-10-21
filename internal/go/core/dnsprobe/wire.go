@@ -1,4 +1,4 @@
-package probe
+package dnsprobe
 
 import (
 	"context"
@@ -11,8 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/appthrust/dns-api/internal/go/providers/external/config"
-	externalv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/external/v1alpha1"
 	"github.com/miekg/dns"
 	"golang.org/x/time/rate"
 )
@@ -30,12 +28,15 @@ type WireOptions struct {
 	QPS        float64
 	Burst      int
 	ResolvConf string
+	// Provider is the controller's static metric attribution, never a zone name.
+	Provider string
 }
 
 type WireResolver struct {
 	limiter    *rate.Limiter
 	slots      chan struct{}
 	resolvConf string
+	provider   string
 }
 
 func NewWireResolver(options WireOptions) (*WireResolver, error) {
@@ -46,45 +47,48 @@ func NewWireResolver(options WireOptions) (*WireResolver, error) {
 		options.Burst = DefaultBurst
 	}
 	if options.QPS <= 0 || math.IsNaN(options.QPS) || math.IsInf(options.QPS, 0) || options.Burst < 1 {
-		return nil, fmt.Errorf("external DNS QPS and burst must be positive and finite")
+		return nil, fmt.Errorf("DNS QPS and burst must be positive and finite")
 	}
 	if options.ResolvConf == "" {
 		options.ResolvConf = "/etc/resolv.conf"
 	}
-	return &WireResolver{limiter: rate.NewLimiter(rate.Limit(options.QPS), options.Burst), slots: make(chan struct{}, MaxConcurrentNames), resolvConf: options.ResolvConf}, nil
+	if options.Provider == "" {
+		options.Provider = "unspecified"
+	}
+	return &WireResolver{limiter: rate.NewLimiter(rate.Limit(options.QPS), options.Burst), slots: make(chan struct{}, MaxConcurrentNames), resolvConf: options.ResolvConf, provider: options.Provider}, nil
 }
 
 // EffectivePolicy rereads resolv.conf each reconcile so changes invalidate receipts.
-func (r *WireResolver) EffectivePolicy(policy externalv1alpha1.ExternalZoneClassParameters) (externalv1alpha1.ExternalZoneClassParameters, error) {
-	policy.Resolver.Servers = slices.Clone(policy.Resolver.Servers)
-	if policy.Resolver.Mode == "" {
-		policy.Resolver.Mode = externalv1alpha1.ResolverModeCluster
+func (r *WireResolver) EffectivePolicy(policy Policy) (Policy, error) {
+	policy.Servers = slices.Clone(policy.Servers)
+	if policy.Mode == "" {
+		policy.Mode = ModeCluster
 	}
-	if policy.Resolver.Mode == externalv1alpha1.ResolverModeCluster {
+	if policy.Mode == ModeCluster {
 		conf, err := dns.ClientConfigFromFile(r.resolvConf)
 		if err != nil {
 			return policy, errors.New("resolver-config")
 		}
-		policy.Resolver.Servers = nil
+		policy.Servers = nil
 		for _, host := range conf.Servers {
 			ip, err := netip.ParseAddr(host)
 			if err != nil || ip.Zone() != "" {
 				return policy, errors.New("resolver-config")
 			}
-			policy.Resolver.Servers = append(policy.Resolver.Servers, net.JoinHostPort(ip.String(), conf.Port))
+			policy.Servers = append(policy.Servers, net.JoinHostPort(ip.String(), conf.Port))
 		}
-		slices.Sort(policy.Resolver.Servers)
-		policy.Resolver.Servers = slices.Compact(policy.Resolver.Servers)
+		slices.Sort(policy.Servers)
+		policy.Servers = slices.Compact(policy.Servers)
 	}
-	if config.ValidateServers(policy.Resolver.Servers) != nil {
+	if ValidateServers(policy.Servers) != nil {
 		return policy, errors.New("resolver-config")
 	}
-	slices.Sort(policy.Resolver.Servers)
+	slices.Sort(policy.Servers)
 	return policy, nil
 }
 
 func (r *WireResolver) Probe(ctx context.Context, request ProbeRequest) (ProbeResult, error) {
-	if config.ValidateServers(request.Policy.Resolver.Servers) != nil {
+	if ValidateServers(request.Policy.Servers) != nil {
 		return ProbeResult{}, errors.New("resolver-config")
 	}
 	queued := time.Now()
@@ -101,7 +105,7 @@ func (r *WireResolver) Probe(ctx context.Context, request ProbeRequest) (ProbeRe
 	if err := r.limiter.Wait(ctx); err != nil {
 		return ProbeResult{}, err
 	}
-	ObserveQueueDelay(time.Since(queued))
+	observeQueueDelay(r.provider, time.Since(queued))
 	ctx, cancel := context.WithTimeout(ctx, NameTimeout)
 	defer cancel()
 	start := time.Now()
@@ -110,7 +114,7 @@ func (r *WireResolver) Probe(ctx context.Context, request ProbeRequest) (ProbeRe
 	if request.ZoneOnly {
 		result.Zone = session.zone(ctx, request)
 	} else {
-		for _, server := range request.Policy.Resolver.Servers {
+		for _, server := range request.Policy.Servers {
 			result.Views = append(result.Views, session.resolve(ctx, request.Name, server, "", request.Zone))
 		}
 		if len(request.Policy.ExpectedNameservers) != 0 {
@@ -118,7 +122,7 @@ func (r *WireResolver) Probe(ctx context.Context, request ProbeRequest) (ProbeRe
 				return ProbeResult{}, errors.New("invalid-response")
 			}
 			for _, authority := range request.Evidence.Authorities {
-				view := session.resolve(ctx, request.Name, request.Policy.Resolver.Servers[0], authority, request.Zone)
+				view := session.resolve(ctx, request.Name, request.Policy.Servers[0], authority, request.Zone)
 				result.Views = append(result.Views, view)
 				foreign := request.WithdrawalAddress != ""
 				for _, target := range view.Chain {
@@ -128,24 +132,18 @@ func (r *WireResolver) Probe(ctx context.Context, request ProbeRequest) (ProbeRe
 					}
 				}
 				if foreign {
-					for _, server := range request.Policy.Resolver.Servers[1:] {
+					for _, server := range request.Policy.Servers[1:] {
 						result.Views = append(result.Views, session.resolve(ctx, request.Name, server, authority, request.Zone))
 					}
 				}
 			}
 		}
 	}
-	decision := Evaluate(request, result)
-	if request.ZoneOnly {
-		decision = EvaluateZone(request, result.Zone)
-	} else if request.WithdrawalAddress != "" {
-		decision = EvaluateWithdrawal(request, result).Decision
-	}
-	outcome := decision.Outcome()
+	outcome := observationOutcome(result)
 	for qtype, count := range session.qtypes {
-		probes.WithLabelValues(outcome, dns.TypeToString[qtype]).Add(float64(count))
+		probes.WithLabelValues(r.provider, outcome, dns.TypeToString[qtype]).Add(float64(count))
 	}
-	duration.WithLabelValues(outcome).Observe(time.Since(start).Seconds())
+	duration.WithLabelValues(r.provider, outcome).Observe(time.Since(start).Seconds())
 	return result, nil
 }
 
@@ -267,10 +265,10 @@ func (s *wireSession) resolve(ctx context.Context, name, recursive, authority, z
 				default:
 					continue
 				}
-				view.TTL = minTTL(view.TTL, &ttl)
+				view.TTL = MinTTL(view.TTL, &ttl)
 			}
 			if reply.Rcode == dns.RcodeNameError || ownerAnswers == 0 {
-				view.NegativeTTL = minTTL(view.NegativeTTL, negativeTTL(reply))
+				view.NegativeTTL = MinTTL(view.NegativeTTL, negativeTTL(reply))
 			}
 		}
 		if rcodes[0] != rcodes[1] {
@@ -302,7 +300,7 @@ func negativeTTL(reply *dns.Msg) *uint32 {
 	for _, rr := range reply.Ns {
 		if soa, ok := rr.(*dns.SOA); ok {
 			value := min(soa.Hdr.Ttl, soa.Minttl)
-			ttl = minTTL(ttl, &value)
+			ttl = MinTTL(ttl, &value)
 		}
 	}
 	return ttl
@@ -324,7 +322,7 @@ func (s *wireSession) apex(ctx context.Context, server, zone string, rd bool) Au
 			return view
 		}
 		view.Authoritative = reply.Authoritative
-		view.NegativeTTL = minTTL(view.NegativeTTL, negativeTTL(reply))
+		view.NegativeTTL = MinTTL(view.NegativeTTL, negativeTTL(reply))
 		for _, rr := range reply.Answer {
 			if CanonicalName(rr.Header().Name) != zone {
 				continue
@@ -338,7 +336,7 @@ func (s *wireSession) apex(ctx context.Context, server, zone string, rd bool) Au
 			default:
 				continue
 			}
-			view.TTL = minTTL(view.TTL, &ttl)
+			view.TTL = MinTTL(view.TTL, &ttl)
 		}
 	}
 	view.Nameservers = Names(view.Nameservers)
@@ -350,7 +348,7 @@ func (s *wireSession) zone(ctx context.Context, request ProbeRequest) *ZoneEvide
 	if len(request.Policy.ExpectedNameservers) == 0 {
 		return evidence
 	}
-	for _, server := range request.Policy.Resolver.Servers {
+	for _, server := range request.Policy.Servers {
 		evidence.Views = append(evidence.Views, s.apex(ctx, server, request.Zone, true))
 	}
 	// A wrong delegation is completed evidence; never send to unverified authority destinations.
@@ -359,7 +357,7 @@ func (s *wireSession) zone(ctx context.Context, request ProbeRequest) *ZoneEvide
 	}
 	for _, host := range request.Policy.ExpectedNameservers {
 		var addresses []string
-		for viewIndex, server := range request.Policy.Resolver.Servers {
+		for viewIndex, server := range request.Policy.Servers {
 			view := s.resolve(ctx, host, server, "", "")
 			if view.Failure != "" || view.Mismatch || view.RCode != dns.RcodeSuccess || len(view.A)+len(view.AAAA) == 0 {
 				failure := view.Failure
@@ -369,7 +367,7 @@ func (s *wireSession) zone(ctx context.Context, request ProbeRequest) *ZoneEvide
 				evidence.Views = append(evidence.Views, AuthorityObservation{ID: view.ID, Failure: failure})
 				return evidence
 			}
-			evidence.Views[viewIndex].TTL = minTTL(evidence.Views[viewIndex].TTL, view.TTL)
+			evidence.Views[viewIndex].TTL = MinTTL(evidence.Views[viewIndex].TTL, view.TTL)
 			addresses = append(addresses, view.A...)
 			addresses = append(addresses, view.AAAA...)
 		}

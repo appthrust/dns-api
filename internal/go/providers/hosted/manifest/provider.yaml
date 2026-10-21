@@ -85,7 +85,7 @@ spec:
                   type: object
                   additionalProperties: false
                   properties:
-                    views: &endpoints
+                    views:
                       type: array
                       description: Canonical IP:port DNS endpoints; omitted views use the hosted server Service.
                       maxItems: 3
@@ -97,10 +97,29 @@ spec:
                         pattern: '^(\[[0-9a-f:.]+\]|[0-9.]+):[1-9][0-9]{0,4}$'
                     delegation:
                       type: object
-                      description: Recursive endpoints for observation of parent NS delegation only.
+                      description: Resolver policy for read-only observation of parent NS delegation.
                       additionalProperties: false
                       properties:
-                        resolvers: *endpoints
+                        resolver:
+                          type: object
+                          description: Resolver view used for every parent delegation query.
+                          additionalProperties: false
+                          properties:
+                            mode:
+                              type: string
+                              description: Cluster uses pod DNS; Recursive uses every configured server. Omitted means Cluster.
+                              enum: [Cluster, Recursive]
+                            servers:
+                              type: array
+                              description: Explicit recursive DNS IP endpoints; never authoritative NS names.
+                              maxItems: 3
+                              uniqueItems: true
+                              items:
+                                type: string
+                                description: One recursive resolver endpoint as IPv4:port or [IPv6]:port.
+                                minLength: 3
+                                maxLength: 64
+                                pattern: '^(\[[0-9a-f:.]+\]|[0-9.]+):[1-9][0-9]{0,4}$'
         validationRules:
           - rule: >-
               self.spec.parameters.nameServers.all(n,
@@ -120,15 +139,28 @@ spec:
                   int(port) >= 1 && int(port) <= 65535)))
             message: verification.views must contain canonical IP addresses and ports from 1 through 65535
           - rule: >-
+              has(self.spec.parameters.verification) &&
+              has(self.spec.parameters.verification.delegation) &&
+              has(self.spec.parameters.verification.delegation.resolver) &&
+              has(self.spec.parameters.verification.delegation.resolver.mode) &&
+              self.spec.parameters.verification.delegation.resolver.mode == 'Recursive'
+                ? (has(self.spec.parameters.verification.delegation.resolver.servers) && size(self.spec.parameters.verification.delegation.resolver.servers) > 0)
+                : (!has(self.spec.parameters.verification) || !has(self.spec.parameters.verification.delegation) ||
+                   !has(self.spec.parameters.verification.delegation.resolver) ||
+                   !has(self.spec.parameters.verification.delegation.resolver.servers) ||
+                   size(self.spec.parameters.verification.delegation.resolver.servers) == 0)
+            message: verification.delegation.resolver.servers must be nonempty for Recursive and empty for Cluster
+          - rule: >-
               !has(self.spec.parameters.verification) || !has(self.spec.parameters.verification.delegation) ||
-              !has(self.spec.parameters.verification.delegation.resolvers) ||
-              self.spec.parameters.verification.delegation.resolvers.all(s,
+              !has(self.spec.parameters.verification.delegation.resolver) ||
+              !has(self.spec.parameters.verification.delegation.resolver.servers) ||
+              self.spec.parameters.verification.delegation.resolver.servers.all(s,
                 cel.bind(host, s.startsWith('[') ? s.split(']')[0].substring(1) : s.split(':')[0],
                 cel.bind(port, s.startsWith('[') ? s.split(']:')[1] : s.split(':')[1],
                   isIP(host) && ip.isCanonical(host) &&
                   (s.startsWith('[') ? ip(host).family() == 6 : ip(host).family() == 4) &&
                   int(port) >= 1 && int(port) <= 65535)))
-            message: verification.delegation.resolvers must contain canonical IP addresses and ports from 1 through 65535
+            message: verification.delegation.resolver.servers must contain canonical IP addresses and ports from 1 through 65535
       zone:
         schemas:
           adoption: &empty
@@ -144,45 +176,65 @@ spec:
               properties:
                 serial:
                   type: integer
+                  description: Serial of the current desired hosted snapshot.
                   minimum: 1
                   maximum: 4294967295
                 contentDigest:
                   type: string
+                  description: SHA-256 digest binding the desired serial to exact rendered zone content.
                   pattern: '^sha256:[0-9a-f]{64}$'
                 servers:
                   type: array
+                  description: Up to sixty-four observed hosted server acknowledgements.
                   maxItems: 64
                   items:
                     type: object
+                    description: Exact snapshot acknowledged by one hosted server.
                     additionalProperties: false
-                    required: [endpoint, serial, observedAt]
+                    required: [endpoint, serial, contentDigest, observedAt]
                     properties:
                       endpoint:
                         type: string
+                        description: Server pod identity as namespace/name, not a DNS resolver endpoint.
                         minLength: 1
                       serial:
                         type: integer
+                        description: Snapshot serial loaded by this server.
                         minimum: 1
                         maximum: 4294967295
+                      contentDigest:
+                        type: string
+                        description: SHA-256 digest of the exact snapshot loaded by this server.
+                        pattern: '^sha256:[0-9a-f]{64}$'
                       observedAt:
                         type: string
+                        description: Time at which this server acknowledged its loaded snapshot.
                         format: date-time
                 delegation:
                   type: object
+                  description: Latest parent delegation observation; never changes Programmed.
                   additionalProperties: false
                   required: [observedNameServers, matches, lastProbeTime]
                   properties:
                     observedNameServers:
                       type: array
+                      description: Up to sixteen observed apex NS names, normalized to lowercase without a trailing dot.
                       maxItems: 16
                       items:
                         type: string
+                        description: One normalized authoritative nameserver name observed at the zone apex.
                         maxLength: 253
                     matches:
                       type: boolean
+                      description: observed apex NS name set (lowercase, no trailing dot) equals the configured nameServers[].name set
                     lastProbeTime:
                       type: string
+                      description: Time of the last completed delegation probe attempt, including failures.
                       format: date-time
+                    error:
+                      type: string
+                      description: Bounded public diagnostic for a failed delegation probe; omitted on success.
+                      maxLength: 512
         additionalConditionReasons:
           - {conditionType: Programmed, status: 'False', reason: ServingPending, description: No hosted server has acknowledged the current snapshot.}
           - {conditionType: Programmed, status: 'False', reason: SnapshotRejected, description: The API server rejected the snapshot or an unowned snapshot shadows the unit.}
@@ -191,6 +243,22 @@ spec:
         schemas:
           options: *empty
           adoption: *empty
+          statusProviderData:
+            openAPIV3Schema:
+              type: object
+              description: Snapshot publication evidence for this record set generation.
+              additionalProperties: false
+              required: [serial]
+              properties:
+                serial:
+                  type: integer
+                  description: First snapshot serial containing this record set generation.
+                  minimum: 1
+                  maximum: 4294967295
+                servedAt:
+                  type: string
+                  format: date-time
+                  description: Time that a hosted server acknowledged this generation's snapshot; omitted while serving is pending.
         additionalConditionReasons:
           - {conditionType: Programmed, status: 'False', reason: ServingPending, description: No hosted server has acknowledged the snapshot containing this generation.}
         validationRules:

@@ -61,15 +61,22 @@ type SOAParameters struct {
 }
 
 // VerificationPolicy selects independent canonical IP:port endpoints. Empty
-// Views selects the hosted server Service; delegation observation is optional.
+// Views selects the hosted server Service; delegation uses its resolver policy.
 type VerificationPolicy struct {
 	Views      []string         `json:"views,omitempty"`
 	Delegation DelegationPolicy `json:"delegation,omitempty"`
 }
 
-// DelegationPolicy selects recursive IP:port endpoints for parent NS observation.
+// DelegationPolicy selects the resolver view for parent NS observation.
 type DelegationPolicy struct {
-	Resolvers []string `json:"resolvers,omitempty"`
+	Resolver ResolverPolicy `json:"resolver,omitempty"`
+}
+
+// ResolverPolicy uses pod DNS in Cluster mode (the default). Recursive mode
+// requires one to three canonical IP:port servers; Cluster leaves servers empty.
+type ResolverPolicy struct {
+	Mode    string   `json:"mode,omitempty"`
+	Servers []string `json:"servers,omitempty"`
 }
 
 // HostedZone is the complete authoritative serving snapshot of one ZoneUnit.

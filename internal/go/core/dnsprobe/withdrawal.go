@@ -1,4 +1,4 @@
-package probe
+package dnsprobe
 
 import (
 	"fmt"
@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/appthrust/dns-api/internal/go/providers/external/config"
 	"github.com/miekg/dns"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -45,7 +44,7 @@ func WithdrawalFailed(name, view, failure string) WithdrawalDecision {
 	default:
 		failure = "transport"
 	}
-	return WithdrawalDecision{Decision: Decision{Status: metav1.ConditionUnknown, Reason: "DNSProbeFailed", Message: bounded(fmt.Sprintf("External DNS withdrawal cannot be verified for %s in %s: %s.", name, view, failure))}}
+	return WithdrawalDecision{Decision: Decision{Status: metav1.ConditionUnknown, Reason: "DNSProbeFailed", Message: Bounded(fmt.Sprintf("DNS withdrawal cannot be verified for %s in %s: %s.", name, view, failure))}}
 }
 
 // EvaluateWithdrawal proves only current exclusion. The reconciler additionally
@@ -62,10 +61,10 @@ func EvaluateWithdrawal(request ProbeRequest, result ProbeResult) WithdrawalDeci
 		decision.Cache = positiveWithdrawalEvidence(result, address)
 		return decision
 	}
-	if len(request.Policy.Resolver.Servers) == 0 || len(result.Views) == 0 {
+	if len(request.Policy.Servers) == 0 || len(result.Views) == 0 {
 		return fail("required-views", "invalid-response")
 	}
-	for _, server := range request.Policy.Resolver.Servers {
+	for _, server := range request.Policy.Servers {
 		if !slices.ContainsFunc(result.Views, func(v View) bool { return v.ID == "recursive/"+server }) {
 			return fail("recursive/"+server, "invalid-response")
 		}
@@ -76,7 +75,7 @@ func EvaluateWithdrawal(request ProbeRequest, result ProbeResult) WithdrawalDeci
 		}
 		for _, authority := range request.Evidence.Authorities {
 			prefix := "authority/" + authority + "/via/"
-			for _, server := range request.Policy.Resolver.Servers {
+			for _, server := range request.Policy.Servers {
 				if !slices.ContainsFunc(result.Views, func(v View) bool { return v.ID == prefix+server && v.Authoritative }) {
 					return fail(prefix+server, "invalid-response")
 				}
@@ -101,7 +100,7 @@ func EvaluateWithdrawal(request ProbeRequest, result ProbeResult) WithdrawalDeci
 		}
 		if qtype != "" && decision.Status == metav1.ConditionTrue {
 			decision.Status, decision.Reason = metav1.ConditionFalse, "DNSStillResolves"
-			decision.Message = bounded(fmt.Sprintf("DNS %s still resolves to retired address %s in %s (%s).", request.Name, address, view.ID, qtype))
+			decision.Message = Bounded(fmt.Sprintf("DNS %s still resolves to retired address %s in %s (%s).", request.Name, address, view.ID, qtype))
 		}
 	}
 	return decision
@@ -127,7 +126,7 @@ func withdrawalViewEvidence(name string, address netip.Addr, view View) ([]Withd
 	owners := append([]string{CanonicalName(name)}, namesInOrder(view.Chain)...)
 	seen := map[string]bool{}
 	for _, owner := range owners {
-		if seen[owner] || !config.ValidName(owner) {
+		if seen[owner] || !ValidName(owner) {
 			return nil, "", "invalid-response"
 		}
 		seen[owner] = true
@@ -313,7 +312,7 @@ func answerEvidence(reply *dns.Msg, name string, qtype uint16) AnswerEvidence {
 				continue
 			}
 			owner := CanonicalName(soa.Hdr.Name)
-			if (owner != "" && owner != name && !strings.HasSuffix(name, "."+owner)) || soa.Hdr.Class != dns.ClassINET || !config.ValidName(CanonicalName(soa.Ns)) || !config.ValidName(CanonicalName(soa.Mbox)) {
+			if (owner != "" && owner != name && !strings.HasSuffix(name, "."+owner)) || soa.Hdr.Class != dns.ClassINET || !ValidName(CanonicalName(soa.Ns)) || !ValidName(CanonicalName(soa.Mbox)) {
 				answer.Failure = "invalid-response"
 				continue
 			}

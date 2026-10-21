@@ -13,6 +13,9 @@ import (
 	endpointv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/endpoint/v1alpha1"
 	hostedv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/hosted/v1alpha1"
 	"github.com/google/cel-go/cel"
+	apiextensions "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apiservervalidation "k8s.io/apiextensions-apiserver/pkg/apiserver/validation"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/yaml"
@@ -111,8 +114,17 @@ func TestHostedParametersAndCEL(t *testing.T) {
 		valid            bool
 	}{
 		{"minimal", `{` + ns + `}`, true},
-		{"full", `{` + ns + `,"soa":{"rname":"hostmaster.example.test","refresh":3600,"retry":900,"expire":1209600,"minimum":300},"defaultTTL":60,"verification":{"views":["192.0.2.53:53","[2001:db8::53]:5353"],"delegation":{"resolvers":["192.0.2.54:53"]}}}`, true},
+		{"full", `{` + ns + `,"soa":{"rname":"hostmaster.example.test","refresh":3600,"retry":900,"expire":1209600,"minimum":300},"defaultTTL":60,"verification":{"views":["192.0.2.53:53","[2001:db8::53]:5353"],"delegation":{"resolver":{"mode":"Recursive","servers":["192.0.2.54:53"]}}}}`, true},
 		{"empty optional objects", `{` + ns + `,"soa":{},"verification":{"delegation":{}}}`, true},
+		{"empty delegation resolver", `{` + ns + `,"verification":{"delegation":{"resolver":{}}}}`, true},
+		{"cluster delegation", `{` + ns + `,"verification":{"delegation":{"resolver":{"mode":"Cluster"}}}}`, true},
+		{"cluster empty servers", `{` + ns + `,"verification":{"delegation":{"resolver":{"mode":"Cluster","servers":[]}}}}`, true},
+		{"cluster explicit servers", `{` + ns + `,"verification":{"delegation":{"resolver":{"mode":"Cluster","servers":["192.0.2.54:53"]}}}}`, false},
+		{"default mode explicit servers", `{` + ns + `,"verification":{"delegation":{"resolver":{"servers":["192.0.2.54:53"]}}}}`, false},
+		{"recursive missing servers", `{` + ns + `,"verification":{"delegation":{"resolver":{"mode":"Recursive"}}}}`, false},
+		{"invalid delegation mode", `{` + ns + `,"verification":{"delegation":{"resolver":{"mode":"Authoritative"}}}}`, false},
+		{"obsolete resolvers rejected", `{` + ns + `,"verification":{"delegation":{"resolvers":["192.0.2.54:53"]}}}`, false},
+		{"unnested resolver rejected", `{` + ns + `,"verification":{"delegation":{"mode":"Recursive","servers":["192.0.2.54:53"]}}}`, false},
 		{"missing nameservers", `{}`, false},
 		{"empty nameservers", `{"nameServers":[]}`, false},
 		{"too many nameservers", `{"nameServers":[` + strings.Repeat(`{"name":"ns.example.test","addresses":["192.0.2.53"]},`, 8) + `{"name":"ns.example.test","addresses":["192.0.2.53"]}]}`, false},
@@ -161,13 +173,15 @@ func TestHostedParametersAndCEL(t *testing.T) {
 			{"bracketed IPv4", `["[192.0.2.53]:53"]`, false},
 		} {
 			value := endpoints.value
+			valid := endpoints.valid
 			if field == "delegation" {
-				value = `{"resolvers":` + value + `}`
+				value = `{"resolver":{"mode":"Recursive","servers":` + value + `}}`
+				valid = valid && endpoints.name != "empty"
 			}
 			cases = append(cases, struct {
 				name, parameters string
 				valid            bool
-			}{field + " " + endpoints.name, `{` + ns + `,"verification":{"` + field + `":` + value + `}}`, endpoints.valid})
+			}{field + " " + endpoints.name, `{` + ns + `,"verification":{"` + field + `":` + value + `}}`, valid})
 		}
 	}
 	for _, tc := range cases {
@@ -268,5 +282,98 @@ func TestNonemptyProviderPayloadsRejected(t *testing.T) {
 	input := providercontract.ConversionInput{Provider: provider, FromVersion: version, ToVersion: version, Target: providercontract.TargetRecordSet, Payload: providercontract.Payload{Options: runtime.RawExtension{Raw: []byte(`{"alias":{}}`)}}}
 	if _, err := providercontract.ConvertProviderPayloadToStorage(input); err == nil {
 		t.Fatal("nonempty options accepted")
+	}
+}
+
+func TestStatusProviderDataSchemas(t *testing.T) {
+	provider, err := Provider()
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := &provider.Spec.Versions[0]
+	const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const server = `{"endpoint":"dns/server","serial":1,"contentDigest":"` + digest + `","observedAt":"2026-10-21T00:00:00Z"}`
+	const delegation = `"observedNameServers":["ns.example.test"],"matches":true,"lastProbeTime":"2026-10-21T00:00:00Z"`
+	cases := []struct {
+		name, payload string
+		zone          bool
+		valid         bool
+	}{
+		{"zone complete", `{"serial":1,"contentDigest":"` + digest + `","servers":[` + server + `],"delegation":{` + delegation + `}}`, true, true},
+		{"zone without delegation", `{"serial":1,"contentDigest":"` + digest + `","servers":[]}`, true, true},
+		{"zone max serial", `{"serial":4294967295}`, true, true},
+		{"zone serial overflow", `{"serial":4294967296}`, true, false},
+		{"zone zero serial", `{"serial":0}`, true, false},
+		{"zone malformed digest", `{"contentDigest":"bad"}`, true, false},
+		{"server malformed digest", `{"servers":[` + strings.Replace(server, digest, "bad", 1) + `]}`, true, false},
+		{"server missing digest", `{"servers":[{"endpoint":"dns/server","serial":1,"observedAt":"2026-10-21T00:00:00Z"}]}`, true, false},
+		{"64 servers", `{"servers":[` + strings.Repeat(server+",", 63) + server + `]}`, true, true},
+		{"65 servers", `{"servers":[` + strings.Repeat(server+",", 64) + server + `]}`, true, false},
+		{"delegation error", `{"delegation":{` + delegation + `,"error":"DNSProbeFailed"}}`, true, true},
+		{"512 error", `{"delegation":{` + delegation + `,"error":"` + strings.Repeat("x", 512) + `"}}`, true, true},
+		{"513 error", `{"delegation":{` + delegation + `,"error":"` + strings.Repeat("x", 513) + `"}}`, true, false},
+		{"16 nameservers", `{"delegation":{"observedNameServers":[` + strings.Repeat(`"ns.example.test",`, 15) + `"ns.example.test"],"matches":true,"lastProbeTime":"2026-10-21T00:00:00Z"}}`, true, true},
+		{"17 nameservers", `{"delegation":{"observedNameServers":[` + strings.Repeat(`"ns.example.test",`, 16) + `"ns.example.test"],"matches":true,"lastProbeTime":"2026-10-21T00:00:00Z"}}`, true, false},
+		{"obsolete delegation failure", `{"delegation":{` + delegation + `,"failure":"DNSProbeFailed"}}`, true, false},
+		{"zone unknown data", `{"unexpected":true}`, true, false},
+		{"record pending", `{"serial":1}`, false, true},
+		{"record served", `{"serial":1,"servedAt":"2026-10-21T00:00:00Z"}`, false, true},
+		{"record max serial", `{"serial":4294967295}`, false, true},
+		{"record missing serial", `{}`, false, false},
+		{"record zero serial", `{"serial":0}`, false, false},
+		{"record serial overflow", `{"serial":4294967296}`, false, false},
+		{"record invalid servedAt", `{"serial":1,"servedAt":"not-a-timestamp"}`, false, false},
+		{"record unknown data", `{"serial":1,"unexpected":true}`, false, false},
+	}
+	validators := make(map[bool]apiservervalidation.SchemaValidator, 2)
+	for zone, schema := range map[bool]*dnsv1alpha1.ProviderOpenAPISchema{
+		true:  version.Zone.Schemas.StatusProviderData,
+		false: version.RecordSet.Schemas.StatusProviderData,
+	} {
+		if schema == nil {
+			t.Fatalf("statusProviderData schema missing: zone=%v", zone)
+		}
+		var schemaV1 apiextensionsv1.JSONSchemaProps
+		if err := json.Unmarshal(schema.OpenAPIV3Schema.Raw, &schemaV1); err != nil {
+			t.Fatal(err)
+		}
+		assertSchemaDescriptions(t, schemaV1)
+		if zone && schemaV1.Properties["delegation"].Properties["matches"].Description != "observed apex NS name set (lowercase, no trailing dot) equals the configured nameServers[].name set" {
+			t.Fatal("delegation.matches must describe normalized apex NS set equality")
+		}
+		var internal apiextensions.JSONSchemaProps
+		if err := apiextensionsv1.Convert_v1_JSONSchemaProps_To_apiextensions_JSONSchemaProps(&schemaV1, &internal, nil); err != nil {
+			t.Fatal(err)
+		}
+		validator, _, err := apiservervalidation.NewSchemaValidator(&internal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		validators[zone] = validator
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var payload map[string]interface{}
+			if err := json.Unmarshal([]byte(tc.payload), &payload); err != nil {
+				t.Fatal(err)
+			}
+			result := validators[tc.zone].Validate(payload)
+			if result.IsValid() != tc.valid {
+				t.Fatalf("valid=%v want=%v errors=%v", result.IsValid(), tc.valid, result.Errors)
+			}
+		})
+	}
+}
+
+func assertSchemaDescriptions(t *testing.T, schema apiextensionsv1.JSONSchemaProps) {
+	t.Helper()
+	if schema.Description == "" {
+		t.Fatalf("public status schema is missing a description: %#v", schema)
+	}
+	for name, property := range schema.Properties {
+		t.Run(name, func(t *testing.T) { assertSchemaDescriptions(t, property) })
+	}
+	if schema.Items != nil && schema.Items.Schema != nil {
+		assertSchemaDescriptions(t, *schema.Items.Schema)
 	}
 }

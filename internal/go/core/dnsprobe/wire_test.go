@@ -1,4 +1,4 @@
-package probe
+package dnsprobe
 
 import (
 	"context"
@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	externalv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/external/v1alpha1"
 	"github.com/miekg/dns"
 )
 
@@ -63,14 +62,13 @@ func TestWireTruncationAndNegativeSOA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := ProbeRequest{Name: "absent.example.test", Policy: externalv1alpha1.ExternalZoneClassParameters{Resolver: externalv1alpha1.ResolverPolicy{Mode: externalv1alpha1.ResolverModeRecursive, Servers: []string{server}}}, Expected: RRsets{A: []string{"192.0.2.1"}}}
+	request := ProbeRequest{Name: "absent.example.test", Policy: Policy{Mode: ModeRecursive, Servers: []string{server}}}
 	result, err := resolver.Probe(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	decision := Evaluate(request, result)
-	if decision.Reason != "DNSNameNotFound" || decision.NegativeTTL == nil || *decision.NegativeTTL != 120 {
-		t.Fatalf("decision = %#v", decision)
+	if len(result.Views) != 1 || result.Views[0].RCode != dns.RcodeNameError || result.Views[0].NegativeTTL == nil || *result.Views[0].NegativeTTL != 120 || len(result.Views[0].Answers) != 2 {
+		t.Fatalf("result = %#v", result)
 	}
 	if udpQueries.Load() != 2 || tcpQueries.Load() != 2 {
 		t.Fatalf("UDP=%d TCP=%d", udpQueries.Load(), tcpQueries.Load())
@@ -114,7 +112,7 @@ func TestWireNoFallbackAndCancellation(t *testing.T) {
 		_ = w.WriteMsg(reply)
 	})
 	resolver, _ := NewWireResolver(WireOptions{})
-	request := ProbeRequest{Name: "www.example.test", Policy: externalv1alpha1.ExternalZoneClassParameters{Resolver: externalv1alpha1.ResolverPolicy{Servers: []string{server}}}}
+	request := ProbeRequest{Name: "www.example.test", Policy: Policy{Servers: []string{server}}}
 	result, err := resolver.Probe(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
@@ -138,21 +136,21 @@ func TestClusterPolicyRereadAndBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolver, _ := NewWireResolver(WireOptions{ResolvConf: path})
-	first, err := resolver.EffectivePolicy(externalv1alpha1.ExternalZoneClassParameters{})
-	if err != nil || len(first.Resolver.Servers) != 1 || first.Resolver.Servers[0] != "192.0.2.53:53" {
+	first, err := resolver.EffectivePolicy(Policy{})
+	if err != nil || len(first.Servers) != 1 || first.Servers[0] != "192.0.2.53:53" {
 		t.Fatalf("policy=%#v error=%v", first, err)
 	}
 	if err := os.WriteFile(path, []byte("nameserver 192.0.2.54\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	second, err := resolver.EffectivePolicy(externalv1alpha1.ExternalZoneClassParameters{})
+	second, err := resolver.EffectivePolicy(Policy{})
 	if err != nil || Fingerprint(first) == Fingerprint(second) {
 		t.Fatal("resolv.conf change did not invalidate policy")
 	}
 	if err := os.WriteFile(path, []byte("nameserver 192.0.2.1\nnameserver 192.0.2.2\nnameserver 192.0.2.3\nnameserver 192.0.2.4\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolver.EffectivePolicy(externalv1alpha1.ExternalZoneClassParameters{}); err == nil {
+	if _, err := resolver.EffectivePolicy(Policy{}); err == nil {
 		t.Fatal("oversized resolver set accepted")
 	}
 }

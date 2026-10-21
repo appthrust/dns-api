@@ -26,11 +26,13 @@ The Core Provider is `hosted.dns.appthrust.io/v1alpha1`: `Provider.metadata.name
 | `spec.versions[].zone.schemas.adoption` | Empty-object schema. |
 | `spec.versions[].recordSet.supportedTypes` | `A`, `AAAA`, `CNAME`, `TXT`, `MX`, `CAA`, `NS`. |
 | `spec.versions[].recordSet.schemas.options` / `.adoption` | Empty-object schema. |
+| `spec.versions[].recordSet.validationRules` | Rejects a `RecordSet` with `type: NS` at `@` (the apex NS RRset is owned by the class); the `zoneUnit` pair rule repeats it for composition. |
+| `spec.versions[].zone.schemas.statusProviderData` / `.recordSet.schemas.statusProviderData` | Public serving data: zone `{serial, contentDigest, servers[] ≤64, delegation{observedNameServers[] ≤16, matches, lastProbeTime, error ≤512}}`; record set `{serial}`. |
 | `spec.versions[].recordWithdrawal` | `supported: true` with the status schema and the eleven closed reason combinations defined for [external withdrawal](external-provider.md#withdrawal-verification). |
 | `spec.versions[].zone.additionalConditionReasons` | `ServingPending`, `SnapshotRejected`. |
 | `spec.versions[].recordSet.additionalConditionReasons` | `ServingPending`. |
 
-Hosted keeps every core record validation. Apex `NS` claims are rejected by a ZoneUnit validation rule: the apex NS RRset is owned by the zone's `nameServers` parameter, never by a `RecordSet`.
+Hosted keeps every core record validation. Apex `NS` claims are rejected at admission by a `recordSet.validationRules` entry (ZoneUnit rules are pair-only and cannot see a lone claim): the apex NS RRset is owned by the zone's `nameServers` parameter, never by a `RecordSet`.
 
 ## ZoneClass Parameters
 
@@ -43,7 +45,7 @@ Hosted keeps every core record validation. Apex `NS` claims are rejected by a Zo
 | `soa.refresh`, `soa.retry`, `soa.expire`, `soa.minimum` | Seconds; defaults 3600, 900, 1209600, 300. `minimum` is the negative-caching TTL the withdrawal evaluator uses. 1–2419200. |
 | `defaultTTL` | Seconds, default 60, 1–86400. Applied to NS, glue, and endpoint-converted record sets. |
 | `verification.views[]` | Optional, at most 3 canonical `IP:port` endpoints the withdrawal evaluator queries. Omitted means the in-cluster hosted server Service (`<service>.<namespace>.svc:53`). The platform sets its public VIP here so the withdrawal proof is taken from the address clients use. |
-| `verification.delegation.resolvers[]` | Optional, at most 3 recursive `IP:port` endpoints. When set, the controller probes `NS <domainName>` through them and reports the observed parent delegation in `zone.provider.data.delegation`. Observation only; it never changes `Programmed`. |
+| `verification.delegation.resolver` | `mode` `Cluster` (default; the controller's `resolv.conf`) or `Recursive` with `servers[]` (at most 3 canonical `IP:port`), the same vocabulary as the external provider. The controller always probes `NS <domainName>` through it and reports `zone.provider.data.delegation{observedNameServers[], matches, lastProbeTime, error}`; `matches` is true when the observed apex NS name set (lowercase, no trailing dot) equals the configured `nameServers[].name` set. Observation only; it never changes `Programmed`. |
 
 SOA `mname` is `nameServers[0].name`. SOA serial is controller-owned (below). Changing `nameServers` or `soa` re-renders every zone of the class.
 
@@ -62,7 +64,7 @@ SOA `mname` is `nameServers[0].name`. SOA serial is controller-owned (below). Ch
 
 `status`:
 
-- `servers[]`: map-list keyed by `endpoint` (pod identity `namespace/name`), each with `serial`, `contentDigest`, `observedAt`. Each server owns exactly its own item through server-side apply with field manager `hosted-server/<pod>`. Entries older than `2 × refresh` are pruned by the controller.
+- `servers[]`: map-list keyed by `endpoint` (pod identity `namespace/name`), each with `serial`, `contentDigest`, `observedAt`. Each server owns exactly its own item through server-side apply with field manager `hosted-server/<pod>`, re-applies it every 30 s as a heartbeat (`observedAt`), and removes it on graceful shutdown. The controller never writes `status`; an item whose `observedAt` is older than the fixed `ServerFreshness` (3 minutes) is not fresh and is ignored. `Programmed=True` requires at least one fresh server and every fresh server at the current `serial` and `contentDigest`; the withdrawal evaluator's served term uses the same rule, so a replica that is alive but behind never produces a false exclusion proof.
 
 The snapshot is the provider's whole desired state. A server restarted from nothing reconstructs serving from snapshots alone; the controller restarted from nothing re-renders every `ZoneUnit` and converges serials without reading server state.
 
@@ -70,12 +72,12 @@ The snapshot is the provider's whole desired state. A server restarted from noth
 
 Per `ZoneUnit` with `spec.provider.name` equal to the bound provider name:
 
-1. Validate the class parameters again against the storage schema; on failure write `Zone` `Accepted=False/InvalidParameters` and stop.
+1. Validate the class parameters again against the storage schema; on failure write `Zone` `Accepted=False/InvalidProviderPayload` (the core reason) and stop.
 2. Render `records[]` from `spec.recordSets[]` (`allowed != false`, `deletionRequested == false`) plus apex NS and glue. Composition conflicts were already resolved by core; the renderer is total.
 3. Compare `contentDigest` with the live `HostedZone`; if unchanged, do not write (no serial bump). Otherwise apply the snapshot with the next serial.
 4. Report `ZoneUnit.status`:
    - `zone.nameServers` = class `nameServers[].name`.
-   - `zone.conditions`: `Accepted=True/Accepted`; `Programmed=True/Programmed` once at least one `status.servers[]` item reports the current `serial` and `contentDigest`; otherwise `Programmed=False/ServingPending` with message `Snapshot serial <n> is not yet served by any hosted server.`; `Programmed=False/SnapshotRejected` when the API server rejects the snapshot (message bounded to 2048 bytes).
+   - `zone.conditions`: `Accepted=True/Accepted`; `Programmed=True/Programmed` once every fresh `status.servers[]` item (and at least one) reports the current `serial` and `contentDigest`; otherwise `Programmed=False/ServingPending` with message `Snapshot serial <n> is not yet served by any hosted server.`; `Programmed=False/SnapshotRejected` when the API server rejects the snapshot (message bounded to 2048 bytes).
    - `zone.provider.data`: `serial`, `contentDigest`, `servers[]` (endpoint, serial, observedAt; at most 64), optional `delegation {observedNameServers[], matches, lastProbeTime}`.
    - `recordSets[]`: `Accepted=True/Accepted`; `Programmed` mirrors the zone-level serving state for the serial that first contained this item's generation; `deletionCompleted=true` for a `deletionRequested` item once a snapshot without it is served by at least one server.
 5. Withdrawals: see below.
@@ -86,7 +88,7 @@ Deletion of a `ZoneUnit` deletes the snapshot; servers stop answering for that a
 
 ## Hosted Server
 
-`internal/go/providers/hosted/server` is a separate `main` target (`cmd/hosted-server`) built into the same image. It uses `github.com/miekg/dns` (already a dependency of the external probe) and no other DNS library.
+`internal/go/providers/hosted/server` is a separate `main` target (`app/hosted-server/cmd/server`) built into the same image. It uses `github.com/miekg/dns` (already a dependency of the shared probe) and no other DNS library.
 
 Behavior:
 
@@ -99,7 +101,7 @@ Behavior:
 - Metrics: `dns_hosted_queries_total{zone,qtype,rcode}`, `dns_hosted_query_duration_seconds`, `dns_hosted_zone_serial{zone}`, `dns_hosted_zones_loaded`, `dns_hosted_udp_rate_limited_total`.
 - Health: `/healthz` liveness is process health; `/readyz` is true once the initial list completed. A server with zero zones is ready (it answers REFUSED, which is the correct authoritative behavior for an empty authority).
 
-RBAC for the server ServiceAccount: `hostedzones` get/list/watch and `hostedzones/status` patch. Nothing else.
+RBAC for the server ServiceAccount: `hostedzones` get/list/watch and `hostedzones/status` patch, granted through a ClusterRole when `watchNamespace` is empty and a namespaced Role otherwise. Nothing else.
 
 ## Withdrawal Verification
 
@@ -110,11 +112,11 @@ excluded(address) := address ∉ snapshot(records at checkedName, terminal A/AAA
                    ∧ ∀ view ∈ verification.views: probe(view, checkedName) shows address absent
 ```
 
-The snapshot term is evaluated from the served snapshot (`status.servers[]` serial ≥ the first serial that omitted the address), not from the controller's intent. The probe term reuses the shared probe resolver (`internal/go/core/dnsprobe`, moved from `internal/go/providers/external/probe` with the external provider updated to import it; the package is a helper, not a provider abstraction). Negative TTL is `soa.minimum` by construction; `notBefore = t0 + max(retainedPositiveTTL, soa.minimum)`, and a confirming probe at or after `notBefore` is required. Conditions, reasons, messages, waiver echo, scheduling budget, and metrics (`dns_hosted_withdrawals_pending{reason}`) follow the external contract verbatim so platform consumers see one withdrawal vocabulary.
+The snapshot term is evaluated from the served snapshot (`status.servers[]` serial ≥ the first serial that omitted the address), not from the controller's intent. The probe term reuses the shared probe resolver (`internal/go/core/dnsprobe`, moved from `internal/go/providers/external/probe` with the external provider updated to import it; the package is a helper, not a provider abstraction). The server's negative-caching TTL is `min(SOA TTL, soa.minimum)` where the SOA TTL equals the apex NS TTL (`defaultTTL`); the evaluator conservatively uses `soa.minimum`, which is never smaller: `notBefore = t0 + max(retainedPositiveTTL, soa.minimum)`, and a confirming probe at or after `notBefore` is required. Conditions, reasons, messages, waiver echo, scheduling budget, and metrics (`dns_hosted_withdrawals_pending{reason}`) follow the external contract verbatim so platform consumers see one withdrawal vocabulary.
 
 ## Endpoint Conversion
 
-App Provider capability `endpoint.hosted.dns.appthrust.io/v1alpha1`, resource `endpointrecordsetconversions`, with the same semantics as the external conversion: sorted canonical A then AAAA fragments or exactly one CNAME fragment, TTL from the class `defaultTTL`, rejection of mixed targets, multiple distinct hostnames, apex CNAME, and incompatible preferences. An `EndpointProviderCapability` manifest registers it.
+App Provider capability `endpoint.hosted.dns.appthrust.io/v1alpha1`, resource `endpointrecordsetconversions`, with the same semantics as the external conversion: sorted canonical A then AAAA fragments or exactly one CNAME fragment, rejection of mixed targets, multiple distinct hostnames, apex CNAME, and incompatible preferences. The conversion request carries no ZoneClass context, so the fragment TTL comes from the manager flag `--hosted-endpoint-ttl` / `HOSTED_ENDPOINT_TTL` (chart `providers.hosted.endpointTTL`, default 60) rather than the class `defaultTTL`. An `EndpointProviderCapability` manifest registers it.
 
 ## Admission and Security
 
@@ -135,6 +137,7 @@ Chart values:
 | `providers.hosted.server.service.type` | `ClusterIP` | `LoadBalancer` for a public VIP. |
 | `providers.hosted.server.service.loadBalancerIP`, `.annotations`, `.ipFamilies` | unset | Deterministic VIP for glue. |
 | `providers.hosted.server.watchNamespace` | `""` | Informer scope. |
+| `providers.hosted.endpointTTL` | `60` | TTL of endpoint-converted fragments (see Endpoint Conversion). |
 | `providers.hosted.server.resources` | requests 50m/64Mi, limits 500m/256Mi | Bounded by zone limits. |
 
 The CRD carrier gains `hostedzones.hosted.dns.appthrust.io`.

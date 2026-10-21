@@ -39,14 +39,15 @@ func TestSchemeAndDeepcopy(t *testing.T) {
 		NameServers: []NameServer{{Name: "ns.example.test", Addresses: []string{"192.0.2.53"}}},
 		Verification: VerificationPolicy{
 			Views:      []string{"192.0.2.53:53"},
-			Delegation: DelegationPolicy{Resolvers: []string{"[2001:db8::53]:53"}},
+			Delegation: DelegationPolicy{Resolver: ResolverPolicy{Mode: "Recursive", Servers: []string{"[2001:db8::53]:53"}}},
 		},
 	}
 	copy := params.DeepCopy()
 	copy.NameServers[0].Addresses[0] = "192.0.2.54"
 	copy.Verification.Views[0] = "192.0.2.54:53"
-	copy.Verification.Delegation.Resolvers[0] = "[2001:db8::54]:53"
-	if params.NameServers[0].Addresses[0] != "192.0.2.53" || params.Verification.Views[0] != "192.0.2.53:53" || params.Verification.Delegation.Resolvers[0] != "[2001:db8::53]:53" {
+	copy.Verification.Delegation.Resolver.Mode = "Cluster"
+	copy.Verification.Delegation.Resolver.Servers[0] = "[2001:db8::54]:53"
+	if params.NameServers[0].Addresses[0] != "192.0.2.53" || params.Verification.Views[0] != "192.0.2.53:53" || params.Verification.Delegation.Resolver.Mode != "Recursive" || params.Verification.Delegation.Resolver.Servers[0] != "[2001:db8::53]:53" {
 		t.Fatal("parameter deepcopy aliases source")
 	}
 	zone := &HostedZone{
@@ -204,4 +205,22 @@ func snapshotRecords(count int) []HostedZoneRecord {
 		records[i] = HostedZoneRecord{Name: "record-" + strconv.Itoa(i), Type: "A", TTL: 60, Values: []string{"192.0.2.1"}}
 	}
 	return records
+}
+
+func TestDelegationPolicyJSONContract(t *testing.T) {
+	const input = `{"resolver":{"mode":"Recursive","servers":["192.0.2.53:53","[2001:db8::53]:53"]}}`
+	var policy DelegationPolicy
+	if err := json.Unmarshal([]byte(input), &policy); err != nil {
+		t.Fatal(err)
+	}
+	if policy.Resolver.Mode != "Recursive" || len(policy.Resolver.Servers) != 2 || policy.Resolver.Servers[1] != "[2001:db8::53]:53" {
+		t.Fatalf("delegation resolver fields were lost: %#v", policy)
+	}
+	data, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != input {
+		t.Fatalf("delegation JSON=%s want=%s", data, input)
+	}
 }

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/appthrust/dns-api/internal/go/providers/external/probe"
+	probe "github.com/appthrust/dns-api/internal/go/core/dnsprobe"
 	dnsv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/dns/v1alpha1"
 	externalv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/external/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -201,7 +201,7 @@ func (r *ZoneReconciler) probeWithdrawals(ctx context.Context, unit *dnsv1alpha1
 		setWithdrawalConditions(status, result, now)
 		data, _ := json.Marshal(struct {
 			Views externalv1alpha1.VerificationValues `json:"views"`
-		}{Views: probe.Preview(views)})
+		}{Views: externalv1alpha1.VerificationValues(probe.Preview(views))})
 		status.Provider = &dnsv1alpha1.ProviderStatus{Data: runtime.RawExtension{Raw: data}}
 		bindWithdrawalWaiver(status, item, now)
 		status.ResultDigest = withdrawalResultDigest(unit, item, *status)
@@ -215,6 +215,9 @@ func policyChanged(name string) probe.Decision {
 }
 
 func setWithdrawalConditions(status *dnsv1alpha1.ZoneUnitWithdrawalStatus, decision probe.Decision, now time.Time) {
+	if strings.HasPrefix(decision.Message, "DNS withdrawal ") {
+		decision.Message = "External " + decision.Message
+	}
 	setCondition(&status.Conditions, "Withdrawn", decision.Status, decision.Reason, decision.Message, status.ObservedGeneration, now)
 	ready := metav1.ConditionFalse
 	if decision.Status == metav1.ConditionTrue {
