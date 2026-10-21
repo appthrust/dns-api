@@ -136,7 +136,7 @@ spec:
                 x-kubernetes-list-type: map
               serial:
                 description: Serial increases on each content change.
-                format: int32
+                format: int64
                 maximum: 4294967295
                 minimum: 1
                 type: integer
@@ -212,7 +212,7 @@ spec:
                       format: date-time
                       type: string
                     serial:
-                      format: int32
+                      format: int64
                       maximum: 4294967295
                       minimum: 1
                       type: integer

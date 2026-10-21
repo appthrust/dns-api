@@ -105,6 +105,7 @@ type HostedZoneSpec struct {
 	// Serial increases on each content change.
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=4294967295
+	// +kubebuilder:validation:Format=int64
 	Serial uint32 `json:"serial"`
 
 	SOA SOA `json:"soa"`
@@ -185,6 +186,7 @@ type HostedZoneServerStatus struct {
 	Endpoint string `json:"endpoint"`
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=4294967295
+	// +kubebuilder:validation:Format=int64
 	Serial uint32 `json:"serial"`
 	// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
 	ContentDigest string      `json:"contentDigest"`
