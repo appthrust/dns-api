@@ -52,12 +52,29 @@ spec:
             - --external-dns-qps={{ .Values.providers.external.dnsQPS }}
             - --external-dns-burst={{ .Values.providers.external.dnsBurst }}
             {{- end }}
+            - --hosted-controller-enabled={{ .Values.providers.hosted.enabled }}
+            {{- if .Values.providers.hosted.enabled }}
+            - {{ printf "--hosted-controller-name=%s" .Values.providers.hosted.controllerName | quote }}
+            - {{ printf "--hosted-provider-name=%s" .Values.providers.hosted.providerName | quote }}
+            - {{ printf "--hosted-provider-version=%s" .Values.providers.hosted.providerVersion | quote }}
+            - --hosted-endpoint-ttl={{ .Values.providers.hosted.endpointTTL }}
+            {{- end }}
             {{- range .Values.extraArgs }}
             - {{ . | quote }}
             {{- end }}
-          {{- with .Values.extraEnv }}
+          {{- if or .Values.providers.hosted.enabled .Values.extraEnv }}
           env:
+            {{- if .Values.providers.hosted.enabled }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: HOSTED_SERVER_ADDRESS
+              value: {{ printf "%s.%s.svc:53" (include "dns-api.hostedServerName" .) .Release.Namespace | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           {{- with .Values.securityContext }}
           securityContext:

@@ -1,17 +1,13 @@
-package probe
+package verification
 
 import (
 	"sync"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 var (
-	probes             = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "dns_external_probes_total", Help: "Completed external DNS observations."}, []string{"outcome", "qtype"})
-	duration           = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "dns_external_probe_duration_seconds", Help: "Admitted external DNS probe duration."}, []string{"outcome"})
-	queueDelay         = prometheus.NewHistogram(prometheus.HistogramOpts{Name: "dns_external_probe_queue_delay_seconds", Help: "Scheduling and limiter admission delay for external DNS probes."})
 	pending            = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "dns_external_pending_records", Help: "Active unverified external record claims."}, []string{"reason"})
 	pendingMu          sync.Mutex
 	pendingUnits       = map[string]map[string]int{}
@@ -19,9 +15,7 @@ var (
 	withdrawalUnits    = map[string]map[string]int{}
 )
 
-func init() { metrics.Registry.MustRegister(probes, duration, queueDelay, pending, withdrawalsPending) }
-
-func ObserveQueueDelay(delay time.Duration) { queueDelay.Observe(max(0, delay.Seconds())) }
+func init() { metrics.Registry.MustRegister(pending, withdrawalsPending) }
 
 // SetPending replaces a unit's contribution; identities are internal keys, never labels.
 func SetPending(unit string, counts map[string]int) {

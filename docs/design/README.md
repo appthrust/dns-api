@@ -12,6 +12,7 @@
 - [Cloudflare Provider](./cloudflare-provider.md): Cloudflare identity, schema, ZoneClass parameters, provider data, reconciliation, deletion, and record mapping.
 - [Route 53 Provider](./route53-provider.md): Route 53 identity, provider settings, and record-set provider schema.
 - [External Provider](./external-provider.md): verify-only provider for customer-managed DNS: resolver policy, exact-set verification, conditions, scheduling bounds, deletion semantics, and conversion decision.
+- [Hosted Provider](./hosted-provider.md): authoritative provider that renders `ZoneUnit` into `HostedZone` snapshots served by dns-api's own DNS server; credentialless, withdrawal-capable, no external DNS API.
 - [Gateway API Integration](./gateway-api-integration.md): `HTTPRoute` / `Gateway` DNS report, Zone selection, and generated `RecordSet` behavior.
 - [UI](./ui.md): reusable DNS API UI package, screens, workflows, components, and mockup design.
 - [Headlamp Desktop Plugin](./headlamp-plugin.md): Headlamp Desktop plugin package, distribution, and Desktop-specific behavior.

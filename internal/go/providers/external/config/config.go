@@ -5,23 +5,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/netip"
-	"regexp"
 	"slices"
-	"strings"
 
+	"github.com/appthrust/dns-api/internal/go/core/dnsprobe"
 	"github.com/appthrust/dns-api/internal/go/core/providercontract"
 	dnsv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/dns/v1alpha1"
 	externalv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/external/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
-
-var namePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$`)
-
-func ValidName(name string) bool {
-	_, ipErr := netip.ParseAddr(name)
-	return len(name) > 0 && len(name) <= 253 && namePattern.MatchString(name) && ipErr != nil
-}
 
 func Binding(name, version string) dnsv1alpha1.ProviderReference {
 	if name == "" {
@@ -72,7 +63,7 @@ func Decode(raw runtime.RawExtension) (externalv1alpha1.ExternalZoneClassParamet
 			return params, fmt.Errorf("resolver.servers must be empty for Cluster")
 		}
 	case externalv1alpha1.ResolverModeRecursive:
-		if err := ValidateServers(params.Resolver.Servers); err != nil {
+		if err := dnsprobe.ValidateServers(params.Resolver.Servers); err != nil {
 			return params, err
 		}
 	default:
@@ -82,7 +73,7 @@ func Decode(raw runtime.RawExtension) (externalv1alpha1.ExternalZoneClassParamet
 		return params, fmt.Errorf("expectedNameservers must contain at most 16 names")
 	}
 	for i, name := range params.ExpectedNameservers {
-		if !ValidName(name) || slices.Contains(params.ExpectedNameservers[:i], name) {
+		if !dnsprobe.ValidName(name) || slices.Contains(params.ExpectedNameservers[:i], name) {
 			return params, fmt.Errorf("expectedNameservers must contain distinct canonical DNS names")
 		}
 	}
@@ -91,15 +82,7 @@ func Decode(raw runtime.RawExtension) (externalv1alpha1.ExternalZoneClassParamet
 	return params, nil
 }
 
-func ValidateServers(servers []string) error {
-	if len(servers) == 0 || len(servers) > 3 {
-		return fmt.Errorf("resolver.servers must contain 1 through 3 endpoints")
-	}
-	for i, server := range servers {
-		address, err := netip.ParseAddrPort(server)
-		if err != nil || address.Port() == 0 || address.Addr().Zone() != "" || address.String() != server || strings.Contains(server, "%") || slices.Contains(servers[:i], server) {
-			return fmt.Errorf("resolver.servers must contain distinct canonical IP addresses and ports from 1 through 65535")
-		}
-	}
-	return nil
+// ProbePolicy converts provider API parameters at the provider boundary.
+func ProbePolicy(params externalv1alpha1.ExternalZoneClassParameters) dnsprobe.Policy {
+	return dnsprobe.Policy{Mode: string(params.Resolver.Mode), Servers: params.Resolver.Servers, ExpectedNameservers: params.ExpectedNameservers}
 }

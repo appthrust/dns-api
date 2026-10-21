@@ -6,23 +6,21 @@ import (
 	"strings"
 	"time"
 
-	"github.com/appthrust/dns-api/internal/go/providers/external/config"
-	"github.com/appthrust/dns-api/internal/go/providers/external/probe"
+	probe "github.com/appthrust/dns-api/internal/go/core/dnsprobe"
 	dnsv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/dns/v1alpha1"
-	externalv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/external/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // The independent claims are the obligation inventory. This private state only
 // retains cache bounds, policy floors and witnesses for those current claims.
 type withdrawalState struct {
-	Identity     string                                       `json:"identity"`
-	Policy       string                                       `json:"policy"`
-	Floor        externalv1alpha1.ExternalZoneClassParameters `json:"floor"`
-	Views        []string                                     `json:"views,omitempty"`
-	CheckedNames []string                                     `json:"checkedNames"`
-	Positive     map[string]time.Time                         `json:"positive,omitempty"`
-	Negative     map[string]uint32                            `json:"negative,omitempty"`
+	Identity     string               `json:"identity"`
+	Policy       string               `json:"policy"`
+	Floor        probe.Policy         `json:"floor"`
+	Views        []string             `json:"views,omitempty"`
+	CheckedNames []string             `json:"checkedNames"`
+	Positive     map[string]time.Time `json:"positive,omitempty"`
+	Negative     map[string]uint32    `json:"negative,omitempty"`
 	// Preserve subsecond t0: metav1.Time's wire encoding has only second precision.
 	WindowStart    time.Time `json:"windowStart,omitempty"`
 	Schedule       schedule  `json:"schedule"`
@@ -80,7 +78,7 @@ func validWithdrawal(unit *dnsv1alpha1.ZoneUnit, item dnsv1alpha1.ZoneUnitWithdr
 	} else {
 		name += "." + unit.Spec.Zone.DomainName
 	}
-	return config.ValidName(name)
+	return probe.ValidName(name)
 }
 
 func cacheKey(checked string, evidence probe.WithdrawalCacheEvidence) string {
@@ -157,14 +155,14 @@ func publicationUnexpired(publication publicationEvidence, now time.Time) bool {
 	return false
 }
 
-func requiredWithdrawalViews(policy externalv1alpha1.ExternalZoneClassParameters, evidence *probe.ZoneEvidence) []string {
+func requiredWithdrawalViews(policy probe.Policy, evidence *probe.ZoneEvidence) []string {
 	var views []string
-	for _, server := range policy.Resolver.Servers {
+	for _, server := range policy.Servers {
 		views = append(views, "recursive/"+server)
 	}
 	if len(policy.ExpectedNameservers) != 0 && evidence != nil {
 		for _, authority := range evidence.Authorities {
-			for _, server := range policy.Resolver.Servers {
+			for _, server := range policy.Servers {
 				views = append(views, "authority/"+authority+"/via/"+server)
 			}
 		}
@@ -182,12 +180,12 @@ func containsAll(values, floor []string) bool {
 	return true
 }
 
-func policyWeakened(state withdrawalState, policy externalv1alpha1.ExternalZoneClassParameters, views []string) bool {
-	return state.MissingHistory || !containsAll(policy.Resolver.Servers, state.Floor.Resolver.Servers) || !containsAll(policy.ExpectedNameservers, state.Floor.ExpectedNameservers) || !containsAll(views, state.Views)
+func policyWeakened(state withdrawalState, policy probe.Policy, views []string) bool {
+	return state.MissingHistory || !containsAll(policy.Servers, state.Floor.Servers) || !containsAll(policy.ExpectedNameservers, state.Floor.ExpectedNameservers) || !containsAll(views, state.Views)
 }
 
-func addFloor(state *withdrawalState, policy externalv1alpha1.ExternalZoneClassParameters, views []string) {
-	state.Floor.Resolver.Servers = sortedUnion(state.Floor.Resolver.Servers, policy.Resolver.Servers)
+func addFloor(state *withdrawalState, policy probe.Policy, views []string) {
+	state.Floor.Servers = sortedUnion(state.Floor.Servers, policy.Servers)
 	state.Floor.ExpectedNameservers = sortedUnion(state.Floor.ExpectedNameservers, policy.ExpectedNameservers)
 	state.Views = sortedUnion(state.Views, views)
 }

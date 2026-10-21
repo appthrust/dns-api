@@ -1,0 +1,57 @@
+{{- if .Values.providers.hosted.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "dns-api.hostedServerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dns-api.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hosted-server
+{{- if .Values.rbac.create }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: {{ if .Values.providers.hosted.server.watchNamespace }}Role{{ else }}ClusterRole{{ end }}
+metadata:
+  name: {{ include "dns-api.hostedServerName" . }}
+  {{- with .Values.providers.hosted.server.watchNamespace }}
+  namespace: {{ . | quote }}
+  {{- end }}
+  labels:
+    {{- include "dns-api.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hosted-server
+rules:
+  - apiGroups:
+      - hosted.dns.appthrust.io
+    resources:
+      - hostedzones
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - hosted.dns.appthrust.io
+    resources:
+      - hostedzones/status
+    verbs:
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: {{ if .Values.providers.hosted.server.watchNamespace }}RoleBinding{{ else }}ClusterRoleBinding{{ end }}
+metadata:
+  name: {{ include "dns-api.hostedServerName" . }}
+  {{- with .Values.providers.hosted.server.watchNamespace }}
+  namespace: {{ . | quote }}
+  {{- end }}
+  labels:
+    {{- include "dns-api.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hosted-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: {{ if .Values.providers.hosted.server.watchNamespace }}Role{{ else }}ClusterRole{{ end }}
+  name: {{ include "dns-api.hostedServerName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "dns-api.hostedServerName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- end }}

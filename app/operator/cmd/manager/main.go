@@ -9,6 +9,7 @@ import (
 	gatewayendpointcontroller "github.com/appthrust/dns-api/internal/go/apps/gatewayendpoint/controllers/gateway"
 	serviceendpointcontroller "github.com/appthrust/dns-api/internal/go/apps/serviceendpoint/controllers/service"
 	zoneunitcontroller "github.com/appthrust/dns-api/internal/go/core/controllers/zoneunit"
+	externalprobe "github.com/appthrust/dns-api/internal/go/core/dnsprobe"
 	corewebhook "github.com/appthrust/dns-api/internal/go/core/webhook"
 	cloudflareidentity "github.com/appthrust/dns-api/internal/go/providers/cloudflare/controllers/identity"
 	cloudflarezoneclass "github.com/appthrust/dns-api/internal/go/providers/cloudflare/controllers/zoneclass"
@@ -17,7 +18,9 @@ import (
 	externalzoneclass "github.com/appthrust/dns-api/internal/go/providers/external/controllers/zoneclass"
 	externalzoneunit "github.com/appthrust/dns-api/internal/go/providers/external/controllers/zoneunit"
 	externalconversion "github.com/appthrust/dns-api/internal/go/providers/external/conversion"
-	externalprobe "github.com/appthrust/dns-api/internal/go/providers/external/probe"
+	hostedzoneclass "github.com/appthrust/dns-api/internal/go/providers/hosted/controllers/zoneclass"
+	hostedzoneunit "github.com/appthrust/dns-api/internal/go/providers/hosted/controllers/zoneunit"
+	hostedconversion "github.com/appthrust/dns-api/internal/go/providers/hosted/conversion"
 	route53identity "github.com/appthrust/dns-api/internal/go/providers/route53/controllers/identity"
 	route53zoneclass "github.com/appthrust/dns-api/internal/go/providers/route53/controllers/zoneclass"
 	route53zoneunit "github.com/appthrust/dns-api/internal/go/providers/route53/controllers/zoneunit"
@@ -28,6 +31,7 @@ import (
 	endpointconversionv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/endpoint/conversion/v1alpha1"
 	endpointv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/endpoint/v1alpha1"
 	externalv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/external/v1alpha1"
+	hostedv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/hosted/v1alpha1"
 	route53v1alpha1 "github.com/appthrust/dns-api/pkg/go/api/route53/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -80,6 +84,7 @@ func init() {
 	utilruntime.Must(endpointconversionv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(externalv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1.Install(scheme))
+	utilruntime.Must(hostedv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(route53v1alpha1.AddToScheme(scheme))
 }
 
@@ -92,6 +97,7 @@ func main() {
 	route53ControllerEnabled := envBoolOrDefault("ROUTE53_CONTROLLER_ENABLED", true)
 	cloudflareControllerEnabled := envBoolOrDefault("CLOUDFLARE_CONTROLLER_ENABLED", true)
 	externalControllerEnabled := envBoolOrDefault("EXTERNAL_CONTROLLER_ENABLED", false)
+	hostedControllerEnabled := envBoolOrDefault("HOSTED_CONTROLLER_ENABLED", false)
 	route53EndpointConversionEnabled := envBoolOrDefault("ROUTE53_ENDPOINT_CONVERSION_ENABLED", true)
 	endpointRecordSetNamespace := envOrDefault("ENDPOINT_RECORDSET_NAMESPACE", "")
 	route53ControllerName := envOrDefault("ROUTE53_CONTROLLER_NAME", route53zoneunit.DefaultControllerName)
@@ -103,6 +109,10 @@ func main() {
 	externalControllerName := envOrDefault("EXTERNAL_CONTROLLER_NAME", externalv1alpha1.ControllerName)
 	externalProviderName := envOrDefault("EXTERNAL_PROVIDER_NAME", externalv1alpha1.ProviderName)
 	externalProviderVersion := envOrDefault("EXTERNAL_PROVIDER_VERSION", externalv1alpha1.ProviderVersion)
+	hostedControllerName := envOrDefault("HOSTED_CONTROLLER_NAME", hostedv1alpha1.ControllerName)
+	hostedProviderName := envOrDefault("HOSTED_PROVIDER_NAME", hostedv1alpha1.ProviderName)
+	hostedProviderVersion := envOrDefault("HOSTED_PROVIDER_VERSION", hostedv1alpha1.ProviderVersion)
+	hostedEndpointTTL := envUintOrDefault("HOSTED_ENDPOINT_TTL", uint(hostedv1alpha1.DefaultTTL))
 	var externalDNSQPS float64
 	var externalDNSBurst int
 
@@ -127,12 +137,21 @@ func main() {
 	flag.StringVar(&externalProviderVersion, "external-provider-version", externalProviderVersion, "Provider version handled by the external controller.")
 	flag.Float64Var(&externalDNSQPS, "external-dns-qps", externalprobe.DefaultQPS, "Maximum external DNS query rate per controller process.")
 	flag.IntVar(&externalDNSBurst, "external-dns-burst", externalprobe.DefaultBurst, "Maximum external DNS query burst per controller process.")
+	flag.BoolVar(&hostedControllerEnabled, "hosted-controller-enabled", hostedControllerEnabled, "Enable hosted authoritative DNS controllers and endpoint conversion.")
+	flag.StringVar(&hostedControllerName, "hosted-controller-name", hostedControllerName, "ZoneClass.spec.controllerName handled by the hosted controller.")
+	flag.StringVar(&hostedProviderName, "hosted-provider-name", hostedProviderName, "Provider.metadata.name handled by the hosted controller.")
+	flag.StringVar(&hostedProviderVersion, "hosted-provider-version", hostedProviderVersion, "Provider version handled by the hosted controller.")
+	flag.UintVar(&hostedEndpointTTL, "hosted-endpoint-ttl", hostedEndpointTTL, "TTL in seconds for hosted endpoint-converted records (1-86400).")
 
 	zapOpts := zap.Options{Development: true}
 	zapOpts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zapOpts)))
+	if hostedControllerEnabled && (hostedEndpointTTL < 1 || hostedEndpointTTL > 86400) {
+		ctrl.Log.Error(nil, "hosted endpoint TTL must be between 1 and 86400 seconds")
+		os.Exit(1)
+	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
@@ -246,6 +265,34 @@ func main() {
 		}
 	}
 
+	if hostedControllerEnabled {
+		if err := (&hostedzoneclass.ZoneClassReconciler{
+			Client:          mgr.GetClient(),
+			ControllerName:  hostedControllerName,
+			ProviderName:    hostedProviderName,
+			ProviderVersion: hostedProviderVersion,
+		}).SetupWithManager(mgr); err != nil {
+			ctrl.Log.Error(err, "unable to set up hosted ZoneClass controller")
+			os.Exit(1)
+		}
+
+		hostedReconciler, err := hostedzoneunit.NewReconciler(mgr.GetClient(), hostedzoneunit.Options{
+			ControllerName:  hostedControllerName,
+			ProviderName:    hostedProviderName,
+			ProviderVersion: hostedProviderVersion,
+			DefaultViews: []string{envOrDefault("HOSTED_SERVER_ADDRESS",
+				"dns-api-hosted-server."+envOrDefault("POD_NAMESPACE", "dns-api-system")+".svc:53")},
+		})
+		if err != nil {
+			ctrl.Log.Error(err, "unable to configure hosted DNS resolver")
+			os.Exit(1)
+		}
+		if err := hostedReconciler.SetupWithManager(mgr); err != nil {
+			ctrl.Log.Error(err, "unable to set up hosted ZoneUnit controller")
+			os.Exit(1)
+		}
+	}
+
 	if err := (&zoneunitcontroller.ZoneUnitCompositionReconciler{
 		Client: mgr.GetClient(),
 	}).SetupWithManager(mgr); err != nil {
@@ -307,6 +354,9 @@ func main() {
 	if externalControllerEnabled {
 		externalconversion.NewHandler().Register(mgr.GetWebhookServer())
 	}
+	if hostedControllerEnabled {
+		hostedconversion.NewHandler(uint32(hostedEndpointTTL)).Register(mgr.GetWebhookServer())
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		ctrl.Log.Error(err, "unable to set up health check")
@@ -342,4 +392,17 @@ func envBoolOrDefault(name string, fallback bool) bool {
 		os.Exit(1)
 	}
 	return enabled
+}
+
+func envUintOrDefault(name string, fallback uint) uint {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseUint(value, 10, 32)
+	if err != nil {
+		ctrl.Log.Error(err, "invalid unsigned integer environment variable", "name", name)
+		os.Exit(1)
+	}
+	return uint(parsed)
 }

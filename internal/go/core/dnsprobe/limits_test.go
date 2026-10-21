@@ -1,4 +1,4 @@
-package probe
+package dnsprobe
 
 import (
 	"context"
@@ -14,14 +14,14 @@ import (
 
 func TestWireChainBoundaries(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		links  int
-		loop   bool
-		reason string
+		name    string
+		links   int
+		loop    bool
+		failure string
 	}{
-		{"eight", 8, false, "ResolutionVerified"},
-		{"nine", 9, false, "DNSProbeFailed"},
-		{"loop", 2, true, "ResolutionMismatch"},
+		{"eight", 8, false, ""},
+		{"nine", 9, false, "chain-limit"},
+		{"loop", 2, true, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := localDNS(t, func(w dns.ResponseWriter, request *dns.Msg) {
@@ -46,9 +46,8 @@ func TestWireChainBoundaries(t *testing.T) {
 			resolver, _ := NewWireResolver(WireOptions{})
 			session := wireSession{resolver: resolver}
 			view := session.resolve(context.Background(), "link-0.example.test", server, "", "example.test")
-			decision := Evaluate(ProbeRequest{Name: "link-0.example.test", Expected: RRsets{A: []string{"192.0.2.1"}}}, ProbeResult{Views: []View{view}})
-			if decision.Reason != tc.reason {
-				t.Fatalf("decision=%#v view=%#v", decision, view)
+			if view.Failure != tc.failure || view.Mismatch != tc.loop || (tc.failure == "" && !tc.loop && (len(view.A) != 1 || view.A[0] != "192.0.2.1")) {
+				t.Fatalf("view=%#v", view)
 			}
 		})
 	}
@@ -150,7 +149,7 @@ func TestNameserverAddressFanoutFailsClosed(t *testing.T) {
 	})
 	resolver, _ := NewWireResolver(WireOptions{})
 	request := ProbeRequest{Zone: "example.test", Name: "example.test", ZoneOnly: true}
-	request.Policy.Resolver.Servers = []string{server}
+	request.Policy.Servers = []string{server}
 	request.Policy.ExpectedNameservers = []string{"ns.example.test"}
 	result, err := resolver.Probe(context.Background(), request)
 	if err != nil {

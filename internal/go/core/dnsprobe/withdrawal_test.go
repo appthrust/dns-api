@@ -1,4 +1,4 @@
-package probe
+package dnsprobe
 
 import (
 	"fmt"
@@ -6,7 +6,6 @@ import (
 	"slices"
 	"testing"
 
-	externalv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/external/v1alpha1"
 	"github.com/miekg/dns"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -19,7 +18,7 @@ func withdrawalView(id string, a, aaaa []string, ttl uint32) View {
 }
 
 func TestEvaluateWithdrawal(t *testing.T) {
-	request := ProbeRequest{Name: "www.example.test", Zone: "example.test", WithdrawalAddress: "192.0.2.1", Policy: externalv1alpha1.ExternalZoneClassParameters{Resolver: externalv1alpha1.ResolverPolicy{Servers: []string{"192.0.2.53:53", "192.0.2.54:53"}}}}
+	request := ProbeRequest{Name: "www.example.test", Zone: "example.test", WithdrawalAddress: "192.0.2.1", Policy: Policy{Servers: []string{"192.0.2.53:53", "192.0.2.54:53"}}}
 	cases := []struct {
 		name   string
 		mutate func(*ProbeRequest, *[]View)
@@ -75,7 +74,7 @@ func TestEvaluateWithdrawal(t *testing.T) {
 }
 
 func TestWithdrawalEvidenceOrderStable(t *testing.T) {
-	r := ProbeRequest{Name: "www.example.test", WithdrawalAddress: "192.0.2.1", Policy: externalv1alpha1.ExternalZoneClassParameters{Resolver: externalv1alpha1.ResolverPolicy{Servers: []string{"a", "b"}}}}
+	r := ProbeRequest{Name: "www.example.test", WithdrawalAddress: "192.0.2.1", Policy: Policy{Servers: []string{"a", "b"}}}
 	result := ProbeResult{Views: []View{withdrawalView("recursive/a", nil, nil, 0), withdrawalView("recursive/b", []string{"192.0.2.3", "192.0.2.2"}, nil, 60)}}
 	first := EvaluateWithdrawal(r, result)
 	slices.Reverse(result.Views)
@@ -90,7 +89,7 @@ func TestWithdrawalEvidenceOrderStable(t *testing.T) {
 
 func TestWithdrawalAuthorityAndChainEvidence(t *testing.T) {
 	request := ProbeRequest{Name: "www.example.test", Zone: "example.test", WithdrawalAddress: "192.0.2.1",
-		Policy: externalv1alpha1.ExternalZoneClassParameters{Resolver: externalv1alpha1.ResolverPolicy{Servers: []string{"recursive"}}, ExpectedNameservers: []string{"ns.example.test"}}}
+		Policy: Policy{Servers: []string{"recursive"}, ExpectedNameservers: []string{"ns.example.test"}}}
 	request.Evidence = &ZoneEvidence{Zone: request.Zone, PolicyFingerprint: Fingerprint(request.Policy), Authorities: []string{"192.0.2.53:53"}, Views: []AuthorityObservation{
 		{ID: "recursive/recursive", Nameservers: []string{"ns.example.test"}, SOAOwner: request.Zone},
 		{ID: "authority/192.0.2.53:53", Nameservers: []string{"ns.example.test"}, SOAOwner: request.Zone, Authoritative: true},
@@ -162,29 +161,10 @@ func TestWithdrawalQueryCacheEvidence(t *testing.T) {
 }
 
 func TestWithdrawalFailureRetainsLaterPositiveHorizon(t *testing.T) {
-	request := ProbeRequest{Name: "www.example.test", WithdrawalAddress: "192.0.2.1", Policy: externalv1alpha1.ExternalZoneClassParameters{Resolver: externalv1alpha1.ResolverPolicy{Servers: []string{"a", "b"}}}}
+	request := ProbeRequest{Name: "www.example.test", WithdrawalAddress: "192.0.2.1", Policy: Policy{Servers: []string{"a", "b"}}}
 	result := ProbeResult{Views: []View{{ID: "recursive/a", Failure: "timeout"}, withdrawalView("recursive/b", []string{"192.0.2.1"}, nil, 3600)}}
 	decision := EvaluateWithdrawal(request, result)
 	if decision.Status != metav1.ConditionUnknown || len(decision.Cache) == 0 || decision.Cache[0].PositiveTTL == nil || *decision.Cache[0].PositiveTTL != 3600 {
 		t.Fatalf("lost positive evidence=%#v", decision)
-	}
-}
-
-func TestWithdrawalPendingMetricClosedReasons(t *testing.T) {
-	const unit = "test-withdrawal-metric"
-	t.Cleanup(func() { SetWithdrawalsPending(unit, nil) })
-	SetWithdrawalsPending(unit, map[string]int{"private/unbounded": 1, "DNSStillResolves": 2})
-	pendingMu.Lock()
-	counts := withdrawalUnits[unit]
-	if len(counts) != 2 || counts["DNSProbeFailed"] != 1 || counts["DNSStillResolves"] != 2 {
-		t.Errorf("unbounded reason labels: %#v", counts)
-	}
-	pendingMu.Unlock()
-	SetWithdrawalsPending(unit, nil)
-	pendingMu.Lock()
-	_, exists := withdrawalUnits[unit]
-	pendingMu.Unlock()
-	if exists {
-		t.Fatal("deleted unit retained pending metrics")
 	}
 }

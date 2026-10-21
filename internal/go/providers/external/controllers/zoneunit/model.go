@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/appthrust/dns-api/internal/go/providers/external/probe"
+	probe "github.com/appthrust/dns-api/internal/go/core/dnsprobe"
 	dnsv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/dns/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )

@@ -1,5 +1,5 @@
-// Package probe observes DNS using QUERY only. It has no DNS mutation interface.
-package probe
+// Package dnsprobe observes DNS using QUERY only. It has no DNS mutation interface.
+package dnsprobe
 
 import (
 	"context"
@@ -10,8 +10,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-
-	externalv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/external/v1alpha1"
 )
 
 type Resolver interface {
@@ -28,7 +26,7 @@ type ProbeRequest struct {
 	Name     string
 	Zone     string
 	Expected RRsets
-	Policy   externalv1alpha1.ExternalZoneClassParameters
+	Policy   Policy
 	// DueTime lets the wire resolver measure scheduling plus limiter queue delay once.
 	DueTime time.Time
 	// ZoneOnly collects apex/NS-host work once for this Zone's probe cycle.
@@ -107,7 +105,7 @@ func Fingerprint(value any) string {
 	return hex.EncodeToString(hash[:])
 }
 
-func minTTL(current *uint32, next *uint32) *uint32 {
+func MinTTL(current *uint32, next *uint32) *uint32 {
 	if next == nil {
 		return current
 	}

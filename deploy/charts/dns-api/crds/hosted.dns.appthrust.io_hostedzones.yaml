@@ -1,0 +1,236 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: hostedzones.hosted.dns.appthrust.io
+spec:
+  group: hosted.dns.appthrust.io
+  names:
+    kind: HostedZone
+    listKind: HostedZoneList
+    plural: hostedzones
+    singular: hostedzone
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.domainName
+      name: Domain
+      type: string
+    - jsonPath: .spec.serial
+      name: Serial
+      type: integer
+    - jsonPath: .status.servers[*].endpoint
+      name: Servers
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: HostedZone is the complete authoritative serving snapshot of
+          one ZoneUnit.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: HostedZoneSpec is written only by the hosted controller.
+            properties:
+              contentDigest:
+                pattern: ^sha256:[0-9a-f]{64}$
+                type: string
+              domainName:
+                maxLength: 253
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$
+                type: string
+              nameServers:
+                items:
+                  description: NameServer declares an authoritative name and its canonical
+                    IP glue addresses.
+                  properties:
+                    addresses:
+                      items:
+                        maxLength: 45
+                        type: string
+                      maxItems: 8
+                      minItems: 1
+                      type: array
+                    name:
+                      maxLength: 253
+                      minLength: 1
+                      pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$
+                      type: string
+                  required:
+                  - addresses
+                  - name
+                  type: object
+                  x-kubernetes-validations:
+                  - message: name must be a DNS name, not an IP address
+                    rule: '!isIP(self.name)'
+                  - message: addresses must contain canonical IP addresses
+                    rule: self.addresses.all(a, isIP(a) && ip.isCanonical(a))
+                maxItems: 8
+                minItems: 1
+                type: array
+              records:
+                description: Records includes apex NS and glue as well as accepted
+                  record claims.
+                items:
+                  description: HostedZoneRecord is one complete canonical presentation-format
+                    RRset.
+                  properties:
+                    name:
+                      description: Name is @ or a relative name; a wildcard is allowed
+                        only as the first label.
+                      maxLength: 253
+                      minLength: 1
+                      pattern: ^(@|\*|((\*\.)?[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?(\.[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?)*))$
+                      type: string
+                    ttl:
+                      format: int32
+                      maximum: 2147483647
+                      minimum: 1
+                      type: integer
+                    type:
+                      enum:
+                      - A
+                      - AAAA
+                      - CNAME
+                      - TXT
+                      - MX
+                      - CAA
+                      - NS
+                      type: string
+                    values:
+                      items:
+                        type: string
+                      maxItems: 64
+                      minItems: 1
+                      type: array
+                  required:
+                  - name
+                  - ttl
+                  - type
+                  - values
+                  type: object
+                maxItems: 10000
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                - type
+                x-kubernetes-list-type: map
+              serial:
+                description: Serial increases on each content change.
+                format: int32
+                maximum: 4294967295
+                minimum: 1
+                type: integer
+              soa:
+                description: SOA is fully rendered and contains no implicit defaults.
+                properties:
+                  expire:
+                    format: int32
+                    maximum: 2419200
+                    minimum: 1
+                    type: integer
+                  minimum:
+                    format: int32
+                    maximum: 2419200
+                    minimum: 1
+                    type: integer
+                  mname:
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$
+                    type: string
+                  refresh:
+                    format: int32
+                    maximum: 2419200
+                    minimum: 1
+                    type: integer
+                  retry:
+                    format: int32
+                    maximum: 2419200
+                    minimum: 1
+                    type: integer
+                  rname:
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$
+                    type: string
+                required:
+                - expire
+                - minimum
+                - mname
+                - refresh
+                - retry
+                - rname
+                type: object
+            required:
+            - contentDigest
+            - domainName
+            - nameServers
+            - records
+            - serial
+            - soa
+            type: object
+            x-kubernetes-validations:
+            - message: serial must be greater than zero
+              rule: self.serial > 0
+          status:
+            properties:
+              servers:
+                description: Servers is independently applied by servers using hosted-server/<pod>.
+                items:
+                  description: HostedZoneServerStatus acknowledges the exact content
+                    loaded by one server.
+                  properties:
+                    contentDigest:
+                      pattern: ^sha256:[0-9a-f]{64}$
+                      type: string
+                    endpoint:
+                      description: Endpoint is the server pod identity, namespace/name,
+                        not an IP endpoint.
+                      minLength: 1
+                      type: string
+                    observedAt:
+                      format: date-time
+                      type: string
+                    serial:
+                      format: int32
+                      maximum: 4294967295
+                      minimum: 1
+                      type: integer
+                  required:
+                  - contentDigest
+                  - endpoint
+                  - observedAt
+                  - serial
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - endpoint
+                x-kubernetes-list-type: map
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

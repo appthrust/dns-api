@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	probe "github.com/appthrust/dns-api/internal/go/core/dnsprobe"
 	"github.com/appthrust/dns-api/internal/go/providers/external/manifest"
-	"github.com/appthrust/dns-api/internal/go/providers/external/probe"
 	dnsv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/dns/v1alpha1"
 	externalv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/external/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -304,7 +304,7 @@ func TestAggregateAllowlistAndFalsePrecedence(t *testing.T) {
 			t.Fatalf("mapping=%s/%s", status, mapped)
 		}
 	}
-	data := publicData(externalv1alpha1.ExternalZoneClassParameters{Resolver: externalv1alpha1.ResolverPolicy{Mode: externalv1alpha1.ResolverModeRecursive}}, "www.example", false, probe.Decision{}, now, now.Add(time.Minute))
+	data := publicData(probe.Policy{Mode: probe.ModeRecursive}, "www.example", false, probe.Decision{}, now, now.Add(time.Minute))
 	var public externalv1alpha1.ExternalVerificationData
 	if err := json.Unmarshal(data.Data.Raw, &public); err != nil {
 		t.Fatal(err)

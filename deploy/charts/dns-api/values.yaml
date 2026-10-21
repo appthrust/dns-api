@@ -69,6 +69,27 @@ providers:
     providerVersion: v1alpha1
     dnsQPS: 40
     dnsBurst: 80
+  hosted:
+    enabled: false
+    controllerName: hosted.dns.appthrust.io/controller
+    providerName: hosted.dns.appthrust.io
+    providerVersion: v1alpha1
+    endpointTTL: 60
+    server:
+      replicas: 1
+      service:
+        type: ClusterIP
+        loadBalancerIP: ""
+        annotations: {}
+        ipFamilies: []
+      watchNamespace: ""
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
 
 extraArgs: []
 extraEnv: []

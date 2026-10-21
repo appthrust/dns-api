@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/appthrust/dns-api/internal/go/providers/external/probe"
+	probe "github.com/appthrust/dns-api/internal/go/core/dnsprobe"
 	dnsv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/dns/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,7 +23,7 @@ func withdrawalItem(name, address string) dnsv1alpha1.ZoneUnitWithdrawal {
 
 func withdrawalAnswer(request probe.ProbeRequest, address string, ttl uint32) (probe.ProbeResult, error) {
 	result := probe.ProbeResult{}
-	for _, server := range request.Policy.Resolver.Servers {
+	for _, server := range request.Policy.Servers {
 		view := probe.View{ID: "recursive/" + server}
 		for _, family := range []string{"A", "AAAA"} {
 			answer := probe.AnswerEvidence{Name: request.Name, QType: family, NegativeTTL: &ttl}

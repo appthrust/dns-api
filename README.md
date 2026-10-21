@@ -8,6 +8,8 @@ dns-api is currently focused on:
 
 - Amazon Route 53 public hosted zones, and adoption of existing private hosted zones
 - Cloudflare full zones
+- External verification of customer-managed DNS (opt-in, credentialless)
+- [Hosted authoritative DNS](./docs/design/hosted-provider.md) served from Kubernetes snapshots (opt-in, credentialless)
 - `A`, `AAAA`, `TXT`, `CNAME`, `MX`, `CAA`, and delegated `NS` records
 - Route 53 `ALIAS` records
 - A Headlamp Desktop plugin for browsing and editing dns-api resources
@@ -46,6 +48,16 @@ ghcr.io/appthrust/dns-api:<version>
 ```
 
 For local development or source installs, use the chart in [deploy/charts/dns-api](./deploy/charts/dns-api).
+
+The hosted provider is opt-in with `providers.hosted.enabled=true` and requires
+webhook and cert-manager support for endpoint conversion. It runs the manager's
+hosted controllers and a separate `/hosted-server` process from the same image.
+The server Service exposes UDP/TCP port 53, forwarding to non-root port 5353.
+Set `providers.hosted.server.service.type=LoadBalancer` and the Service VIP/glue
+configuration when publishing an authority outside the cluster. Hosted
+ZoneClasses omit `identityRef`; configure `nameServers` and delegate the zone
+from its parent. See [Hosted Authoritative Runtime](./docs/design/provider-extension.md#hosted-authoritative-runtime)
+for runtime settings, namespace scope, and endpoint TTL configuration.
 
 ### Customer-managed DNS (external provider)
 
