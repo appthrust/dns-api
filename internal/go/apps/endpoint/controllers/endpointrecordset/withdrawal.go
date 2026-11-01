@@ -72,11 +72,13 @@ func (r *Reconciler) captureWithdrawals(ctx context.Context, ers *endpointv1alph
 			if err != nil {
 				return err
 			}
-			supported, err := r.withdrawalSupported(ctx, zone.Spec.Provider)
-			if err != nil {
-				return err
+			selected.zone = zone
+			if zone != nil {
+				selected.protected, err = r.withdrawalSupported(ctx, zone.Spec.Provider)
+				if err != nil {
+					return err
+				}
 			}
-			selected = binding{zone: zone, protected: supported}
 			bindings[key] = selected
 		}
 		if !selected.protected {
@@ -127,6 +129,8 @@ func (r *Reconciler) captureWithdrawals(ctx context.Context, ers *endpointv1alph
 // withdrawalZone prefers the retained publication binding. Without one, run the
 // same publication resolver with a nonempty single-pair snapshot, including
 // conversion rejection and Zone fallback. This never applies its RecordSets.
+// A nil Zone with no error means authoritative evidence proves this endpoint
+// was never published and therefore has no withdrawal obligation to capture.
 func (r *Reconciler) withdrawalZone(ctx context.Context, ers *endpointv1alpha1.EndpointRecordSet, namespace, hostname string, address netip.Addr) (*dnsv1alpha1.Zone, error) {
 	for _, published := range ers.Status.Hostnames {
 		if retirement.CanonicalHostname(published.Hostname) != hostname || published.Zone == nil {
@@ -148,6 +152,16 @@ func (r *Reconciler) withdrawalZone(ctx context.Context, ers *endpointv1alpha1.E
 		return nil, err
 	}
 	if resolved.Zone == nil {
+		condition := meta.FindStatusCondition(resolved.Conditions, "Resolved")
+		if condition != nil && condition.Status == metav1.ConditionFalse && condition.Reason == "ZoneNotResolved" {
+			unpublished, err := r.unpublishedWithoutZone(ctx, ers, namespace, hostname)
+			if err != nil {
+				return nil, err
+			}
+			if unpublished {
+				return nil, nil
+			}
+		}
 		return nil, fmt.Errorf("%w: no publication Zone binding resolved for %s", retirement.ErrCapturePending, hostname)
 	}
 	return &dnsv1alpha1.Zone{

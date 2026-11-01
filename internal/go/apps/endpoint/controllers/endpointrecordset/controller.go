@@ -46,6 +46,8 @@ const (
 
 type Reconciler struct {
 	client.Client
+	// APIReader is the authoritative absence boundary for never-published withdrawals.
+	APIReader          client.Reader
 	Scheme             *runtime.Scheme
 	RESTConfig         *rest.Config
 	RecordSetNamespace string
@@ -118,6 +120,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Scheme == nil {
 		r.Scheme = mgr.GetScheme()
+	}
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("endpoint-recordset").
