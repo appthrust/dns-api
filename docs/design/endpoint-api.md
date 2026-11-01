@@ -99,6 +99,21 @@ Sources install `endpoint.dns.appthrust.io/generated-recordsets` at ERS creation
 
 Before pruning retirement entries or deleting generated children, the endpoint controller resolves each retired hostname/IP pair to its retained publication Zone binding, or the ordinary single-pair publication resolution/conversion/fallback path. For a Provider version supporting withdrawal it durably creates a deterministic independent `RecordWithdrawal`; successful Create is persisted evidence, and AlreadyExists requires Get plus exact immutable shape, lifecycle, address label, and provenance checks. Duplicate pairs at the same retirement generation share a claim. Missing resolution, collisions, write failures, and collection overflow hold capture rather than discard intent. A known non-supporting Provider requires no withdrawal claim.
 
+The sole no-authority exception is a provably never-published endpoint. After an
+explicit `Resolved=False/ZoneNotResolved` result, capture is vacuous only when
+the ERS has no retained hostname Zone binding or generated-record reference/count,
+no sticky `WithdrawalProtected=True`, an uncached Zone read finds no
+suffix-matching authority, and an uncached label-bound RecordSet read proves no
+generated child exists. An unusable matching Zone, conversion/capability rejection,
+any existing or deleting child, incomplete list, missing reader, or read error
+holds capture. The authoritative read closes the child-create/status-write crash
+and cache-lag window; a missing previously bound Zone never authorizes cleanup.
+This exception creates no withdrawal claim and makes no assertion about arbitrary
+customer DNS. It uses the ordinary optimistic-lock prune/finalizer paths. Active
+intent then resumes current-generation reconciliation and still reports
+`ZoneNotResolved`, not fabricated DNS readiness. There is no Kind, provider-name,
+hostname-suffix, or environment-specific bypass.
+
 Active ERSs clear captured retirement collections with an optimistic-lock patch; a concurrent append conflicts instead of being lost. Retire-only ERSs retain entries until DELETE and report current-generation `WithdrawalCaptured=True/Captured`, message `Every retired hostname/address pair has been durably captured.` Their `Resolved`, `Accepted`, `Programmed`, and `Ready` conditions are `False/Retiring`, message `EndpointRecordSet is retiring; no active records are published.` They issue no empty conversion request or RecordSet. Capture failure reports `WithdrawalCapturePending` and `Ready=False`; source overflow leaves the old spec unchanged and is never truncated.
 
 `WithdrawalProtected` defaults closed: only current-generation `False` after all hostname providers resolve without withdrawal support permits the old unprotected cleanup path. Once True, protection is sticky for that ERS incarnation. `WithdrawalCaptured=True` is accepted only at the current ERS generation. Capture acknowledgment proves independent obligation persistence, not DNS withdrawal.

@@ -143,6 +143,19 @@ Both collections use `listType=map` keyed by entry ID. Limits are 64 target-reti
 2. Source writes never prune. The endpoint controller resolves the Zone/provider for each retired pair and creates external Core claims by deterministic create-or-get, checking complete immutable shape/provenance on collision.
 3. Only after every associated claim is durably created/read back does endpoint prune exact captured entry IDs using an optimistic-lock patch. Current-generation status confirms captured entries. A create failure leaves retirement intent; a crash between create and prune is harmless. Source retries merge current state, never restore an old whole spec over concurrent entries.
 4. Non-external pairs finish existing child cleanup and prune without an external DNS wait. Generated RecordSets/ERSs can finish ordinary deletion once independent claims exist; they do not wait for customer DNS changes.
+5. A never-published endpoint has no managed withdrawal obligation. The endpoint
+   controller may acknowledge it without creating a claim only after explicit
+   `ZoneNotResolved`, no retained hostname Zone binding or generated-record
+   reference/count, no sticky `WithdrawalProtected=True`, and authoritative reads
+   proving no suffix-matching Zone and no source-label-bound generated RecordSet.
+   These reads bypass informer caches so a successful child Create followed by a
+   failed status write cannot look unpublished. Existing/deleting children,
+   missing prior authority, an unusable matching Zone, incomplete lists, or read
+   failures retain intent and finalizers. This is not proof of arbitrary DNS
+   absence, and does not weaken withdrawal for any previously published endpoint.
+   Normal pruning lets active hostname diagnostics reach the current generation;
+   normal retire-only capture lets source cleanup finish. No environment-specific
+   exception or synthetic Provider is introduced.
 
 Missing/deleting Gateway, rejected admission, and every cleanup path, **including `cleanupForRoute`**, move remaining pairs to retired state rather than immediately delete the ERS. Source deletion waits for current-generation capture confirmation.
 
