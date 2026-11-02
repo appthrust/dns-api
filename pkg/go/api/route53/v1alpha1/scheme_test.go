@@ -35,3 +35,16 @@ func TestAddToSchemeRegistersRoute53Types(t *testing.T) {
 		}
 	}
 }
+
+func TestZoneClassParametersDeepCopyNegativeCacheTTL(t *testing.T) {
+	minimum := int32(60)
+	parameters := &route53v1alpha1.Route53ZoneClassParameters{NegativeCacheTTLSeconds: &minimum}
+	copied := parameters.DeepCopy()
+	*copied.NegativeCacheTTLSeconds = 0
+	if *parameters.NegativeCacheTTLSeconds != 60 {
+		t.Fatal("deep copy shares negativeCacheTTLSeconds storage")
+	}
+	if (&route53v1alpha1.Route53ZoneClassParameters{}).DeepCopy().NegativeCacheTTLSeconds != nil {
+		t.Fatal("deep copy defaulted an absent negativeCacheTTLSeconds")
+	}
+}

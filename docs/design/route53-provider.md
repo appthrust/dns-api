@@ -117,6 +117,7 @@ Route 53 `ZoneClass.spec.parameters` fields:
 - `zoneCreationPolicy`: whether new public hosted zone creation is allowed. Values: `Create` or `Deny`. Default: `Create` for Public, `Deny` for Private. Private permits only absent or `Deny`.
 - `zoneDeletionPolicy`: whether the hosted zone is deleted when the `Zone` is deleted. Values: `Delete` or `Retain`. Default: `Retain`. Private permits only absent or `Retain`.
 - `sameNameZonePolicy`: how to handle existing same-name hosted zones in the Route 53 account. Values: `Allow` or `Deny`. Default: `Deny`.
+- `negativeCacheTTLSeconds`: optional SOA MINIMUM (negative caching TTL), integer `0..2147483647` seconds. Applies to created and adopted public or private zones; absent leaves the SOA untouched.
 - `tags`: Route 53 tags added to created hosted zones.
 
 Route 53 `Provider` schema descriptions for `zoneClass.schemas.parameters`:
@@ -127,10 +128,25 @@ Route 53 `Provider` schema descriptions for `zoneClass.schemas.parameters`:
 | `zoneCreationPolicy` | `Controls whether dns-api may create a Route 53 public hosted zone when a Zone does not adopt an existing hosted zone. Defaults to Create for Public and Deny for Private.` |
 | `zoneDeletionPolicy` | `Controls whether dns-api deletes the Route 53 hosted zone when the Kubernetes Zone is deleted. Private requires Retain.` |
 | `sameNameZonePolicy` | `Controls whether dns-api may create a new Route 53 hosted zone when another same-name hosted zone already exists.` |
+| `negativeCacheTTLSeconds` | `Sets the SOA MINIMUM (RFC 2308 negative caching TTL) of hosted zones created or adopted by this class. Absent leaves the SOA untouched.` |
 | `tags` | `Additional Route 53 tags applied to hosted zones created by this ZoneClass.` |
 | `tags.<key>` | `One Route 53 tag value applied to hosted zones created by this ZoneClass.` |
 
 AWS credentials themselves are not stored in `ZoneClass.spec.parameters`. `ZoneClass.spec.identityRef` selects the AWS account and assume role chain through `Route53Identity`.
+
+### Negative cache TTL
+
+Resolvers cache NXDOMAIN and NODATA answers using the SOA MINIMUM (bounded by the SOA RRset TTL under RFC 2308). A low negative-cache TTL lets records written by dns-api become visible promptly after a previously cached negative answer expires. Set the platform ZoneClass parameter, for example:
+
+```yaml
+spec:
+  parameters:
+    negativeCacheTTLSeconds: 60
+```
+
+When set, dns-api owns only the apex SOA MINIMUM, for both created and adopted hosted zones, including private zones. It reads the SOA once on each normal zone observation and silently corrects drift with one UPSERT, preserving the RRset TTL and MNAME, RNAME, SERIAL, REFRESH, RETRY, and EXPIRE. Omitting the parameter performs no SOA read or write and does not restore an earlier value. Already cached negative answers retain their original expiration; lowering MINIMUM does not flush resolver caches.
+
+The submitted change is stored in `ZoneUnit.status.provider.state.pendingHostedZoneChange` with operation `NegativeCacheTTL`. Like other pending hosted-zone changes, it blocks child RecordSet reconciliation with `Programmed=False`, reason `ProviderChangePending`, until the existing change poll observes `INSYNC`, clears the pending state, and requeues for fresh observation. Public `negativeCacheTTLSeconds` is the last observed MINIMUM, not the submitted desired value; zero is omitted. Provider errors use the normal provider-error classification. A missing or malformed SOA sets `Programmed=False`, reason `ExternalResourceMismatch`, without exposing its raw value.
 
 ### Private hosted zones
 
@@ -228,6 +244,7 @@ Route 53 `Zone.status.provider.data` fields:
 
 - `hostedZoneID`: Route 53 hosted zone ID in `Z...` form.
 - `zoneType`: observed Route 53 hosted zone type, `Public` or `Private`.
+- `negativeCacheTTLSeconds`: last observed SOA MINIMUM when managed by the ZoneClass, in seconds. Zero is omitted; while a change is pending this remains the previous observed value.
 
 Route 53 `Provider` schema descriptions for `zone.schemas.statusProviderData`:
 
@@ -235,6 +252,7 @@ Route 53 `Provider` schema descriptions for `zone.schemas.statusProviderData`:
 | --- | --- |
 | `hostedZoneID` | `Route 53 hosted zone ID managed for this Zone.` |
 | `zoneType` | `Observed Route 53 hosted zone type.` |
+| `negativeCacheTTLSeconds` | `Last observed SOA MINIMUM when managed by the ZoneClass; zero is omitted.` |
 
 Pending Route 53 hosted-zone and record-set changes are stored in `ZoneUnit.status.provider.state`, not in public claim status. Pending fields are kept only while Route 53 reports `PENDING`. Completed `INSYNC` changes are not retained as history. `Programmed=True` is set after pending fields are removed and provider state is re-observed to match `ZoneUnit.spec`.
 
@@ -245,7 +263,7 @@ Route 53-specific Zone Events:
 | type | reason | related | When emitted |
 | --- | --- | --- | --- |
 | `Normal` | `Route53HostedZoneChangeSubmitted` | none | `CreateHostedZone` or `DeleteHostedZone` change submitted. |
-| `Normal` | `Route53HostedZoneChangeInSync` | none | Route 53 hosted zone create/delete change becomes `INSYNC`. |
+| `Normal` | `Route53HostedZoneChangeInSync` | none | A hosted-zone change, including `NegativeCacheTTL`, becomes `INSYNC`. |
 
 ## Route 53 RecordSet Provider Schema
 

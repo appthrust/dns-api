@@ -56,6 +56,7 @@ type Provider interface {
 	GetChange(ctx context.Context, id string) (*route53v1alpha1.Route53Change, error)
 	DeleteHostedZone(ctx context.Context, id string) (*route53v1alpha1.Route53Change, error)
 	TagHostedZone(ctx context.Context, id string, tags map[string]string) error
+	GetRecordSet(ctx context.Context, hostedZoneID, recordName string, recordType dnsv1alpha1.RecordType) (*RecordSetResource, error)
 	ListRecordSets(ctx context.Context, hostedZoneID string) ([]RecordSetResource, error)
 	ChangeRecordSets(ctx context.Context, hostedZoneID string, changes []RecordSetChange) (*route53v1alpha1.Route53Change, error)
 }

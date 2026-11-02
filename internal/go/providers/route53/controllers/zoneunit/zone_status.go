@@ -249,8 +249,9 @@ func (r *ZoneReconciler) patchRoute53ZoneStatus(ctx context.Context, zone *dnsv1
 	}
 	return r.patchZoneStatus(ctx, zone, func(status *dnsv1alpha1.ZoneStatus) {
 		publicRaw, _ := json.Marshal(route53v1alpha1.Route53ZoneStatusData{
-			HostedZoneID: statusData.HostedZoneID,
-			ZoneType:     statusData.ZoneType,
+			HostedZoneID:            statusData.HostedZoneID,
+			ZoneType:                statusData.ZoneType,
+			NegativeCacheTTLSeconds: statusData.NegativeCacheTTLSeconds,
 		})
 		status.Provider = &dnsv1alpha1.ProviderStatus{
 			Data:  runtime.RawExtension{Raw: publicRaw},
@@ -316,6 +317,9 @@ func route53ZoneClassParameters(zoneClass *dnsv1alpha1.ZoneClass) (*route53v1alp
 	var params route53v1alpha1.Route53ZoneClassParameters
 	if err := json.Unmarshal(zoneClass.Spec.Parameters.Raw, &params); err != nil {
 		return nil, fmt.Errorf("parameters must match Route 53 ZoneClass schema: %w", err)
+	}
+	if params.NegativeCacheTTLSeconds != nil && *params.NegativeCacheTTLSeconds < 0 {
+		return nil, errors.New("negativeCacheTTLSeconds must be between 0 and 2147483647")
 	}
 	return &params, nil
 }

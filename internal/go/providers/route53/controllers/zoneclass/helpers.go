@@ -77,6 +77,9 @@ func route53ZoneClassParameters(zoneClass *dnsv1alpha1.ZoneClass) (*route53v1alp
 	if err := json.Unmarshal(zoneClass.Spec.Parameters.Raw, &params); err != nil {
 		return nil, fmt.Errorf("parameters must match Route 53 ZoneClass schema: %w", err)
 	}
+	if params.NegativeCacheTTLSeconds != nil && *params.NegativeCacheTTLSeconds < 0 {
+		return nil, errors.New("negativeCacheTTLSeconds must be between 0 and 2147483647")
+	}
 	return &params, nil
 }
 

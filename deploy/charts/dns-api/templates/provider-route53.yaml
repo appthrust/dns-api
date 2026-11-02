@@ -52,6 +52,12 @@ spec:
                   enum:
                     - Allow
                     - Deny
+                negativeCacheTTLSeconds:
+                  type: integer
+                  format: int32
+                  minimum: 0
+                  maximum: 2147483647
+                  description: Sets the SOA MINIMUM (RFC 2308 negative caching TTL) of hosted zones created or adopted by this class. Absent leaves the SOA untouched.
                 tags:
                   type: object
                   description: Additional Route 53 tags applied to hosted zones created by this ZoneClass.
@@ -94,6 +100,12 @@ spec:
                   enum:
                     - Public
                     - Private
+                negativeCacheTTLSeconds:
+                  type: integer
+                  format: int32
+                  minimum: 0
+                  maximum: 2147483647
+                  description: Last observed SOA MINIMUM when managed by the ZoneClass; zero is omitted.
       recordSet:
         supportedTypes:
           - A
