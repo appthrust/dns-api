@@ -161,6 +161,10 @@ func (r *ZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, err
 	}
 
+	if result, done, err := r.reconcileNegativeCacheTTL(ctx, provider, &zone, hostedZone, params); done || err != nil {
+		return result, err
+	}
+
 	result = ctrl.Result{}
 	result, err = r.refreshHostedZoneStatus(ctx, provider, &zone, hostedZone)
 	if err != nil || result.Requeue || result.RequeueAfter > 0 {
@@ -682,6 +686,7 @@ func (r *ZoneReconciler) clearHostedZoneProviderStatus(ctx context.Context, zone
 	statusData.HostedZoneID = ""
 	statusData.ZoneType = ""
 	statusData.CallerReference = ""
+	statusData.NegativeCacheTTLSeconds = 0
 	statusData.PendingHostedZoneChange = nil
 	statusData.PendingRecordSetChange = nil
 	raw, err := json.Marshal(statusData)

@@ -51,6 +51,13 @@ type Route53ZoneClassParameters struct {
 	// SameNameZonePolicy controls whether multiple hosted zones may share a domain name.
 	SameNameZonePolicy SameNameZonePolicy `json:"sameNameZonePolicy,omitempty"`
 
+	// NegativeCacheTTLSeconds sets the SOA MINIMUM (RFC 2308 negative caching TTL)
+	// of hosted zones created or adopted by this class. Absent leaves the SOA untouched.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=2147483647
+	// +optional
+	NegativeCacheTTLSeconds *int32 `json:"negativeCacheTTLSeconds,omitempty"`
+
 	// Tags are applied to Route 53 hosted zones created by this class.
 	Tags map[string]string `json:"tags,omitempty"`
 }

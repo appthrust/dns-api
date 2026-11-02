@@ -19,6 +19,12 @@ type Route53ZoneStatusData struct {
 	// ZoneType is the observed Route 53 hosted zone type.
 	ZoneType ZoneType `json:"zoneType,omitempty"`
 
+	// NegativeCacheTTLSeconds is the last observed SOA MINIMUM when managed by the class.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=2147483647
+	// +optional
+	NegativeCacheTTLSeconds int32 `json:"negativeCacheTTLSeconds,omitempty"`
+
 	// CallerReference is the value passed to CreateHostedZone.
 	CallerReference string `json:"callerReference,omitempty"`
 

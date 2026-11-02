@@ -541,16 +541,19 @@ type createHostedZoneRequest struct {
 	callerReference string
 }
 type fakeProvider struct {
-	zones      map[string]HostedZone
-	tags       map[string]map[string]string
-	changes    map[string]*route53v1alpha1.Route53Change
-	records    map[string]RecordSetResource
-	created    []createHostedZoneRequest
-	deleted    []string
-	upserted   []RecordSetResource
-	deletedRRs []RecordSetResource
-	listed     []string
-	fetched    []string
+	zones            map[string]HostedZone
+	tags             map[string]map[string]string
+	changes          map[string]*route53v1alpha1.Route53Change
+	records          map[string]RecordSetResource
+	created          []createHostedZoneRequest
+	deleted          []string
+	upserted         []RecordSetResource
+	deletedRRs       []RecordSetResource
+	listed           []string
+	fetched          []string
+	readRecords      []string
+	listedRecordSets []string
+	getRecordSetErr  error
 
 	changeRecordSetsErr   func(hostedZoneID string, changes []RecordSetChange) error
 	listHostedZonesByName func(domainName string) ([]HostedZone, error)
@@ -634,6 +637,10 @@ func (p *fakeProvider) TagHostedZone(_ context.Context, id string, tags map[stri
 	return nil
 }
 func (p *fakeProvider) GetRecordSet(_ context.Context, hostedZoneID, recordName string, recordType dnsv1alpha1.RecordType) (*RecordSetResource, error) {
+	p.readRecords = append(p.readRecords, recordKey(hostedZoneID, recordName, recordType))
+	if p.getRecordSetErr != nil {
+		return nil, p.getRecordSetErr
+	}
 	record, ok := p.records[recordKey(hostedZoneID, recordName, recordType)]
 	if !ok {
 		return nil, nil
@@ -642,6 +649,7 @@ func (p *fakeProvider) GetRecordSet(_ context.Context, hostedZoneID, recordName 
 	return &copied, nil
 }
 func (p *fakeProvider) ListRecordSets(_ context.Context, hostedZoneID string) ([]RecordSetResource, error) {
+	p.listedRecordSets = append(p.listedRecordSets, hostedZoneID)
 	var records []RecordSetResource
 	for _, record := range p.records {
 		if normalizeHostedZoneID(record.HostedZoneID) != normalizeHostedZoneID(hostedZoneID) {

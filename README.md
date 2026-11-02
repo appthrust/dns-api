@@ -7,6 +7,7 @@ It is useful when platform teams want to give application teams a safe DNS workf
 dns-api is currently focused on:
 
 - Amazon Route 53 public hosted zones, and adoption of existing private hosted zones
+- Optional Route 53 negative-cache TTL management (SOA MINIMUM) for created and adopted hosted zones
 - Cloudflare full zones
 - External verification of customer-managed DNS (opt-in, credentialless)
 - [Hosted authoritative DNS](./docs/design/hosted-provider.md) served from Kubernetes snapshots (opt-in, credentialless)
