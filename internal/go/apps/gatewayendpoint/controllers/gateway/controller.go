@@ -33,6 +33,7 @@ const (
 	managedByLabel                 = "app.kubernetes.io/managed-by"
 	managedByValue                 = "dns-api-gateway-endpoint"
 	httpRouteGatewayIndex          = "gateway.endpoint.dns.appthrust.io/parent-gateway"
+	excludedListenersAnnotation    = "gateway.endpoint.dns.appthrust.io/excluded-listeners"
 )
 
 type Reconciler struct {
@@ -260,6 +261,7 @@ func (r *Reconciler) endpointRecordSetsForGateway(ctx context.Context, gateway *
 	hostnames := map[string]struct{}{}
 	retainedHostnames := map[string]struct{}{}
 	receiptBindings := map[string]admissionReceiptBinding{}
+	excluded := excludedListeners(gateway)
 	for i := range routes.Items {
 		route := &routes.Items[i]
 		if !route.DeletionTimestamp.IsZero() {
@@ -267,6 +269,9 @@ func (r *Reconciler) endpointRecordSetsForGateway(ctx context.Context, gateway *
 		}
 		fullyAccepted := allRouteParentRefsAccepted(route)
 		for _, binding := range routeGatewayBindings(route, gateway) {
+			if _, skip := excluded[binding.listener.Name]; skip {
+				continue
+			}
 			acceptance := routeParentAcceptance(route, binding.ref)
 			for _, hostname := range effectiveHostnamesForListener(route, binding.listener) {
 				match, hasReceipt := admissionReceiptBinding{}, false
@@ -342,6 +347,21 @@ func (r *Reconciler) endpointRecordSetsForGateway(ctx context.Context, gateway *
 			Targets:   targets,
 		},
 	}}, nil
+}
+
+// The Gateway owner may delegate DNS for selected listener sections to a
+// different writer. Apply this before both new admission and receipt retention.
+func excludedListeners(gateway *gatewayv1.Gateway) map[gatewayv1.SectionName]struct{} {
+	var excluded map[gatewayv1.SectionName]struct{}
+	for name := range strings.SplitSeq(gateway.Annotations[excludedListenersAnnotation], ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			if excluded == nil {
+				excluded = make(map[gatewayv1.SectionName]struct{})
+			}
+			excluded[gatewayv1.SectionName(name)] = struct{}{}
+		}
+	}
+	return excluded
 }
 
 func (r *Reconciler) applyGatewayEndpointRecordSets(ctx context.Context, namespace string, gatewayKey client.ObjectKey, desired []endpointv1alpha1.EndpointRecordSet) error {

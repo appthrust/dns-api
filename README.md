@@ -27,6 +27,18 @@ dns-api adds custom resources to your cluster:
 
 The controller watches those resources and reconciles the real DNS provider state.
 
+### Delegating DNS for Gateway listeners
+
+A Gateway owner can set
+`gateway.endpoint.dns.appthrust.io/excluded-listeners: "https-managed,http-managed"`
+on the Gateway. These comma-separated listener section names are excluded from
+Gateway EndpointRecordSet publication, including wildcard redirect routes, exact
+HTTPRoute hosts, and previously admitted hostname retention. Other listeners are
+unchanged. Apply the annotation before adding listeners whose DNS has another
+owner, and deploy a dns-api version supporting this contract first; older versions
+do not honour the annotation. The other writer owns its RecordSets and deletion.
+
+
 ## Install
 
 The controller is distributed as a container image and a Helm chart on GitHub Container Registry. Choose the released version you want to run:
