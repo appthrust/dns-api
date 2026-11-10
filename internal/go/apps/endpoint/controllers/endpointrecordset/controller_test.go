@@ -3,18 +3,22 @@ package endpointrecordset
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
 
+	gatewayendpoint "github.com/appthrust/dns-api/internal/go/apps/gatewayendpoint/controllers/gateway"
 	dnsv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/dns/v1alpha1"
 	endpointv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/endpoint/v1alpha1"
 	route53v1alpha1 "github.com/appthrust/dns-api/pkg/go/api/route53/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -22,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 func TestPreferredRecordTypeForEndpointRecordSet(t *testing.T) {
@@ -498,4 +503,191 @@ func TestReconcileIsolatesInvalidRecordSetName(t *testing.T) {
 		assertEndpointCondition(t, got.Status.Conditions, "Resolved", metav1.ConditionFalse, 7)
 		assertEndpointCondition(t, got.Status.Conditions, "Ready", metav1.ConditionFalse, 7)
 	}
+}
+
+func TestGatewayHostnameChangesKeepUnchangedRecordSets(t *testing.T) {
+	ctx := t.Context()
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, gatewayv1.Install, endpointv1alpha1.AddToScheme, dnsv1alpha1.AddToScheme} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "project", Name: "public", UID: "gateway-uid", Generation: 1},
+		Spec:       gatewayv1.GatewaySpec{GatewayClassName: "fleet"},
+		Status: gatewayv1.GatewayStatus{
+			Addresses:  []gatewayv1.GatewayStatusAddress{{Value: "192.0.2.1"}},
+			Conditions: []metav1.Condition{{Type: "Accepted", Status: metav1.ConditionTrue, ObservedGeneration: 1}},
+		},
+	}
+	newRoute := func(name string) *gatewayv1.HTTPRoute {
+		host, section := gatewayv1.Hostname(name+".example.com"), gatewayv1.SectionName(name)
+		gateway.Spec.Listeners = append(gateway.Spec.Listeners, gatewayv1.Listener{Name: section, Hostname: &host, Port: 80, Protocol: gatewayv1.HTTPProtocolType})
+		ref := gatewayv1.ParentReference{Name: "public", SectionName: &section}
+		return &gatewayv1.HTTPRoute{
+			ObjectMeta: metav1.ObjectMeta{Namespace: gateway.Namespace, Name: name, UID: types.UID(name), Generation: 1},
+			Spec:       gatewayv1.HTTPRouteSpec{CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: []gatewayv1.ParentReference{ref}}, Hostnames: []gatewayv1.Hostname{host}},
+			Status: gatewayv1.HTTPRouteStatus{RouteStatus: gatewayv1.RouteStatus{Parents: []gatewayv1.RouteParentStatus{{
+				ParentRef: ref, ControllerName: "gateway.multicluster.appthrust.io/gateway-fleet-controller",
+				Conditions: []metav1.Condition{{Type: "Accepted", Status: metav1.ConditionTrue, ObservedGeneration: 1}},
+			}}}},
+		}
+	}
+	first, second, third := newRoute("first"), newRoute("second"), newRoute("third")
+	zone := &dnsv1alpha1.Zone{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "dns", Name: "zone"},
+		Spec: dnsv1alpha1.ZoneSpec{DomainName: "example.com", Provider: route53v1alpha1.ProviderRef,
+			AllowedRecordSets: []dnsv1alpha1.AllowedRecordSet{{
+				Namespaces: dnsv1alpha1.AllowedRecordSetNamespaces{Selector: metav1.LabelSelector{MatchLabels: map[string]string{"writer": "true"}}},
+				Records:    []dnsv1alpha1.AllowedRecord{{Name: dnsv1alpha1.RecordNamePolicy{Pattern: ".*"}, Types: []dnsv1alpha1.RecordType{dnsv1alpha1.RecordTypeA}}},
+			}},
+		},
+	}
+	capability := &endpointv1alpha1.EndpointProviderCapability{
+		ObjectMeta: metav1.ObjectMeta{Name: "route53"}, Spec: endpointv1alpha1.EndpointProviderCapabilitySpec{Provider: route53v1alpha1.ProviderRef},
+	}
+	counts := map[string]int{}
+	incarnation := 0
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(gateway, first, &endpointv1alpha1.EndpointRecordSet{}, &dnsv1alpha1.RecordSet{}).
+		WithObjects(gateway, first, second, third, zone, capability,
+			&dnsv1alpha1.Provider{ObjectMeta: metav1.ObjectMeta{Name: route53v1alpha1.ProviderRef.Name}, Spec: dnsv1alpha1.ProviderSpec{Versions: []dnsv1alpha1.ProviderVersion{{Name: route53v1alpha1.ProviderRef.Version}}}},
+			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "dns", Labels: map[string]string{"writer": "true"}}}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if _, ok := obj.(*endpointv1alpha1.EndpointRecordSet); ok {
+					obj.SetUID("endpoint-uid")
+					obj.SetGeneration(1)
+				}
+				if _, ok := obj.(*dnsv1alpha1.RecordSet); ok {
+					counts["create"]++
+					incarnation++
+					obj.SetUID(types.UID(fmt.Sprintf("record-%d", incarnation)))
+				}
+				return cl.Create(ctx, obj, opts...)
+			},
+			Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if endpoint, ok := obj.(*endpointv1alpha1.EndpointRecordSet); ok {
+					var old endpointv1alpha1.EndpointRecordSet
+					if err := cl.Get(ctx, client.ObjectKeyFromObject(endpoint), &old); err != nil {
+						return err
+					}
+					if !apiequality.Semantic.DeepEqual(old.Spec, endpoint.Spec) {
+						endpoint.Generation++
+					}
+				}
+				if _, ok := obj.(*dnsv1alpha1.RecordSet); ok {
+					counts["update"]++
+				}
+				return cl.Update(ctx, obj, opts...)
+			},
+			Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				if _, ok := obj.(*dnsv1alpha1.RecordSet); ok {
+					counts["patch"]++
+				}
+				return cl.Patch(ctx, obj, patch, opts...)
+			},
+			Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if _, ok := obj.(*dnsv1alpha1.RecordSet); ok {
+					counts["delete"]++
+				}
+				return cl.Delete(ctx, obj, opts...)
+			},
+		}).Build()
+	source := &gatewayendpoint.Reconciler{Client: cl, EndpointRecordSetNamespace: "dns"}
+	endpoint := &Reconciler{Client: cl, RecordSetNamespace: "dns", conversionFunc: func(_ context.Context, _ *endpointv1alpha1.EndpointProviderCapability, in endpointv1alpha1.EndpointRecordSetConversionInput) ([]endpointv1alpha1.RecordSetSpecFragment, string, error) {
+		ttl := int32(60)
+		return []endpointv1alpha1.RecordSetSpecFragment{{Name: in.Name, Type: endpointv1alpha1.EndpointRecordSetTypeA, TTL: &ttl, A: &dnsv1alpha1.ARecordSet{Addresses: []string{in.Targets[0].Value}}}}, "", nil
+	}}
+	reconcile := func(route *gatewayv1.HTTPRoute) {
+		t.Helper()
+		if _, err := source.Reconcile(ctx, ctrlRequest(route)); err != nil {
+			t.Fatal(err)
+		}
+		var intents endpointv1alpha1.EndpointRecordSetList
+		if err := cl.List(ctx, &intents); err != nil || len(intents.Items) != 1 {
+			t.Fatalf("expected one Gateway intent, got %d: %v", len(intents.Items), err)
+		}
+		for range 2 {
+			if _, err := endpoint.Reconcile(ctx, ctrlRequest(&intents.Items[0])); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	snapshot := func() map[string]dnsv1alpha1.RecordSet {
+		t.Helper()
+		var records dnsv1alpha1.RecordSetList
+		if err := cl.List(ctx, &records); err != nil {
+			t.Fatal(err)
+		}
+		result := map[string]dnsv1alpha1.RecordSet{}
+		for _, record := range records.Items {
+			result[record.Spec.Name] = record
+		}
+		return result
+	}
+	assertRetained := func(before map[string]dnsv1alpha1.RecordSet, removed string, creates, deletes int) {
+		t.Helper()
+		after := snapshot()
+		for name, old := range before {
+			if name == removed {
+				if _, found := after[name]; found {
+					t.Fatalf("removed hostname %s still has a child", name)
+				}
+				continue
+			}
+			current, found := after[name]
+			if !found || old.UID == "" || old.UID != current.UID || old.ResourceVersion != current.ResourceVersion || !apiequality.Semantic.DeepEqual(old, current) {
+				t.Fatalf("unchanged hostname %s was rewritten or recreated: before=%+v after=%+v", name, old, current)
+			}
+		}
+		if counts["create"] != creates || counts["delete"] != deletes || counts["update"] != 0 || counts["patch"] != 0 {
+			t.Fatalf("RecordSet writes = %v, want creates=%d deletes=%d and no spec writes", counts, creates, deletes)
+		}
+		clear(counts)
+	}
+	reconcile(first)
+	before := snapshot()
+	if len(before) != 3 {
+		t.Fatalf("initial records = %d, want 3", len(before))
+	}
+	clear(counts)
+
+	// The new listener advances only the Gateway. Its old status is stale;
+	// neither that nor a pending new route revokes the admitted siblings.
+	added := newRoute("fourth")
+	added.Status.Parents[0].Conditions[0].Status = metav1.ConditionUnknown
+	gateway.Generation++
+	if err := cl.Update(ctx, gateway); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Create(ctx, added); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(added)
+	assertRetained(before, "", 0, 0)
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(added), added); err != nil {
+		t.Fatal(err)
+	}
+	added.Status.Parents[0].Conditions[0].Status = metav1.ConditionTrue
+	if err := cl.Status().Update(ctx, added); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(added)
+	assertRetained(before, "", 1, 0)
+	before = snapshot()
+	if len(before) != 4 {
+		t.Fatalf("records after admission = %d, want 4", len(before))
+	}
+	if err := cl.Delete(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	gateway.Generation++
+	gateway.Spec.Listeners = append(gateway.Spec.Listeners[:1], gateway.Spec.Listeners[2:]...)
+	if err := cl.Update(ctx, gateway); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(second)
+	assertRetained(before, "second", 0, 1)
 }

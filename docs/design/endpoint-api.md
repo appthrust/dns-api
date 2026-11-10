@@ -76,6 +76,13 @@ remains `-`. `RecordSet.spec.name` keeps the original DNS name, including `@` or
 identity, so the apex and a literal `apex` label remain distinct. Existing valid
 object names and the 63-character truncation scheme are unchanged.
 
+An unchanged generated RecordSet is not written again: the endpoint controller
+compares its owned labels and spec before updating it. Adding or removing a
+sibling hostname changes only that hostname's children; unchanged children retain
+their UID and resourceVersion. Target, TTL, provider options, or owned-label drift
+still updates the existing object in place. Retirement capture still precedes
+pruning; this no-op check does not alter withdrawal authority.
+
 Before applying children, the controller checks each generated object name
 against Kubernetes RFC 1123 subdomain validation. An invalid name produces
 `Resolved=False` with reason `InvalidRecordSetName` for that hostname and no
