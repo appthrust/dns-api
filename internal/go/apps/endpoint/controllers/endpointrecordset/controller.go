@@ -499,6 +499,10 @@ func (r *Reconciler) applyRecordSets(ctx context.Context, endpointRecordSet *end
 			if err != nil {
 				return err
 			}
+			if apiequality.Semantic.DeepEqual(existing.Labels, desired.Labels) &&
+				apiequality.Semantic.DeepEqual(existing.Spec, desired.Spec) {
+				return nil
+			}
 			existing.Labels = desired.Labels
 			existing.Spec = desired.Spec
 			return r.Update(ctx, &existing, client.FieldOwner(fieldOwner))
