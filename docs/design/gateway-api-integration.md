@@ -156,14 +156,20 @@ The Gateway controller preserves target type and value. It does not turn hostnam
 
 ## Parent Acceptance
 
-The controller distinguishes current admission from unavailable observation for
-each parent reference. A current `Accepted=True` condition has
+The controller distinguishes current admission from retention of an established
+publication for each parent reference. A current `Accepted=True` condition has
 `observedGeneration` equal to the route generation and is the only state that
-can admit a hostname for a first publication. A current `Accepted=False`
-explicitly withdraws the affected binding. Missing, `Unknown`, and stale
-conditions are observation-unknown rather than denials: they may retain only
-an exact receipt from an earlier admitted reconcile, never authorize a new
-hostname.
+can admit a hostname for a first publication. For DNS retention, a current
+route-level `Accepted=False` is treated exactly as `Unknown`: like missing or
+stale conditions, it may retain a hostname with a matching admission receipt
+only when the listener allows unknown retention. None of these states
+authorizes a new hostname.
+
+This follows [appthrust/platform ADR-0082, D4](https://github.com/appthrust/platform/blob/main/design/platform/adr-0082-publication-continuity.md):
+route admission and policy staging control serving permission, not publication
+intent. Withdrawing an established name during those transitions can send users
+to an estate wildcard with the wrong certificate; DNS withdrawal is not a
+security fence.
 
 An explicit current Gateway `Accepted=False` condition, whose
 `observedGeneration` equals the Gateway generation, withdraws every hostname
@@ -176,16 +182,21 @@ Gateway's targets or receipt forward.
 
 
 An older managed `EndpointRecordSet` without a valid receipt fails closed during
-unknown observation. It receives a receipt only from a normal reconcile with
-complete current acceptance and nonempty current targets.
+unknown observation or route-level `Accepted=False`. It receives a receipt only
+from a normal reconcile with complete current acceptance and nonempty current
+targets.
 
 
 The receipt also records the specific listener. Hostname or parent removal,
-listener removal or ownership change, route or Gateway identity replacement,
-and route/Gateway deletion remove the affected hostname immediately. A
-dynamic `allowedRoutes.namespaces.from: Selector` policy cannot be re-proved
-without a namespace read, so unknown observation under that policy is not
-retained. Independent sibling listener bindings are evaluated separately.
+listener removal or ownership change, and route/Gateway deletion remove the
+affected hostname immediately. Receipt identity rules remain unchanged: a route
+with a replacement UID may inherit and rebind a receipt only when all its current
+parent references are `Accepted=True`; a replacement under `False` or `Unknown`
+cannot inherit it. Gateway UID and class and the listener digest must still
+match for retention. A dynamic `allowedRoutes.namespaces.from: Selector` policy
+cannot be re-proved without a namespace read, so neither unknown observation
+nor route-level `Accepted=False` is retained under that policy. Independent
+sibling listener bindings are evaluated separately.
 
 The receipt records route namespace and name only so a parent-reference removal,
 change, deletion, or final not-found reconciliation can requeue the previously

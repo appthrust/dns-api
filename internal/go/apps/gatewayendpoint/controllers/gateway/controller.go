@@ -300,8 +300,9 @@ func (r *Reconciler) endpointRecordSetsForGateway(ctx context.Context, gateway *
 					}
 					continue
 				}
-				if acceptance == parentAcceptanceRejected ||
-					(acceptance == parentAcceptanceUnknown && !listenerAllowsUnknownRetention(route, gateway, binding.listener)) ||
+				// Route admission controls serving, not publication intent.
+				// False and Unknown have the same receipt-retention boundary.
+				if (acceptance != parentAcceptanceAccepted && !listenerAllowsUnknownRetention(route, gateway, binding.listener)) ||
 					!hasReceipt {
 					continue
 				}
