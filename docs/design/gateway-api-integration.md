@@ -165,7 +165,7 @@ stale conditions, it may retain a hostname with a matching admission receipt
 only when the listener allows unknown retention. None of these states
 authorizes a new hostname.
 
-This follows [appthrust/platform ADR-0082, D4](https://github.com/appthrust/platform/blob/main/design/platform/adr-0082-publication-continuity.md):
+This follows [appthrust/platform ADR-0083, D4](https://github.com/appthrust/platform/blob/main/design/platform/adr-0083-publication-continuity.md):
 route admission and policy staging control serving permission, not publication
 intent. Withdrawing an established name during those transitions can send users
 to an estate wildcard with the wrong certificate; DNS withdrawal is not a
