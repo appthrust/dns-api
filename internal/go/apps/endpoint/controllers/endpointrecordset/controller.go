@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -15,6 +16,7 @@ import (
 	endpointconversionv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/endpoint/conversion/v1alpha1"
 	endpointv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/endpoint/v1alpha1"
 	route53v1alpha1 "github.com/appthrust/dns-api/pkg/go/api/route53/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -26,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -44,11 +47,40 @@ const (
 	generatedRecordSetsFinalizer             = endpointv1alpha1.GeneratedRecordSetsFinalizer
 )
 
+type transitionReason string
+
+const reasonRecordSetPruned transitionReason = "RecordSetPruned"
+
+const (
+	reasonHostnameNotResolved = "HostnameNotResolved"
+	reasonNotResolved         = "NotResolved"
+)
+
+type hostnameResolutionKind uint8
+
+const (
+	hostnameResolved hostnameResolutionKind = iota
+	hostnameRejected
+	hostnamePending
+)
+
+type hostnameResolution struct {
+	kind       hostnameResolutionKind
+	status     endpointv1alpha1.EndpointRecordSetHostnameStatus
+	recordSets []dnsv1alpha1.RecordSet
+}
+
+type recordSetPlan struct {
+	desired  []dnsv1alpha1.RecordSet
+	retained map[client.ObjectKey]struct{}
+}
+
 type Reconciler struct {
 	client.Client
 	// APIReader is the authoritative absence boundary for never-published withdrawals.
 	APIReader          client.Reader
 	Scheme             *runtime.Scheme
+	Recorder           record.EventRecorder
 	RESTConfig         *rest.Config
 	RecordSetNamespace string
 	conversionFunc     func(context.Context, *endpointv1alpha1.EndpointProviderCapability, endpointv1alpha1.EndpointRecordSetConversionInput) ([]endpointv1alpha1.RecordSetSpecFragment, string, error)
@@ -97,7 +129,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	status, desired, err := r.buildStatusAndRecordSets(ctx, &endpointRecordSet, recordSetNamespace)
 	if err != nil {
-		return ctrl.Result{}, err
+		// A failed observation never replaces the accepted child snapshot or
+		// reaches apply/prune. Only convergence becomes unknown.
+		retained := *endpointRecordSet.Status.DeepCopy()
+		retained.ObservedGeneration = endpointRecordSet.Generation
+		message := err.Error()
+		if len(message) > 2048 {
+			message = message[:2048]
+		}
+		setAggregateCondition(&retained, "Resolved", metav1.ConditionUnknown, endpointRecordSet.Generation, reasonHostnameNotResolved, message)
+		setAggregateCondition(&retained, "Ready", metav1.ConditionUnknown, endpointRecordSet.Generation, reasonNotResolved, message)
+		return ctrl.Result{}, errors.Join(err, r.patchStatus(ctx, &endpointRecordSet, retained))
 	}
 	r.annotateWithdrawalStatus(ctx, &endpointRecordSet, &status)
 	if protectionNeedsBarrier(&endpointRecordSet, status) {
@@ -123,6 +165,9 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	if r.APIReader == nil {
 		r.APIReader = mgr.GetAPIReader()
+	}
+	if r.Recorder == nil {
+		r.Recorder = mgr.GetEventRecorderFor("endpoint-recordset")
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("endpoint-recordset").
@@ -155,16 +200,35 @@ func (r *Reconciler) mapRecordSetToEndpointRecordSet(_ context.Context, obj clie
 	return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: namespace, Name: name}}}
 }
 
-func (r *Reconciler) buildStatusAndRecordSets(ctx context.Context, endpointRecordSet *endpointv1alpha1.EndpointRecordSet, recordSetNamespace string) (endpointv1alpha1.EndpointRecordSetStatus, []dnsv1alpha1.RecordSet, error) {
+func (r *Reconciler) buildStatusAndRecordSets(ctx context.Context, endpointRecordSet *endpointv1alpha1.EndpointRecordSet, recordSetNamespace string) (endpointv1alpha1.EndpointRecordSetStatus, recordSetPlan, error) {
 	status := endpointv1alpha1.EndpointRecordSetStatus{ObservedGeneration: endpointRecordSet.Generation}
+	plan := recordSetPlan{}
 	desiredByName := map[string]dnsv1alpha1.RecordSet{}
 	for _, hostname := range sortedStrings(endpointRecordSet.Spec.Hostnames) {
-		hostnameStatus, recordSets, err := r.recordSetsForHostname(ctx, endpointRecordSet, strings.TrimSuffix(hostname, "."), recordSetNamespace)
+		resolution, err := r.recordSetsForHostname(ctx, endpointRecordSet, strings.TrimSuffix(hostname, "."), recordSetNamespace)
 		if err != nil {
-			return status, nil, err
+			return status, recordSetPlan{}, err
 		}
-		status.Hostnames = append(status.Hostnames, hostnameStatus)
-		for _, recordSet := range recordSets {
+		if resolution.kind == hostnamePending {
+			for _, previous := range endpointRecordSet.Status.Hostnames {
+				if strings.TrimSuffix(previous.Hostname, ".") != resolution.status.Hostname {
+					continue
+				}
+				// Retain the recorded publication binding and child identities,
+				// not a desired spec: pending must never recreate a missing child.
+				resolution.status.Zone = previous.Zone
+				resolution.status.RecordSets = append([]endpointv1alpha1.EndpointRecordSetGeneratedRecordSetStatus(nil), previous.RecordSets...)
+				for _, child := range previous.RecordSets {
+					if plan.retained == nil {
+						plan.retained = make(map[client.ObjectKey]struct{})
+					}
+					plan.retained[client.ObjectKey{Namespace: child.Ref.Namespace, Name: child.Ref.Name}] = struct{}{}
+				}
+				break
+			}
+		}
+		status.Hostnames = append(status.Hostnames, resolution.status)
+		for _, recordSet := range resolution.recordSets {
 			desiredByName[recordSet.Name] = recordSet
 		}
 	}
@@ -175,7 +239,7 @@ func (r *Reconciler) buildStatusAndRecordSets(ctx context.Context, endpointRecor
 	if len(status.Hostnames) == 0 {
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: "Resolved", Status: metav1.ConditionFalse, ObservedGeneration: endpointRecordSet.Generation, Reason: "NoHostname", Message: "EndpointRecordSet has no hostnames."})
 		setAggregateConditions(&status, endpointRecordSet.Generation)
-		return status, nil, nil
+		return status, plan, nil
 	}
 	allResolved := true
 	for _, hostnameStatus := range status.Hostnames {
@@ -191,43 +255,49 @@ func (r *Reconciler) buildStatusAndRecordSets(ctx context.Context, endpointRecor
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: "Resolved", Status: metav1.ConditionFalse, ObservedGeneration: endpointRecordSet.Generation, Reason: "HostnameNotResolved", Message: "At least one hostname could not be resolved."})
 	}
 	setAggregateConditions(&status, endpointRecordSet.Generation)
-	desired := make([]dnsv1alpha1.RecordSet, 0, len(desiredByName))
+	plan.desired = make([]dnsv1alpha1.RecordSet, 0, len(desiredByName))
 	for _, recordSet := range desiredByName {
-		desired = append(desired, recordSet)
+		plan.desired = append(plan.desired, recordSet)
 	}
-	sort.Slice(desired, func(i, j int) bool {
-		return desired[i].Name < desired[j].Name
+	sort.Slice(plan.desired, func(i, j int) bool {
+		return plan.desired[i].Name < plan.desired[j].Name
 	})
-	return status, desired, nil
+	return status, plan, nil
 }
 
-func (r *Reconciler) recordSetsForHostname(ctx context.Context, endpointRecordSet *endpointv1alpha1.EndpointRecordSet, hostname, recordSetNamespace string) (endpointv1alpha1.EndpointRecordSetHostnameStatus, []dnsv1alpha1.RecordSet, error) {
-	status := endpointv1alpha1.EndpointRecordSetHostnameStatus{Hostname: hostname}
+// recordSetsForHostname owns the resolved/rejected/pending distinction.
+// Pending candidates may fall back to another Zone, but cannot authorize pruning.
+func (r *Reconciler) recordSetsForHostname(ctx context.Context, endpointRecordSet *endpointv1alpha1.EndpointRecordSet, hostname, recordSetNamespace string) (hostnameResolution, error) {
+	resolution := hostnameResolution{kind: hostnameRejected, status: endpointv1alpha1.EndpointRecordSetHostnameStatus{Hostname: hostname}}
+	status := &resolution.status
 	zones, err := r.sortedZones(ctx, hostname)
 	if err != nil {
-		return status, nil, err
+		return resolution, err
 	}
 	if len(zones) == 0 {
+		resolution.kind = hostnamePending
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: "Resolved", Status: metav1.ConditionFalse, Reason: "ZoneNotResolved", Message: "No Zone suffix matched this hostname."})
-		return status, nil, nil
+		return resolution, nil
 	}
 	rejections := make([]string, 0, len(zones))
 	for _, zone := range zones {
 		capability, capabilityCount, err := r.capabilityForZone(ctx, &zone)
 		if err != nil {
-			return status, nil, err
+			return resolution, err
 		}
 		if capabilityCount == 0 {
+			resolution.kind = hostnamePending
 			rejections = append(rejections, fmt.Sprintf("%s/%s: no EndpointProviderCapability for provider %s/%s", zone.Namespace, zone.Name, zone.Spec.Provider.Name, zone.Spec.Provider.Version))
 			continue
 		}
 		if capabilityCount > 1 {
+			resolution.kind = hostnamePending
 			rejections = append(rejections, fmt.Sprintf("%s/%s: multiple EndpointProviderCapability resources for provider %s/%s", zone.Namespace, zone.Name, zone.Spec.Provider.Name, zone.Spec.Provider.Version))
 			continue
 		}
 		preferredRecordType, err := preferredRecordTypeForEndpointRecordSet(endpointRecordSet)
 		if err != nil {
-			return status, nil, err
+			return resolution, err
 		}
 		input := endpointv1alpha1.EndpointRecordSetConversionInput{
 			Hostname:            hostname,
@@ -238,7 +308,7 @@ func (r *Reconciler) recordSetsForHostname(ctx context.Context, endpointRecordSe
 		}
 		fragments, message, err := r.convertEndpointRecordSet(ctx, capability, input)
 		if err != nil {
-			return status, nil, err
+			return resolution, err
 		}
 		if message != "" {
 			rejections = append(rejections, fmt.Sprintf("%s/%s: endpoint conversion failed: %s", zone.Namespace, zone.Name, message))
@@ -255,9 +325,13 @@ func (r *Reconciler) recordSetsForHostname(ctx context.Context, endpointRecordSe
 					Reason:  "InvalidRecordSetName",
 					Message: fmt.Sprintf("Generated RecordSet %s/%s has an invalid metadata.name: %s", recordSet.Namespace, recordSet.Name, strings.Join(problems, "; ")),
 				})
-				return status, nil, nil
+				resolution.kind = hostnameRejected
+				return resolution, nil
 			}
-			ok, message := declaration.RecordSetAllowedByZone(ctx, r.Client, &recordSet, &zone)
+			ok, message, err := declaration.RecordSetAllowedByZone(ctx, r.Client, &recordSet, &zone)
+			if err != nil {
+				return resolution, err
+			}
 			if !ok {
 				allowed = false
 				rejectionMessage = fmt.Sprintf("%s/%s: generated RecordSet %s/%s is not allowed by Zone: %s", zone.Namespace, zone.Name, recordSet.Namespace, recordSet.Name, message)
@@ -294,14 +368,18 @@ func (r *Reconciler) recordSetsForHostname(ctx context.Context, endpointRecordSe
 				item.Generation = existing.Generation
 				item.ObservedGeneration = existing.Status.ObservedGeneration
 				item.Conditions = existing.Status.Conditions
+			} else if !apierrors.IsNotFound(err) {
+				return resolution, err
 			}
 			status.RecordSets = append(status.RecordSets, item)
 		}
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: "Resolved", Status: metav1.ConditionTrue, Reason: "Resolved", Message: "Hostname resolved to generated RecordSets."})
-		return status, recordSets, nil
+		resolution.kind = hostnameResolved
+		resolution.recordSets = recordSets
+		return resolution, nil
 	}
 	meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: "Resolved", Status: metav1.ConditionFalse, Reason: "ZoneNotResolved", Message: "No Zone and EndpointProviderCapability combination accepted this hostname: " + strings.Join(rejections, "; ")})
-	return status, nil, nil
+	return resolution, nil
 }
 
 func preferredRecordTypeForEndpointRecordSet(endpointRecordSet *endpointv1alpha1.EndpointRecordSet) (endpointv1alpha1.EndpointRecordSetType, error) {
@@ -320,7 +398,7 @@ func (r *Reconciler) convertEndpointRecordSet(ctx context.Context, capability *e
 		return r.conversionFunc(ctx, capability, input)
 	}
 	if r.RESTConfig == nil {
-		return nil, "EndpointRecordSet conversion API is configured but no REST config is available", nil
+		return nil, "", errors.New("EndpointRecordSet conversion API is configured but no REST config is available")
 	}
 	version := capability.Spec.Conversion.Version
 	if version == "" {
@@ -357,38 +435,43 @@ func (r *Reconciler) convertEndpointRecordSet(ctx context.Context, capability *e
 		return nil, "", err
 	}
 	responseObject, err := dynamicClient.Resource(gvr).Create(ctx, &unstructured.Unstructured{Object: object}, metav1.CreateOptions{})
-	if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
-		return nil, "EndpointRecordSet conversion API denied the request: " + err.Error(), nil
-	}
 	if err != nil {
-		return nil, "EndpointRecordSet conversion API is unavailable: " + err.Error(), nil
+		return nil, "", fmt.Errorf("EndpointRecordSet conversion API request failed: %w", err)
 	}
 	var response endpointconversionv1alpha1.EndpointRecordSetConversion
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(responseObject.Object, &response); err != nil {
-		return nil, "EndpointRecordSet conversion API returned malformed content: " + err.Error(), nil
+		return nil, "", fmt.Errorf("EndpointRecordSet conversion API returned malformed content: %w", err)
 	}
 	if response.Status.UID != uid {
-		return nil, "EndpointRecordSet conversion API returned mismatched uid", nil
+		return nil, "", errors.New("EndpointRecordSet conversion API returned mismatched uid")
 	}
 	if response.Status.Result.Status == "Failure" {
 		message := response.Status.Result.Message
 		if message == "" {
 			message = response.Status.Result.Reason
 		}
-		return nil, message, nil
+		// Only the provider's known, non-retryable input decisions reject a
+		// candidate. Internal, retryable and unknown failures retain publication.
+		if !response.Status.Result.Retryable {
+			switch response.Status.Result.Reason {
+			case "InvalidInput", "UnsupportedTarget":
+				return nil, message, nil
+			}
+		}
+		return nil, "", fmt.Errorf("EndpointRecordSet conversion API failed (%s): %s", response.Status.Result.Reason, message)
 	}
 	if response.Status.Result.Status != "Success" {
-		return nil, "EndpointRecordSet conversion API returned unsupported result status " + response.Status.Result.Status, nil
+		return nil, "", fmt.Errorf("EndpointRecordSet conversion API returned unsupported result status %q", response.Status.Result.Status)
 	}
 	if response.Status.Output == nil || len(response.Status.Output.Fragments) == 0 {
-		return nil, "EndpointRecordSet conversion API returned no fragments", nil
+		return nil, "", errors.New("EndpointRecordSet conversion API returned no fragments")
 	}
 	for _, fragment := range response.Status.Output.Fragments {
 		if fragment.Name != input.Name {
-			return nil, "EndpointRecordSet conversion API changed record name", nil
+			return nil, "", errors.New("EndpointRecordSet conversion API changed record name")
 		}
 		if fragment.Type != endpointv1alpha1.EndpointRecordSetTypeA && fragment.Type != endpointv1alpha1.EndpointRecordSetTypeAAAA && fragment.Type != endpointv1alpha1.EndpointRecordSetTypeCNAME {
-			return nil, "EndpointRecordSet conversion API returned unsupported record type " + string(fragment.Type), nil
+			return nil, "", fmt.Errorf("EndpointRecordSet conversion API returned unsupported record type %q", fragment.Type)
 		}
 	}
 	return response.Status.Output.Fragments, "", nil
@@ -485,9 +568,9 @@ func generatedRecordSetName(endpointRecordSetNamespace, endpointRecordSetName, z
 	return strings.Trim(candidate[:prefixLength], "-") + suffix
 }
 
-func (r *Reconciler) applyRecordSets(ctx context.Context, endpointRecordSet *endpointv1alpha1.EndpointRecordSet, namespace string, desired []dnsv1alpha1.RecordSet) error {
+func (r *Reconciler) applyRecordSets(ctx context.Context, endpointRecordSet *endpointv1alpha1.EndpointRecordSet, namespace string, plan recordSetPlan) error {
 	desiredNames := map[string]struct{}{}
-	for _, item := range desired {
+	for _, item := range plan.desired {
 		desired := item
 		desiredNames[desired.Name] = struct{}{}
 		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -522,8 +605,11 @@ func (r *Reconciler) applyRecordSets(ctx context.Context, endpointRecordSet *end
 		if _, ok := desiredNames[item.Name]; ok {
 			continue
 		}
+		if _, retained := plan.retained[client.ObjectKeyFromObject(&item)]; retained {
+			continue
+		}
 		item := item
-		if err := r.Delete(ctx, &item); err != nil && !apierrors.IsNotFound(err) {
+		if err := r.pruneRecordSet(ctx, &item); err != nil {
 			return err
 		}
 	}
@@ -597,7 +683,7 @@ func (r *Reconciler) deleteGeneratedRecordSets(ctx context.Context, recordSetNam
 	}
 	for _, item := range existing.Items {
 		item := item
-		if err := r.Delete(ctx, &item); err != nil && !apierrors.IsNotFound(err) {
+		if err := r.pruneRecordSet(ctx, &item); err != nil {
 			return 0, err
 		}
 	}
@@ -610,6 +696,23 @@ func (r *Reconciler) deleteGeneratedRecordSets(ctx context.Context, recordSetNam
 		return 0, err
 	}
 	return len(remaining.Items), nil
+}
+
+// pruneRecordSet records the successful delete transition, not repeated
+// reconciles while a provider finalizer holds the terminating child.
+func (r *Reconciler) pruneRecordSet(ctx context.Context, item *dnsv1alpha1.RecordSet) error {
+	if !item.DeletionTimestamp.IsZero() {
+		return nil
+	}
+	if err := r.Delete(ctx, item, client.Preconditions{UID: &item.UID, ResourceVersion: &item.ResourceVersion}); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	message := fmt.Sprintf("Pruned generated RecordSet %s/%s for EndpointRecordSet %s/%s.", item.Namespace, item.Name, item.Labels[generatedLabelEndpointRecordSetNamespace], item.Labels[generatedLabelEndpointRecordSetName])
+	ctrl.LoggerFrom(ctx).Info(message, "reason", reasonRecordSetPruned, "uid", item.UID)
+	if r.Recorder != nil {
+		r.Recorder.Event(item, corev1.EventTypeNormal, string(reasonRecordSetPruned), message)
+	}
+	return nil
 }
 
 func setAggregateConditions(status *endpointv1alpha1.EndpointRecordSetStatus, generation int64) {

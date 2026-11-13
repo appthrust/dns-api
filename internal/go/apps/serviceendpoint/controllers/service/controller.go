@@ -15,6 +15,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -36,6 +37,7 @@ const (
 type Reconciler struct {
 	client.Client
 	Scheme                     *runtime.Scheme
+	Recorder                   record.EventRecorder
 	EndpointRecordSetNamespace string
 }
 
@@ -100,6 +102,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Scheme == nil {
 		r.Scheme = mgr.GetScheme()
+	}
+	if r.Recorder == nil {
+		r.Recorder = mgr.GetEventRecorderFor("service-endpoint")
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("service-endpoint").
@@ -177,7 +182,15 @@ func (r *Reconciler) cleanupForService(ctx context.Context, endpointRecordSetNam
 		return err
 	}
 	for i := range existing.Items {
-		if err := retirement.RetireOrDelete(ctx, r.Client, &existing.Items[i]); err != nil && !apierrors.IsNotFound(err) {
+		outcome, err := retirement.RetireOrDelete(ctx, r.Client, &existing.Items[i])
+		if outcome == retirement.Patched || outcome == retirement.Deleted {
+			message := fmt.Sprintf("Ended Service publication intent for EndpointRecordSet %s/%s.", existing.Items[i].Namespace, existing.Items[i].Name)
+			ctrl.LoggerFrom(ctx).Info(message, "reason", outcome, "uid", existing.Items[i].UID)
+			if r.Recorder != nil {
+				r.Recorder.Event(&existing.Items[i], corev1.EventTypeNormal, string(outcome), message)
+			}
+		}
+		if err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
 	}

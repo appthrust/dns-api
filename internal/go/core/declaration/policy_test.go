@@ -67,7 +67,10 @@ func TestSharedParentZonePolicyAllowsOnlyOrganizationAliasRecords(t *testing.T) 
 				ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: "candidate"},
 				Spec:       dnsv1alpha1.RecordSetSpec{Name: tt.recordName, Type: tt.recordType},
 			}
-			allowed, _ := RecordSetAllowedByZone(context.Background(), client, recordSet, zone)
+			allowed, _, err := RecordSetAllowedByZone(context.Background(), client, recordSet, zone)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if allowed != tt.allowed {
 				t.Fatalf("RecordSetAllowedByZone(%q, %q) = %t, want %t", tt.recordName, tt.recordType, allowed, tt.allowed)
 			}
@@ -81,7 +84,10 @@ func TestSharedParentZoneRootOwnerUsesSeparateNamespaceTrustBoundary(t *testing.
 		ObjectMeta: metav1.ObjectMeta{Namespace: zone.Namespace, Name: "root-caa"},
 		Spec:       dnsv1alpha1.RecordSetSpec{Name: "@", Type: dnsv1alpha1.RecordTypeCAA},
 	}
-	allowed, _ := RecordSetAllowedByZone(context.Background(), fake.NewClientBuilder().Build(), rootCAA, zone)
+	allowed, _, err := RecordSetAllowedByZone(context.Background(), fake.NewClientBuilder().Build(), rootCAA, zone)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !allowed {
 		t.Fatal("same-namespace root owner must remain independent from cross-namespace Organization endpoint grants")
 	}

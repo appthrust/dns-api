@@ -18,10 +18,10 @@ import (
 )
 
 const (
-	ProtectedCondition = "WithdrawalProtected"
-	CapturedCondition = "WithdrawalCaptured"
-	PendingCondition = "WithdrawalCapturePending"
-	MaxRetiredTargets = 64
+	ProtectedCondition  = "WithdrawalProtected"
+	CapturedCondition   = "WithdrawalCaptured"
+	PendingCondition    = "WithdrawalCapturePending"
+	MaxRetiredTargets   = 64
 	MaxRetiredHostnames = 256
 )
 
@@ -154,35 +154,51 @@ func ClearPending(ctx context.Context, c client.Client, ers *endpointv1alpha1.En
 	return c.Status().Patch(ctx, ers, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 }
 
+// Outcome reports a completed intent mutation independently of capture waiting.
+// Only Patched and Deleted authorize a transition Event. NoChange includes
+// failed writes, already absent/deleting objects, and an unchanged capture wait.
+type Outcome string
+
+const (
+	NoChange Outcome = ""
+	Patched  Outcome = "EndpointRecordSetRetired"
+	Deleted  Outcome = "EndpointRecordSetDeleted"
+)
+
 // RetireOrDelete is shared by every source cleanup path. A protected ERS is
 // deleted only after a current-generation endpoint capture acknowledgment.
-func RetireOrDelete(ctx context.Context, c client.Client, ers *endpointv1alpha1.EndpointRecordSet) error {
+func RetireOrDelete(ctx context.Context, c client.Client, ers *endpointv1alpha1.EndpointRecordSet) (Outcome, error) {
 	if !ers.DeletionTimestamp.IsZero() {
-		return nil
+		return NoChange, nil
 	}
 	if !Protected(ers) || (len(ers.Spec.Hostnames) == 0 || len(ers.Spec.Targets) == 0) && Captured(ers) {
 		return deleteExact(ctx, c, ers)
 	}
 	spec, err := Append(ers, endpointv1alpha1.EndpointRecordSetSpec{})
 	if err != nil {
-		return ReportPending(ctx, c, ers, err)
+		return NoChange, ReportPending(ctx, c, ers, err)
 	}
 	if len(spec.RetiredTargets) == 0 && len(spec.RetiredHostnames) == 0 {
 		// Hostname targets do not carry address withdrawal obligations.
 		return deleteExact(ctx, c, ers)
 	}
+	outcome := NoChange
 	if len(ers.Spec.Hostnames) != 0 || len(ers.Spec.Targets) != 0 {
 		base := ers.DeepCopy()
 		ers.Spec = spec
 		if err := c.Patch(ctx, ers, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-			return err
+			return NoChange, err
 		}
+		outcome = Patched
 	}
-	return fmt.Errorf("%w: waiting for EndpointRecordSet %s/%s capture", ErrCapturePending, ers.Namespace, ers.Name)
+	return outcome, fmt.Errorf("%w: waiting for EndpointRecordSet %s/%s capture", ErrCapturePending, ers.Namespace, ers.Name)
 }
 
-func deleteExact(ctx context.Context, c client.Client, ers *endpointv1alpha1.EndpointRecordSet) error {
-	return client.IgnoreNotFound(c.Delete(ctx, ers, client.Preconditions{UID: &ers.UID, ResourceVersion: &ers.ResourceVersion}))
+func deleteExact(ctx context.Context, c client.Client, ers *endpointv1alpha1.EndpointRecordSet) (Outcome, error) {
+	if err := c.Delete(ctx, ers, client.Preconditions{UID: &ers.UID, ResourceVersion: &ers.ResourceVersion}); err != nil {
+		return NoChange, client.IgnoreNotFound(err)
+	}
+	return Deleted, nil
 }
 
 // CanonicalHostname is shared by claim identity and source snapshot consumers.

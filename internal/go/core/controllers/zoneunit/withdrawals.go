@@ -146,7 +146,9 @@ func (r *ZoneUnitCompositionReconciler) reconcileWithdrawals(ctx context.Context
 			reason, message = "InvalidWithdrawal", err.Error()
 		} else if len(claim.Spec.Name)+len(zone.Spec.DomainName)+1 > 253 && claim.Spec.Name != "@" {
 			reason, message = "InvalidWithdrawal", "Withdrawal owner and Zone domain exceed the maximum DNS name length"
-		} else if allowed, detail := declaration.WithdrawalAllowedByZone(ctx, r.Client, claim, &zone); !allowed {
+		} else if allowed, detail, err := declaration.WithdrawalAllowedByZone(ctx, r.Client, claim, &zone); err != nil {
+			return err
+		} else if !allowed {
 			reason, message = "NotAllowed", detail
 		}
 		item := dnsv1alpha1.ZoneUnitWithdrawal{ClaimNamespace: claim.Namespace, ClaimName: claim.Name, Claim: withdrawalObjectRef(claim), ObservedGeneration: claim.Generation, Name: claim.Spec.Name, Address: claim.Spec.Address, Allowed: reason == "Accepted"}

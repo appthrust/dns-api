@@ -92,7 +92,7 @@ func TestWithdrawalNoZoneCompletesUnpublishedDeletion(t *testing.T) {
 				if !retirement.Captured(ers) || !hasRetirements(ers) {
 					t.Fatal("retire-only capture must acknowledge this generation without pruning its final intent")
 				}
-				if err := retirement.RetireOrDelete(ctx, r.Client, ers); err != nil {
+				if _, err := retirement.RetireOrDelete(ctx, r.Client, ers); err != nil {
 					t.Fatal(err)
 				}
 			} else if err := r.Delete(ctx, ers); err != nil {

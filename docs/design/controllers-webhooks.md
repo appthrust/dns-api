@@ -94,6 +94,34 @@ If composition acceptance is `False`, the claim `Accepted` is `False` and the it
 
 `Accepted=False` means the controller has enough information to reject the claim. `Accepted=Unknown` means the validation material is incomplete or temporarily unavailable, such as missing `Zone`, missing `ZoneClass`, missing provider identity state, missing owner state during GitOps recovery, unavailable Provider storage version, unavailable Provider conversion webhook, or a transient core error.
 
+Endpoint conversion distinguishes resolved children, explicit rejection, and
+pending observation per hostname. No Zone match and missing or ambiguous
+capabilities remain `Resolved=False/ZoneNotResolved`, with the existing diagnostic
+messages. They do not block other hostnames. Previous
+`status.hostnames[].recordSets` references exclude that hostname's children from
+pruning; retention never recreates or updates those children. Mixed resolved and
+unresolved sets keep the existing aggregate False conditions.
+
+Only non-retryable `InvalidInput` and `UnsupportedTarget` conversion results,
+invalid generated names, and observed Zone policy denials reject a hostname
+candidate and permit pruning. Failed API calls (including authorization failures),
+malformed responses, retryable or unknown conversion failures, and List/Get errors
+abort the complete pass before applying or pruning children.
+`RecordSetAllowedByZone` and `WithdrawalAllowedByZone` propagate Namespace read
+errors; they are not policy denials. On such errors, EndpointRecordSet reports
+`Resolved=Unknown/HostnameNotResolved` and `Ready=Unknown/NotResolved`, preserving
+the last accepted child snapshot and its Accepted/Programmed conditions.
+
+Source retirement returns an `Outcome` independently of its error:
+`Patched` (`EndpointRecordSetRetired`) means the retirement intent was persisted
+even though capture is still pending; `Deleted` (`EndpointRecordSetDeleted`)
+means DELETE succeeded; `NoChange` authorizes no transition record.
+Gateway and Service sources log and emit an Event only for a successful
+retirement or deletion. Gateway hostname removal emits `HostnameRemoved` after
+the successful intent update. Generated-child deletion emits `RecordSetPruned`
+only after DELETE succeeds, not while a finalizer holds a terminating child.
+NotFound and failed writes emit no transition Event.
+
 ## Withdrawal Composition and Projection
 
 Core composes independent `RecordWithdrawal` claims into `ZoneUnit.spec.withdrawals[]`; providers do not read those claims, waivers, EndpointRecordSets, or platform kinds. Core alone writes public withdrawal/waiver status. The Endpoint App only creates retained pair claims; source Apps only preserve endpoint retirement intent.
