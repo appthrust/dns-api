@@ -19,12 +19,12 @@ import (
 )
 
 const (
-	withdrawalCreatorAnnotation = "withdrawal.dns.appthrust.io/source-kind"
-	withdrawalSourceNamespaceAnnotation = "withdrawal.dns.appthrust.io/source-namespace"
-	withdrawalSourceNameAnnotation = "withdrawal.dns.appthrust.io/source-name"
-	withdrawalSourceUIDAnnotation = "withdrawal.dns.appthrust.io/source-uid"
+	withdrawalCreatorAnnotation          = "withdrawal.dns.appthrust.io/source-kind"
+	withdrawalSourceNamespaceAnnotation  = "withdrawal.dns.appthrust.io/source-namespace"
+	withdrawalSourceNameAnnotation       = "withdrawal.dns.appthrust.io/source-name"
+	withdrawalSourceUIDAnnotation        = "withdrawal.dns.appthrust.io/source-uid"
 	withdrawalSourceGenerationAnnotation = "withdrawal.dns.appthrust.io/source-generation"
-	withdrawalSourceHostnameAnnotation = "withdrawal.dns.appthrust.io/source-hostname"
+	withdrawalSourceHostnameAnnotation   = "withdrawal.dns.appthrust.io/source-hostname"
 )
 
 func hasRetirements(ers *endpointv1alpha1.EndpointRecordSet) bool {
@@ -53,7 +53,7 @@ func (r *Reconciler) captureWithdrawals(ctx context.Context, ers *endpointv1alph
 		}
 	}
 	type binding struct {
-		zone *dnsv1alpha1.Zone
+		zone      *dnsv1alpha1.Zone
 		protected bool
 	}
 	bindings := map[string]binding{}
@@ -147,10 +147,11 @@ func (r *Reconciler) withdrawalZone(ctx context.Context, ers *endpointv1alpha1.E
 	}
 	snapshot := *ers
 	snapshot.Spec.Targets = []endpointv1alpha1.EndpointTarget{{Type: endpointv1alpha1.EndpointTargetTypeIPAddress, Value: address.String()}}
-	resolved, _, err := r.recordSetsForHostname(ctx, &snapshot, hostname, namespace)
+	resolution, err := r.recordSetsForHostname(ctx, &snapshot, hostname, namespace)
 	if err != nil {
 		return nil, err
 	}
+	resolved := resolution.status
 	if resolved.Zone == nil {
 		condition := meta.FindStatusCondition(resolved.Conditions, "Resolved")
 		if condition != nil && condition.Status == metav1.ConditionFalse && condition.Reason == "ZoneNotResolved" {
@@ -166,7 +167,7 @@ func (r *Reconciler) withdrawalZone(ctx context.Context, ers *endpointv1alpha1.E
 	}
 	return &dnsv1alpha1.Zone{
 		ObjectMeta: metav1.ObjectMeta{Namespace: resolved.Zone.Ref.Namespace, Name: resolved.Zone.Ref.Name},
-		Spec: dnsv1alpha1.ZoneSpec{DomainName: resolved.Zone.DomainName, Provider: resolved.Zone.Provider},
+		Spec:       dnsv1alpha1.ZoneSpec{DomainName: resolved.Zone.DomainName, Provider: resolved.Zone.Provider},
 	}, nil
 }
 
@@ -192,12 +193,12 @@ func withdrawalForPair(ers *endpointv1alpha1.EndpointRecordSet, namespace string
 			Namespace: namespace, Name: fmt.Sprintf("ers-%x", sum[:])[:63],
 			Labels: map[string]string{dnsv1alpha1.AddressLabelKey: dnsv1alpha1.AddressLabelValue(address)},
 			Annotations: map[string]string{
-				withdrawalCreatorAnnotation: "EndpointRecordSet",
-				withdrawalSourceNamespaceAnnotation: ers.Namespace,
-				withdrawalSourceNameAnnotation: ers.Name,
-				withdrawalSourceUIDAnnotation: string(ers.UID),
+				withdrawalCreatorAnnotation:          "EndpointRecordSet",
+				withdrawalSourceNamespaceAnnotation:  ers.Namespace,
+				withdrawalSourceNameAnnotation:       ers.Name,
+				withdrawalSourceUIDAnnotation:        string(ers.UID),
 				withdrawalSourceGenerationAnnotation: generationString,
-				withdrawalSourceHostnameAnnotation: hostname,
+				withdrawalSourceHostnameAnnotation:   hostname,
 			},
 		},
 		Spec: dnsv1alpha1.RecordWithdrawalSpec{ZoneRef: dnsv1alpha1.ZoneReference{Namespace: &zone.Namespace, Name: zone.Name}, Name: owner, Address: address.String()},

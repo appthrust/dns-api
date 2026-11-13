@@ -70,10 +70,10 @@ func WithdrawalWaiverMatches(waiver *dnsv1alpha1.RecordWithdrawalWaiver, claim *
 	return ValidateWithdrawalWaiver(waiver) == nil && waiver.DeletionTimestamp.IsZero() && waiver.UID != "" && waiver.Namespace == claim.Namespace && waiver.Spec.WithdrawalRef == (dnsv1alpha1.WithdrawalObjectReference{Namespace: claim.Namespace, Name: claim.Name, UID: claim.UID}) && waiver.Spec.ClaimSpecDigest == dnsv1alpha1.WithdrawalSpecDigest(claim.Spec) && waiver.Spec.Address == claim.Spec.Address
 }
 
-func WithdrawalAllowedByZone(ctx context.Context, c client.Client, claim *dnsv1alpha1.RecordWithdrawal, zone *dnsv1alpha1.Zone) (bool, string) {
+func WithdrawalAllowedByZone(ctx context.Context, c client.Client, claim *dnsv1alpha1.RecordWithdrawal, zone *dnsv1alpha1.Zone) (bool, string, error) {
 	ip, err := netip.ParseAddr(claim.Spec.Address)
 	if err != nil {
-		return false, "Withdrawal address is invalid"
+		return false, "Withdrawal address is invalid", nil
 	}
 	recordType := dnsv1alpha1.RecordTypeA
 	if ip.Is6() {

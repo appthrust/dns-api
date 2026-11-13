@@ -5,15 +5,18 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/appthrust/dns-api/internal/go/apps/endpoint/retirement"
 	endpointv1alpha1 "github.com/appthrust/dns-api/pkg/go/api/endpoint/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -36,9 +39,14 @@ const (
 	excludedListenersAnnotation    = "gateway.endpoint.dns.appthrust.io/excluded-listeners"
 )
 
+type transitionReason string
+
+const reasonHostnameRemoved transitionReason = "HostnameRemoved"
+
 type Reconciler struct {
 	client.Client
 	Scheme                     *runtime.Scheme
+	Recorder                   record.EventRecorder
 	EndpointRecordSetNamespace string
 }
 
@@ -96,6 +104,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Scheme == nil {
 		r.Scheme = mgr.GetScheme()
+	}
+	if r.Recorder == nil {
+		r.Recorder = mgr.GetEventRecorderFor("gateway-endpoint")
 	}
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &gatewayv1.HTTPRoute{}, httpRouteGatewayIndex, routeGatewayIndexKeys); err != nil {
 		return fmt.Errorf("index HTTPRoute parent Gateways: %w", err)
@@ -401,6 +412,7 @@ func (r *Reconciler) applyGatewayEndpointRecordSets(ctx context.Context, namespa
 			existing.Annotations[admissionReceiptAnnotation] == desiredReceipt {
 			continue
 		}
+		previousHostnames := existing.Spec.Hostnames
 		existing.Labels = desired.Labels
 		existing.Spec = desired.Spec
 		if desiredReceipt == "" {
@@ -414,6 +426,7 @@ func (r *Reconciler) applyGatewayEndpointRecordSets(ctx context.Context, namespa
 		if err := r.Update(ctx, &existing, client.FieldOwner(fieldOwner)); err != nil {
 			return err
 		}
+		r.recordHostnameRemovals(ctx, &existing, previousHostnames)
 	}
 	var existing endpointv1alpha1.EndpointRecordSetList
 	if err := r.List(ctx, &existing, client.InNamespace(namespace), client.MatchingLabels{
@@ -428,7 +441,7 @@ func (r *Reconciler) applyGatewayEndpointRecordSets(ctx context.Context, namespa
 			continue
 		}
 		item := item
-		if err := retirement.RetireOrDelete(ctx, r.Client, &item); err != nil && !apierrors.IsNotFound(err) {
+		if err := r.retireEndpointRecordSet(ctx, &item); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
 	}
@@ -446,11 +459,41 @@ func (r *Reconciler) cleanupForRoute(ctx context.Context, endpointRecordSetNames
 	}
 	for _, item := range existing.Items {
 		item := item
-		if err := retirement.RetireOrDelete(ctx, r.Client, &item); err != nil && !apierrors.IsNotFound(err) {
+		if err := r.retireEndpointRecordSet(ctx, &item); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
 	}
 	return nil
+}
+
+func (r *Reconciler) recordHostnameRemovals(ctx context.Context, current *endpointv1alpha1.EndpointRecordSet, previous []string) {
+	for _, hostname := range previous {
+		if slices.Contains(current.Spec.Hostnames, hostname) {
+			continue
+		}
+		message := fmt.Sprintf("Removed hostname %s from EndpointRecordSet %s/%s.", hostname, current.Namespace, current.Name)
+		r.recordTransition(ctx, current, string(reasonHostnameRemoved), message)
+	}
+}
+
+func (r *Reconciler) retireEndpointRecordSet(ctx context.Context, current *endpointv1alpha1.EndpointRecordSet) error {
+	previousHostnames := current.Spec.Hostnames
+	outcome, err := retirement.RetireOrDelete(ctx, r.Client, current)
+	switch outcome {
+	case retirement.Patched:
+		r.recordHostnameRemovals(ctx, current, previousHostnames)
+		r.recordTransition(ctx, current, string(outcome), "Retired EndpointRecordSet publication intent; waiting for withdrawal capture.")
+	case retirement.Deleted:
+		r.recordTransition(ctx, current, string(outcome), "Deleted EndpointRecordSet publication intent.")
+	}
+	return err
+}
+
+func (r *Reconciler) recordTransition(ctx context.Context, current *endpointv1alpha1.EndpointRecordSet, reason, message string) {
+	ctrl.LoggerFrom(ctx).Info(message, "reason", reason, "endpointRecordSet", client.ObjectKeyFromObject(current), "uid", current.UID)
+	if r.Recorder != nil {
+		r.Recorder.Event(current, corev1.EventTypeNormal, reason, message)
+	}
 }
 
 func generatedGatewayEndpointRecordSetName(gatewayNamespace, gatewayName string) string {

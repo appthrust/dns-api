@@ -127,12 +127,6 @@ func (r *ZoneUnitCompositionReconciler) reconcileZone(ctx context.Context, req c
 		return ctrl.Result{}, r.writeRecordSetsWaiting(ctx, recordSets, "ProviderStorageVersionNotResolved")
 	}
 
-	if zone.DeletionTimestamp.IsZero() {
-		if err := r.ensureFinalizer(ctx, &zone, coreZoneFinalizer); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-
 	convertedZonePayload, payloadErr := providercontract.ConvertProviderPayloadToStorage(providercontract.ConversionInput{
 		Provider:    &provider,
 		Target:      providercontract.TargetZone,
@@ -156,7 +150,15 @@ func (r *ZoneUnitCompositionReconciler) reconcileZone(ctx context.Context, req c
 		return ctrl.Result{}, r.writeRecordSetsNotAccepted(ctx, recordSets, "ZoneNotAccepted")
 	}
 
-	allowedRecordSets, policyRejected := r.recordSetsAllowedByZone(ctx, recordSets, &zone)
+	allowedRecordSets, policyRejected, err := r.recordSetsAllowedByZone(ctx, recordSets, &zone)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if zone.DeletionTimestamp.IsZero() {
+		if err := r.ensureFinalizer(ctx, &zone, coreZoneFinalizer); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	matchingProviderRecordSets, providerMismatchRejected := recordSetsMatchingProvider(allowedRecordSets, zoneClass.Spec.Provider)
 	supportedRecordSets, unsupportedRejected := recordSetsSupportedByProvider(matchingProviderRecordSets, &provider)
 	providerStatusesByRef := map[string]dnsv1alpha1.ZoneUnitRecordSetStatus{}
@@ -326,12 +328,15 @@ type rejectedRecordSet struct {
 	message   string
 }
 
-func (r *ZoneUnitCompositionReconciler) recordSetsAllowedByZone(ctx context.Context, recordSets []dnsv1alpha1.RecordSet, zone *dnsv1alpha1.Zone) ([]dnsv1alpha1.RecordSet, []rejectedRecordSet) {
+func (r *ZoneUnitCompositionReconciler) recordSetsAllowedByZone(ctx context.Context, recordSets []dnsv1alpha1.RecordSet, zone *dnsv1alpha1.Zone) ([]dnsv1alpha1.RecordSet, []rejectedRecordSet, error) {
 	allowed := make([]dnsv1alpha1.RecordSet, 0, len(recordSets))
 	rejected := make([]rejectedRecordSet, 0)
 	for index := range recordSets {
 		recordSet := &recordSets[index]
-		ok, message := declaration.RecordSetAllowedByZone(ctx, r.Client, recordSet, zone)
+		ok, message, err := declaration.RecordSetAllowedByZone(ctx, r.Client, recordSet, zone)
+		if err != nil {
+			return nil, nil, err
+		}
 		if !ok {
 			rejected = append(rejected, rejectedRecordSet{
 				recordSet: recordSet,
@@ -343,7 +348,7 @@ func (r *ZoneUnitCompositionReconciler) recordSetsAllowedByZone(ctx context.Cont
 		}
 		allowed = append(allowed, *recordSet)
 	}
-	return allowed, rejected
+	return allowed, rejected, nil
 }
 
 func recordSetsMatchingProvider(recordSets []dnsv1alpha1.RecordSet, providerRef dnsv1alpha1.ProviderReference) ([]dnsv1alpha1.RecordSet, []rejectedRecordSet) {

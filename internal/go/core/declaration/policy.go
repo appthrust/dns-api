@@ -37,18 +37,24 @@ func ZoneAllowedByClass(ctx context.Context, k8sClient client.Client, zoneClass 
 	}
 }
 
-func RecordSetAllowedByZone(ctx context.Context, k8sClient client.Client, recordSet *dnsv1alpha1.RecordSet, zone *dnsv1alpha1.Zone) (bool, string) {
+// RecordSetAllowedByZone distinguishes an observed policy denial from a failed
+// namespace observation. Callers must not turn the error into an empty desired set.
+func RecordSetAllowedByZone(ctx context.Context, k8sClient client.Client, recordSet *dnsv1alpha1.RecordSet, zone *dnsv1alpha1.Zone) (bool, string, error) {
 	return recordSetAllowedByZone(ctx, k8sClient, recordSet, zone, true)
 }
 
-func recordSetAllowedByZone(ctx context.Context, k8sClient client.Client, recordSet *dnsv1alpha1.RecordSet, zone *dnsv1alpha1.Zone, allowSameNamespace bool) (bool, string) {
+func recordSetAllowedByZone(ctx context.Context, k8sClient client.Client, recordSet *dnsv1alpha1.RecordSet, zone *dnsv1alpha1.Zone, allowSameNamespace bool) (bool, string, error) {
 	if allowSameNamespace && recordSet.Namespace == zone.Namespace {
-		return true, ""
+		return true, "", nil
 	}
 	namespaceMatched := false
 	recordNameMatched := false
 	for _, grant := range zone.Spec.AllowedRecordSets {
-		if !namespaceAllowed(ctx, k8sClient, &grant.Namespaces.Selector, recordSet.Namespace) {
+		allowed, err := namespaceAllowed(ctx, k8sClient, &grant.Namespaces.Selector, recordSet.Namespace)
+		if err != nil {
+			return false, "", err
+		}
+		if !allowed {
 			continue
 		}
 		namespaceMatched = true
@@ -59,32 +65,32 @@ func recordSetAllowedByZone(ctx context.Context, k8sClient client.Client, record
 			}
 			recordNameMatched = true
 			if slices.Contains(record.Types, recordSet.Spec.Type) {
-				return true, ""
+				return true, "", nil
 			}
 		}
 	}
 	if !namespaceMatched {
-		return false, "RecordSet namespace is not allowed by the referenced Zone."
+		return false, "RecordSet namespace is not allowed by the referenced Zone.", nil
 	}
 	if !recordNameMatched {
-		return false, "RecordSet name is not allowed by the referenced Zone."
+		return false, "RecordSet name is not allowed by the referenced Zone.", nil
 	}
-	return false, "RecordSet type is not allowed for this RecordSet name by the referenced Zone."
+	return false, "RecordSet type is not allowed for this RecordSet name by the referenced Zone.", nil
 }
 
-func namespaceAllowed(ctx context.Context, k8sClient client.Client, selectorSpec *metav1.LabelSelector, recordSetNamespace string) bool {
+func namespaceAllowed(ctx context.Context, k8sClient client.Client, selectorSpec *metav1.LabelSelector, recordSetNamespace string) (bool, error) {
 	if selectorSpec == nil || (len(selectorSpec.MatchLabels) == 0 && len(selectorSpec.MatchExpressions) == 0) {
-		return false
+		return false, nil
 	}
 	selector, err := metav1.LabelSelectorAsSelector(selectorSpec)
 	if err != nil {
-		return false
+		return false, nil
 	}
 	var namespace corev1.Namespace
 	if err := k8sClient.Get(ctx, client.ObjectKey{Name: recordSetNamespace}, &namespace); err != nil {
-		return false
+		return false, err
 	}
-	return selector.Matches(labels.Set(namespace.Labels))
+	return selector.Matches(labels.Set(namespace.Labels)), nil
 }
 
 func namespacePolicyFrom(policy dnsv1alpha1.NamespacePolicy) dnsv1alpha1.NamespacesFrom {
