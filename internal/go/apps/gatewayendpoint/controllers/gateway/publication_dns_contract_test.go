@@ -300,6 +300,10 @@ func publicationDNSAssertOutcome(t *testing.T, fixture publicationDNSContract, c
 		if provider.deletes != 0 {
 			t.Fatalf("retained publication sent Route 53 DELETE: %v", provider.deletedNames)
 		}
+		// A restarted reconciler must not rewrite unchanged records either.
+		if provider.upserts != 0 {
+			t.Fatalf("retained publication sent %d Route 53 UPSERTs", provider.upserts)
+		}
 	case "withdraw-hostnames", "withdraw-all":
 		for _, hostname := range fixture.Expect.Hostnames {
 			removed[hostname] = true

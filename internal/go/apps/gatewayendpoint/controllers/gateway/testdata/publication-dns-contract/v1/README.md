@@ -12,12 +12,13 @@ The producer is platform's
 `TestPublicationDNSContract`. From the platform repository root, regenerate with:
 
 ```sh
-SERIALIZE_VM_TESTS_TARGET=local ~/.codex/skills/serialize-vm-tests/scripts/serialize-vm-tests -- env UPDATE_PUBLICATION_DNS_CONTRACT=1 go test ./internal/controllers/gatewayfleet -run '^TestPublicationDNSContract$' -count=1
+UPDATE_PUBLICATION_DNS_CONTRACT=1 go test ./internal/controllers/gatewayfleet -run '^TestPublicationDNSContract$' -count=1
 ```
 
 Without `UPDATE_PUBLICATION_DNS_CONTRACT=1`, the producer compares its complete
 normalized output with the golden JSON and verifies `SHA256SUMS`. The generator
-writes nothing until every scenario has been produced successfully.
+writes nothing until every scenario has been produced successfully, and refuses
+a run filtered to some scenarios.
 
 Copy this **entire directory byte-for-byte**, including this README and
 `SHA256SUMS`, to dns-api's
@@ -27,7 +28,15 @@ checksums and the complete 12-scenario inventory before reconciling anything.
 A fixture change must land in **both repositories**. Platform's dns-api import
 approval PRs under `hack/upstream-artifacts/...` must check that the imported
 revision carries the current, byte-identical copy. A green test in only one
-repository is not cross-repository approval.
+repository is not cross-repository approval. **Known gap:** no CI job fails
+today when only one copy changes; each repository checks its own
+`SHA256SUMS` only. Tracked as APT-1187 (pin the dns-api copy's checksum in the
+import record).
+
+Coverage limits: for dns-api, `leaf-unreachable`/`reconciler-restart` and
+`leaf-policy-status-absent`/`policy-rejected` carry identical inputs; they stay
+separate because the producer pins different Fleet paths. `route-deleted`
+covers a route that is already absent, not one held by its finalizer.
 
 ## Wire format
 
