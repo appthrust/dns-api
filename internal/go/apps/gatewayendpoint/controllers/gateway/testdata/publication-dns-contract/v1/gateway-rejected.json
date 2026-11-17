@@ -1,0 +1,856 @@
+{
+  "scenario": "gateway-rejected",
+  "description": "Current explicit leaf Gateway rejection withdraws the shared publication",
+  "gateway": {
+    "apiVersion": "gateway.networking.k8s.io/v1",
+    "kind": "Gateway",
+    "metadata": {
+      "generation": 1,
+      "name": "app-public",
+      "namespace": "edge-system",
+      "uid": "gateway-edge-system-app-public"
+    },
+    "spec": {
+      "gatewayClassName": "multicluster-gateway-fleet-public",
+      "listeners": [
+        {
+          "hostname": "*.project.example",
+          "name": "https",
+          "port": 443,
+          "protocol": "HTTPS",
+          "tls": {
+            "certificateRefs": [
+              {
+                "name": "project-tls"
+              }
+            ],
+            "mode": "Terminate"
+          }
+        }
+      ]
+    },
+    "status": {
+      "addresses": [],
+      "conditions": [
+        {
+          "lastTransitionTime": "2026-01-01T00:00:00Z",
+          "message": "A selected leaf rejects the current Gateway.",
+          "observedGeneration": 1,
+          "reason": "Rejected",
+          "status": "False",
+          "type": "Accepted"
+        },
+        {
+          "lastTransitionTime": "2026-01-01T00:00:00Z",
+          "message": "Waiting for a current programmed and publishable leaf.",
+          "observedGeneration": 1,
+          "reason": "Pending",
+          "status": "False",
+          "type": "Programmed"
+        },
+        {
+          "lastTransitionTime": "2026-01-01T00:00:00Z",
+          "message": "1 selected gateway clusters resolved",
+          "observedGeneration": 1,
+          "reason": "ClustersSelected",
+          "status": "True",
+          "type": "SelectedClusters"
+        },
+        {
+          "lastTransitionTime": "2026-01-01T00:00:00Z",
+          "message": "Leaf Gateway and HTTPRoute resources applied to 1 selected clusters",
+          "observedGeneration": 1,
+          "reason": "LeafResourcesApplied",
+          "status": "True",
+          "type": "LeafResourcesApplied"
+        },
+        {
+          "lastTransitionTime": "2026-01-01T00:00:00Z",
+          "message": "Waiting for leaf Gateway and HTTPRoute status before publishing parent Gateway addresses",
+          "observedGeneration": 1,
+          "reason": "WaitingForLeafStatus",
+          "status": "False",
+          "type": "DNSPublishable"
+        },
+        {
+          "lastTransitionTime": "2026-01-01T00:00:00Z",
+          "message": "Current-generation leaf listener programming.",
+          "observedGeneration": 1,
+          "reason": "Pending",
+          "status": "False",
+          "type": "ListenersProgrammed"
+        }
+      ],
+      "listeners": [
+        {
+          "attachedRoutes": 0,
+          "conditions": [
+            {
+              "lastTransitionTime": "2026-01-01T00:00:00Z",
+              "message": "Waiting for leaf listener status.",
+              "observedGeneration": 1,
+              "reason": "Pending",
+              "status": "False",
+              "type": "Accepted"
+            },
+            {
+              "lastTransitionTime": "2026-01-01T00:00:00Z",
+              "message": "Waiting for leaf listener status.",
+              "observedGeneration": 1,
+              "reason": "Pending",
+              "status": "False",
+              "type": "Programmed"
+            },
+            {
+              "lastTransitionTime": "2026-01-01T00:00:00Z",
+              "message": "Waiting for leaf listener status.",
+              "observedGeneration": 1,
+              "reason": "Pending",
+              "status": "False",
+              "type": "ResolvedRefs"
+            }
+          ],
+          "name": "https",
+          "supportedKinds": []
+        }
+      ]
+    }
+  },
+  "routes": [
+    {
+      "apiVersion": "gateway.networking.k8s.io/v1",
+      "kind": "HTTPRoute",
+      "metadata": {
+        "generation": 8,
+        "name": "app-00",
+        "namespace": "edge-system",
+        "uid": "route-app-00"
+      },
+      "spec": {
+        "hostnames": [
+          "app-00.project.example",
+          "alias.project.example"
+        ],
+        "parentRefs": [
+          {
+            "name": "app-public"
+          }
+        ]
+      },
+      "status": {
+        "parents": [
+          {
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Accepted is true",
+                "observedGeneration": 8,
+                "reason": "Accepted",
+                "status": "True",
+                "type": "Accepted"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "ResolvedRefs is true",
+                "observedGeneration": 8,
+                "reason": "ResolvedRefs",
+                "status": "True",
+                "type": "ResolvedRefs"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Access authentication policy is current and ready",
+                "observedGeneration": 8,
+                "reason": "PoliciesReady",
+                "status": "True",
+                "type": "PoliciesReady"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Route admission is not a convergence-only refusal",
+                "observedGeneration": 8,
+                "reason": "AdmissionNotPending",
+                "status": "False",
+                "type": "AdmissionPending"
+              }
+            ],
+            "controllerName": "gateway.multicluster.appthrust.io/gateway-fleet-controller",
+            "parentRef": {
+              "group": "gateway.networking.k8s.io",
+              "kind": "Gateway",
+              "name": "app-public",
+              "namespace": "edge-system"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "gateway.networking.k8s.io/v1",
+      "kind": "HTTPRoute",
+      "metadata": {
+        "generation": 8,
+        "name": "app-01",
+        "namespace": "edge-system",
+        "uid": "httproute-edge-system-app-01"
+      },
+      "spec": {
+        "hostnames": [
+          "app-01.project.example"
+        ],
+        "parentRefs": [
+          {
+            "name": "app-public"
+          }
+        ]
+      },
+      "status": {
+        "parents": [
+          {
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Accepted is true",
+                "observedGeneration": 8,
+                "reason": "Accepted",
+                "status": "True",
+                "type": "Accepted"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "ResolvedRefs is true",
+                "observedGeneration": 8,
+                "reason": "ResolvedRefs",
+                "status": "True",
+                "type": "ResolvedRefs"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Route admission is not a convergence-only refusal",
+                "observedGeneration": 8,
+                "reason": "AdmissionNotPending",
+                "status": "False",
+                "type": "AdmissionPending"
+              }
+            ],
+            "controllerName": "gateway.multicluster.appthrust.io/gateway-fleet-controller",
+            "parentRef": {
+              "group": "gateway.networking.k8s.io",
+              "kind": "Gateway",
+              "name": "app-public",
+              "namespace": "edge-system"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "gateway.networking.k8s.io/v1",
+      "kind": "HTTPRoute",
+      "metadata": {
+        "generation": 9,
+        "name": "app-02",
+        "namespace": "edge-system",
+        "uid": "httproute-edge-system-app-02"
+      },
+      "spec": {
+        "hostnames": [
+          "app-02.project.example"
+        ],
+        "parentRefs": [
+          {
+            "name": "app-public"
+          }
+        ]
+      },
+      "status": {
+        "parents": [
+          {
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Accepted is true",
+                "observedGeneration": 9,
+                "reason": "Accepted",
+                "status": "True",
+                "type": "Accepted"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "ResolvedRefs is true",
+                "observedGeneration": 9,
+                "reason": "ResolvedRefs",
+                "status": "True",
+                "type": "ResolvedRefs"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Route admission is not a convergence-only refusal",
+                "observedGeneration": 9,
+                "reason": "AdmissionNotPending",
+                "status": "False",
+                "type": "AdmissionPending"
+              }
+            ],
+            "controllerName": "gateway.multicluster.appthrust.io/gateway-fleet-controller",
+            "parentRef": {
+              "group": "gateway.networking.k8s.io",
+              "kind": "Gateway",
+              "name": "app-public",
+              "namespace": "edge-system"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "gateway.networking.k8s.io/v1",
+      "kind": "HTTPRoute",
+      "metadata": {
+        "generation": 10,
+        "name": "app-03",
+        "namespace": "edge-system",
+        "uid": "httproute-edge-system-app-03"
+      },
+      "spec": {
+        "hostnames": [
+          "app-03.project.example"
+        ],
+        "parentRefs": [
+          {
+            "name": "app-public"
+          }
+        ]
+      },
+      "status": {
+        "parents": [
+          {
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Accepted is true",
+                "observedGeneration": 10,
+                "reason": "Accepted",
+                "status": "True",
+                "type": "Accepted"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "ResolvedRefs is true",
+                "observedGeneration": 10,
+                "reason": "ResolvedRefs",
+                "status": "True",
+                "type": "ResolvedRefs"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Route admission is not a convergence-only refusal",
+                "observedGeneration": 10,
+                "reason": "AdmissionNotPending",
+                "status": "False",
+                "type": "AdmissionPending"
+              }
+            ],
+            "controllerName": "gateway.multicluster.appthrust.io/gateway-fleet-controller",
+            "parentRef": {
+              "group": "gateway.networking.k8s.io",
+              "kind": "Gateway",
+              "name": "app-public",
+              "namespace": "edge-system"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "gateway.networking.k8s.io/v1",
+      "kind": "HTTPRoute",
+      "metadata": {
+        "generation": 11,
+        "name": "app-04",
+        "namespace": "edge-system",
+        "uid": "httproute-edge-system-app-04"
+      },
+      "spec": {
+        "hostnames": [
+          "app-04.project.example"
+        ],
+        "parentRefs": [
+          {
+            "name": "app-public"
+          }
+        ]
+      },
+      "status": {
+        "parents": [
+          {
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Accepted is true",
+                "observedGeneration": 11,
+                "reason": "Accepted",
+                "status": "True",
+                "type": "Accepted"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "ResolvedRefs is true",
+                "observedGeneration": 11,
+                "reason": "ResolvedRefs",
+                "status": "True",
+                "type": "ResolvedRefs"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Route admission is not a convergence-only refusal",
+                "observedGeneration": 11,
+                "reason": "AdmissionNotPending",
+                "status": "False",
+                "type": "AdmissionPending"
+              }
+            ],
+            "controllerName": "gateway.multicluster.appthrust.io/gateway-fleet-controller",
+            "parentRef": {
+              "group": "gateway.networking.k8s.io",
+              "kind": "Gateway",
+              "name": "app-public",
+              "namespace": "edge-system"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "gateway.networking.k8s.io/v1",
+      "kind": "HTTPRoute",
+      "metadata": {
+        "generation": 12,
+        "name": "app-05",
+        "namespace": "edge-system",
+        "uid": "httproute-edge-system-app-05"
+      },
+      "spec": {
+        "hostnames": [
+          "app-05.project.example"
+        ],
+        "parentRefs": [
+          {
+            "name": "app-public"
+          }
+        ]
+      },
+      "status": {
+        "parents": [
+          {
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Accepted is true",
+                "observedGeneration": 12,
+                "reason": "Accepted",
+                "status": "True",
+                "type": "Accepted"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "ResolvedRefs is true",
+                "observedGeneration": 12,
+                "reason": "ResolvedRefs",
+                "status": "True",
+                "type": "ResolvedRefs"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Route admission is not a convergence-only refusal",
+                "observedGeneration": 12,
+                "reason": "AdmissionNotPending",
+                "status": "False",
+                "type": "AdmissionPending"
+              }
+            ],
+            "controllerName": "gateway.multicluster.appthrust.io/gateway-fleet-controller",
+            "parentRef": {
+              "group": "gateway.networking.k8s.io",
+              "kind": "Gateway",
+              "name": "app-public",
+              "namespace": "edge-system"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "gateway.networking.k8s.io/v1",
+      "kind": "HTTPRoute",
+      "metadata": {
+        "generation": 13,
+        "name": "app-06",
+        "namespace": "edge-system",
+        "uid": "httproute-edge-system-app-06"
+      },
+      "spec": {
+        "hostnames": [
+          "app-06.project.example"
+        ],
+        "parentRefs": [
+          {
+            "name": "app-public"
+          }
+        ]
+      },
+      "status": {
+        "parents": [
+          {
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Accepted is true",
+                "observedGeneration": 13,
+                "reason": "Accepted",
+                "status": "True",
+                "type": "Accepted"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "ResolvedRefs is true",
+                "observedGeneration": 13,
+                "reason": "ResolvedRefs",
+                "status": "True",
+                "type": "ResolvedRefs"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Route admission is not a convergence-only refusal",
+                "observedGeneration": 13,
+                "reason": "AdmissionNotPending",
+                "status": "False",
+                "type": "AdmissionPending"
+              }
+            ],
+            "controllerName": "gateway.multicluster.appthrust.io/gateway-fleet-controller",
+            "parentRef": {
+              "group": "gateway.networking.k8s.io",
+              "kind": "Gateway",
+              "name": "app-public",
+              "namespace": "edge-system"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "gateway.networking.k8s.io/v1",
+      "kind": "HTTPRoute",
+      "metadata": {
+        "generation": 14,
+        "name": "app-07",
+        "namespace": "edge-system",
+        "uid": "httproute-edge-system-app-07"
+      },
+      "spec": {
+        "hostnames": [
+          "app-07.project.example"
+        ],
+        "parentRefs": [
+          {
+            "name": "app-public"
+          }
+        ]
+      },
+      "status": {
+        "parents": [
+          {
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Accepted is true",
+                "observedGeneration": 14,
+                "reason": "Accepted",
+                "status": "True",
+                "type": "Accepted"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "ResolvedRefs is true",
+                "observedGeneration": 14,
+                "reason": "ResolvedRefs",
+                "status": "True",
+                "type": "ResolvedRefs"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Route admission is not a convergence-only refusal",
+                "observedGeneration": 14,
+                "reason": "AdmissionNotPending",
+                "status": "False",
+                "type": "AdmissionPending"
+              }
+            ],
+            "controllerName": "gateway.multicluster.appthrust.io/gateway-fleet-controller",
+            "parentRef": {
+              "group": "gateway.networking.k8s.io",
+              "kind": "Gateway",
+              "name": "app-public",
+              "namespace": "edge-system"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "gateway.networking.k8s.io/v1",
+      "kind": "HTTPRoute",
+      "metadata": {
+        "generation": 15,
+        "name": "app-08",
+        "namespace": "edge-system",
+        "uid": "httproute-edge-system-app-08"
+      },
+      "spec": {
+        "hostnames": [
+          "app-08.project.example"
+        ],
+        "parentRefs": [
+          {
+            "name": "app-public"
+          }
+        ]
+      },
+      "status": {
+        "parents": [
+          {
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Accepted is true",
+                "observedGeneration": 15,
+                "reason": "Accepted",
+                "status": "True",
+                "type": "Accepted"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "ResolvedRefs is true",
+                "observedGeneration": 15,
+                "reason": "ResolvedRefs",
+                "status": "True",
+                "type": "ResolvedRefs"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Route admission is not a convergence-only refusal",
+                "observedGeneration": 15,
+                "reason": "AdmissionNotPending",
+                "status": "False",
+                "type": "AdmissionPending"
+              }
+            ],
+            "controllerName": "gateway.multicluster.appthrust.io/gateway-fleet-controller",
+            "parentRef": {
+              "group": "gateway.networking.k8s.io",
+              "kind": "Gateway",
+              "name": "app-public",
+              "namespace": "edge-system"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "gateway.networking.k8s.io/v1",
+      "kind": "HTTPRoute",
+      "metadata": {
+        "generation": 16,
+        "name": "app-09",
+        "namespace": "edge-system",
+        "uid": "httproute-edge-system-app-09"
+      },
+      "spec": {
+        "hostnames": [
+          "app-09.project.example"
+        ],
+        "parentRefs": [
+          {
+            "name": "app-public"
+          }
+        ]
+      },
+      "status": {
+        "parents": [
+          {
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Accepted is true",
+                "observedGeneration": 16,
+                "reason": "Accepted",
+                "status": "True",
+                "type": "Accepted"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "ResolvedRefs is true",
+                "observedGeneration": 16,
+                "reason": "ResolvedRefs",
+                "status": "True",
+                "type": "ResolvedRefs"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Route admission is not a convergence-only refusal",
+                "observedGeneration": 16,
+                "reason": "AdmissionNotPending",
+                "status": "False",
+                "type": "AdmissionPending"
+              }
+            ],
+            "controllerName": "gateway.multicluster.appthrust.io/gateway-fleet-controller",
+            "parentRef": {
+              "group": "gateway.networking.k8s.io",
+              "kind": "Gateway",
+              "name": "app-public",
+              "namespace": "edge-system"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "gateway.networking.k8s.io/v1",
+      "kind": "HTTPRoute",
+      "metadata": {
+        "generation": 17,
+        "name": "app-10",
+        "namespace": "edge-system",
+        "uid": "httproute-edge-system-app-10"
+      },
+      "spec": {
+        "hostnames": [
+          "app-10.project.example"
+        ],
+        "parentRefs": [
+          {
+            "name": "app-public"
+          }
+        ]
+      },
+      "status": {
+        "parents": [
+          {
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Accepted is true",
+                "observedGeneration": 17,
+                "reason": "Accepted",
+                "status": "True",
+                "type": "Accepted"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "ResolvedRefs is true",
+                "observedGeneration": 17,
+                "reason": "ResolvedRefs",
+                "status": "True",
+                "type": "ResolvedRefs"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Route admission is not a convergence-only refusal",
+                "observedGeneration": 17,
+                "reason": "AdmissionNotPending",
+                "status": "False",
+                "type": "AdmissionPending"
+              }
+            ],
+            "controllerName": "gateway.multicluster.appthrust.io/gateway-fleet-controller",
+            "parentRef": {
+              "group": "gateway.networking.k8s.io",
+              "kind": "Gateway",
+              "name": "app-public",
+              "namespace": "edge-system"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "gateway.networking.k8s.io/v1",
+      "kind": "HTTPRoute",
+      "metadata": {
+        "generation": 18,
+        "name": "app-11",
+        "namespace": "edge-system",
+        "uid": "httproute-edge-system-app-11"
+      },
+      "spec": {
+        "hostnames": [
+          "app-11.project.example"
+        ],
+        "parentRefs": [
+          {
+            "name": "app-public"
+          }
+        ]
+      },
+      "status": {
+        "parents": [
+          {
+            "conditions": [
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Accepted is true",
+                "observedGeneration": 18,
+                "reason": "Accepted",
+                "status": "True",
+                "type": "Accepted"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "ResolvedRefs is true",
+                "observedGeneration": 18,
+                "reason": "ResolvedRefs",
+                "status": "True",
+                "type": "ResolvedRefs"
+              },
+              {
+                "lastTransitionTime": "2026-01-01T00:00:00Z",
+                "message": "Route admission is not a convergence-only refusal",
+                "observedGeneration": 18,
+                "reason": "AdmissionNotPending",
+                "status": "False",
+                "type": "AdmissionPending"
+              }
+            ],
+            "controllerName": "gateway.multicluster.appthrust.io/gateway-fleet-controller",
+            "parentRef": {
+              "group": "gateway.networking.k8s.io",
+              "kind": "Gateway",
+              "name": "app-public",
+              "namespace": "edge-system"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "dns": "withdraw-all",
+    "hostnames": [
+      "alias.project.example",
+      "app-00.project.example",
+      "app-01.project.example",
+      "app-02.project.example",
+      "app-03.project.example",
+      "app-04.project.example",
+      "app-05.project.example",
+      "app-06.project.example",
+      "app-07.project.example",
+      "app-08.project.example",
+      "app-09.project.example",
+      "app-10.project.example",
+      "app-11.project.example"
+    ]
+  }
+}
