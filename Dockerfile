@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.26.2 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.2@sha256:b54cbf583d390341599d7bcbc062425c081105cc5ef6d170ced98ef9d047c716 AS builder
 
 WORKDIR /workspace
 
@@ -16,7 +16,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldfl
     && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /hosted-server ./app/hosted-server/cmd/server \
     && go run ./scripts/verify-controller-architecture /hosted-server "${TARGETPLATFORM}"
 
-FROM gcr.io/distroless/static:nonroot
+FROM gcr.io/distroless/static:nonroot@sha256:aafe993665bf6200db38a02c11a9351e782a84b6a45e7f33b6695638c88e3931
 
 WORKDIR /
 COPY --from=builder /manager /manager
