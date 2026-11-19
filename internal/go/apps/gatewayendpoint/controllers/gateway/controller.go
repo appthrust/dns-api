@@ -269,6 +269,10 @@ func (r *Reconciler) endpointRecordSetsForGateway(ctx context.Context, gateway *
 			publishedHostnames[hostname] = struct{}{}
 		}
 	}
+	// Missing addresses retain the established targets, not a replacement.
+	// A changed target cannot use listener-only receipt continuity.
+	unchangedTargets := existing != nil && len(existing.Spec.Targets) != 0 &&
+		(len(targets) == 0 || slices.Equal(targets, existing.Spec.Targets))
 	hostnames := map[string]struct{}{}
 	retainedHostnames := map[string]struct{}{}
 	receiptBindings := map[string]admissionReceiptBinding{}
@@ -284,15 +288,18 @@ func (r *Reconciler) endpointRecordSetsForGateway(ctx context.Context, gateway *
 				continue
 			}
 			acceptance := routeParentAcceptance(route, binding.ref)
+			allowListenerContinuity := (acceptance == parentAcceptanceUnknown ||
+				fullyAccepted && acceptance == parentAcceptanceAccepted) &&
+				unchangedTargets && listenerAllowsReceiptRefresh(route, gateway, binding.listener)
 			for _, hostname := range effectiveHostnamesForListener(route, binding.listener) {
 				match, hasReceipt := admissionReceiptBinding{}, false
 				conflictingReceipt := false
 				if _, published := publishedHostnames[hostname]; published {
-					match, hasReceipt = receipt.matchingBinding(route, gateway, binding, hostname)
+					match, hasReceipt = receipt.matchingBinding(route, gateway, binding, hostname, allowListenerContinuity)
 					conflictingReceipt = receipt.conflictsCurrentBinding(route, gateway, binding, hostname)
 				}
 				if fullyAccepted && acceptance == parentAcceptanceAccepted {
-					if conflictingReceipt {
+					if conflictingReceipt && !hasReceipt {
 						continue
 					}
 					hostnames[hostname] = struct{}{}
@@ -312,7 +319,8 @@ func (r *Reconciler) endpointRecordSetsForGateway(ctx context.Context, gateway *
 					continue
 				}
 				// Route admission controls serving, not publication intent.
-				// False and Unknown have the same receipt-retention boundary.
+				// Unknown may retain the old listener receipt until admission
+				// can refresh it; False still requires an exact listener digest.
 				if (acceptance != parentAcceptanceAccepted && !listenerAllowsUnknownRetention(route, gateway, binding.listener)) ||
 					!hasReceipt {
 					continue
