@@ -124,7 +124,7 @@ func listenerAllowsReceiptRefresh(route *gatewayv1.HTTPRoute, gateway *gatewayv1
 		return false
 	}
 	if listener.AllowedRoutes == nil || len(listener.AllowedRoutes.Kinds) == 0 {
-		return true
+		return listener.Protocol == gatewayv1.HTTPProtocolType || listener.Protocol == gatewayv1.HTTPSProtocolType
 	}
 	for _, kind := range listener.AllowedRoutes.Kinds {
 		if kind.Kind == "HTTPRoute" && (kind.Group == nil || *kind.Group == gatewayv1.GroupName) {

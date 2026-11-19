@@ -28,6 +28,7 @@ func TestGatewayListenerReceiptContinuity(t *testing.T) {
 		retain            bool
 		pendingConversion bool
 		change            func(*gatewayv1.Gateway, *gatewayv1.HTTPRoute)
+		afterPending      func(*testing.T, *Reconciler, client.ObjectKey, client.ObjectKey)
 	}{
 		{name: "SameNamespaceAccepted", retain: true},
 		{
@@ -75,6 +76,39 @@ func TestGatewayListenerReceiptContinuity(t *testing.T) {
 			},
 		},
 		{
+			name: "UnknownAddressLossThenChangedTarget", retain: true,
+			change: func(gateway *gatewayv1.Gateway, route *gatewayv1.HTTPRoute) {
+				route.Status.Parents[0].Conditions[0].Status = metav1.ConditionUnknown
+				gateway.Status.Addresses = nil
+			},
+			afterPending: func(t *testing.T, r *Reconciler, _, gatewayKey client.ObjectKey) {
+				setGatewayAddresses(t, r, gatewayKey, []gatewayv1.GatewayStatusAddress{{Value: "192.0.2.2"}})
+			},
+		},
+		{
+			name: "UnknownThenRejected", retain: true,
+			change: func(_ *gatewayv1.Gateway, route *gatewayv1.HTTPRoute) {
+				route.Status.Parents[0].Conditions[0].Status = metav1.ConditionUnknown
+			},
+			afterPending: func(t *testing.T, r *Reconciler, routeKey, _ client.ObjectKey) {
+				setRouteAcceptance(t, r, routeKey, metav1.ConditionFalse)
+			},
+		},
+		{
+			name: "UnknownThenHostnameMismatch", retain: true,
+			change: func(_ *gatewayv1.Gateway, route *gatewayv1.HTTPRoute) {
+				route.Status.Parents[0].Conditions[0].Status = metav1.ConditionUnknown
+			},
+			afterPending: func(t *testing.T, r *Reconciler, _, gatewayKey client.ObjectKey) {
+				var gateway gatewayv1.Gateway
+				publicationDNSRequire(t, r.Get(t.Context(), gatewayKey, &gateway))
+				hostname := gatewayv1.Hostname("other.project.example")
+				gateway.Spec.Listeners[0].Hostname = &hostname
+				gateway.Generation++
+				publicationDNSRequire(t, r.Update(t.Context(), &gateway))
+			},
+		},
+		{
 			name: "CrossNamespaceUnknown", routeNamespace: "app",
 			change: func(_ *gatewayv1.Gateway, route *gatewayv1.HTTPRoute) {
 				route.Status.Parents[0].Conditions[0].Status = metav1.ConditionUnknown
@@ -99,6 +133,13 @@ func TestGatewayListenerReceiptContinuity(t *testing.T) {
 			change: func(gateway *gatewayv1.Gateway, route *gatewayv1.HTTPRoute) {
 				route.Status.Parents[0].Conditions[0].Status = metav1.ConditionUnknown
 				gateway.Spec.Listeners[0].AllowedRoutes.Kinds = []gatewayv1.RouteGroupKind{{Kind: "TCPRoute"}}
+			},
+		},
+		{
+			name: "UnknownWithHTTPSChangedToTLS",
+			change: func(gateway *gatewayv1.Gateway, route *gatewayv1.HTTPRoute) {
+				route.Status.Parents[0].Conditions[0].Status = metav1.ConditionUnknown
+				gateway.Spec.Listeners[0].Protocol = gatewayv1.TLSProtocolType
 			},
 		},
 		{
@@ -257,6 +298,21 @@ func TestGatewayListenerReceiptContinuity(t *testing.T) {
 				if child.ResourceVersion != children.Items[0].ResourceVersion {
 					t.Fatal("listener-only receipt refresh wrote an established RecordSet")
 				}
+				if test.afterPending != nil {
+					// First prove the old publication survived the pending
+					// observation, then observe the revocation independently.
+					test.afterPending(t, r, routeKey, client.ObjectKeyFromObject(gateway))
+					r = &Reconciler{Client: cl, EndpointRecordSetNamespace: recordKey.Namespace}
+					reconcileRetentionRoute(t, r, routeKey)
+					publicationDNSRequire(t, cl.Get(ctx, recordKey, &after))
+					if after.DeletionTimestamp.IsZero() {
+						t.Fatalf("revocation after pending continuity retained the intent: %#v", after)
+					}
+					fixture.Expect.DNS = "withdraw-all"
+					publicationDNSConverge(t, cl, provider, server.URL, []client.ObjectKey{routeKey}, recordKey, client.ObjectKeyFromObject(zone))
+					publicationDNSAssertOutcome(t, fixture, cl, provider, &before, children.Items, records, zone.Spec.DomainName)
+					return
+				}
 				if routeParentAcceptance(route, route.Spec.ParentRefs[0]) == parentAcceptanceUnknown {
 					// Current acceptance, not the pending observation above,
 					// authorizes replacing the old listener digest.
@@ -288,6 +344,7 @@ func TestListenerAllowsReceiptRefresh(t *testing.T) {
 		name      string
 		namespace string
 		policy    gatewayv1.FromNamespaces
+		protocol  gatewayv1.ProtocolType
 		kinds     []gatewayv1.RouteGroupKind
 		want      bool
 	}{
@@ -301,10 +358,17 @@ func TestListenerAllowsReceiptRefresh(t *testing.T) {
 		{name: "DefaultGroupHTTPRoute", namespace: "platform", kinds: []gatewayv1.RouteGroupKind{{Kind: "HTTPRoute"}}, want: true},
 		{name: "WrongKind", namespace: "platform", kinds: []gatewayv1.RouteGroupKind{{Kind: "TCPRoute"}}},
 		{name: "WrongGroup", namespace: "platform", kinds: []gatewayv1.RouteGroupKind{{Group: &otherGroup, Kind: "HTTPRoute"}}},
+		{name: "EmptyKindsHTTP", namespace: "platform", protocol: gatewayv1.HTTPProtocolType, want: true},
+		{name: "EmptyKindsTLS", namespace: "platform", protocol: gatewayv1.TLSProtocolType},
+		{name: "EmptyKindsTCP", namespace: "platform", protocol: gatewayv1.TCPProtocolType},
+		{name: "EmptyKindsUDP", namespace: "platform", protocol: gatewayv1.UDPProtocolType},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Namespace: test.namespace}}
-			listener := gatewayv1.Listener{AllowedRoutes: &gatewayv1.AllowedRoutes{Kinds: test.kinds}}
+			listener := gatewayv1.Listener{Protocol: gatewayv1.HTTPSProtocolType, AllowedRoutes: &gatewayv1.AllowedRoutes{Kinds: test.kinds}}
+			if test.protocol != "" {
+				listener.Protocol = test.protocol
+			}
 			if test.policy != "" {
 				listener.AllowedRoutes.Namespaces = &gatewayv1.RouteNamespaces{From: &test.policy}
 			}
