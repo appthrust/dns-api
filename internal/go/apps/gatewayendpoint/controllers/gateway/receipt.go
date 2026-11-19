@@ -91,7 +91,7 @@ func newAdmissionReceiptBinding(route *gatewayv1.HTTPRoute, gateway *gatewayv1.G
 	}, true
 }
 
-func (receipt admissionReceipt) matchingBinding(route *gatewayv1.HTTPRoute, gateway *gatewayv1.Gateway, binding routeGatewayBinding, hostname string) (admissionReceiptBinding, bool) {
+func (receipt admissionReceipt) matchingBinding(route *gatewayv1.HTTPRoute, gateway *gatewayv1.Gateway, binding routeGatewayBinding, hostname string, allowListenerContinuity bool) (admissionReceiptBinding, bool) {
 	listenerDigest := gatewayListenerDigest(binding.listener)
 	if route.UID == "" || route.Generation <= 0 || gateway.UID == "" || listenerDigest == "" {
 		return admissionReceiptBinding{}, false
@@ -105,8 +105,14 @@ func (receipt admissionReceipt) matchingBinding(route *gatewayv1.HTTPRoute, gate
 			candidate.GatewayClass != string(gateway.Spec.GatewayClassName) ||
 			candidate.ParentRef != parentRef ||
 			candidate.Listener != string(binding.listener.Name) ||
-			candidate.ListenerDigest != listenerDigest ||
 			!receiptHasHostname(candidate, hostname) {
+			continue
+		}
+		if candidate.ListenerDigest != listenerDigest &&
+			(!allowListenerContinuity || candidate.RouteUID != string(route.UID) || candidate.RouteGeneration != route.Generation) {
+			// Listener-only continuity cannot cross a route incarnation or
+			// generation. The caller refreshes only after current admission;
+			// an Unknown observation keeps this original receipt unchanged.
 			continue
 		}
 		if candidate.RouteUID == string(route.UID) {

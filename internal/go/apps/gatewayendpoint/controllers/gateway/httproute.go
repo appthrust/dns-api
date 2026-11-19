@@ -119,6 +119,21 @@ func listenerAllowsUnknownRetention(route *gatewayv1.HTTPRoute, gateway *gateway
 	}
 }
 
+func listenerAllowsReceiptRefresh(route *gatewayv1.HTTPRoute, gateway *gatewayv1.Gateway, listener gatewayv1.Listener) bool {
+	if !listenerAllowsUnknownRetention(route, gateway, listener) {
+		return false
+	}
+	if listener.AllowedRoutes == nil || len(listener.AllowedRoutes.Kinds) == 0 {
+		return listener.Protocol == gatewayv1.HTTPProtocolType || listener.Protocol == gatewayv1.HTTPSProtocolType
+	}
+	for _, kind := range listener.AllowedRoutes.Kinds {
+		if kind.Kind == "HTTPRoute" && (kind.Group == nil || *kind.Group == gatewayv1.GroupName) {
+			return true
+		}
+	}
+	return false
+}
+
 func parentRefKey(routeNamespace string, ref gatewayv1.ParentReference) string {
 	namespace := routeNamespace
 	if ref.Namespace != nil {

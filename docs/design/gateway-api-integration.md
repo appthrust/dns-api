@@ -187,16 +187,42 @@ from a normal reconcile with complete current acceptance and nonempty current
 targets.
 
 
-The receipt also records the specific listener. Hostname or parent removal,
-listener removal or ownership change, and route/Gateway deletion remove the
-affected hostname immediately. Receipt identity rules remain unchanged: a route
-with a replacement UID may inherit and rebind a receipt only when all its current
-parent references are `Accepted=True`; a replacement under `False` or `Unknown`
-cannot inherit it. Gateway UID and class and the listener digest must still
-match for retention. A dynamic `allowedRoutes.namespaces.from: Selector` policy
-cannot be re-proved without a namespace read, so neither unknown observation
-nor route-level `Accepted=False` is retained under that policy. Independent
-sibling listener bindings are evaluated separately.
+The receipt also records the specific listener, including a SHA-256 digest of
+the complete listener. Hostname or parent removal, listener removal, and
+route/Gateway deletion remove the affected hostname immediately. A listener-only
+digest change may refresh the receipt in place when the route namespace/name,
+UID and generation, Gateway UID/class, parent reference, listener name, and
+published hostname still match. Every route parent reference must have an
+`Accepted=True` condition whose `observedGeneration` equals the current
+`HTTPRoute.metadata.generation`. The hostname must still intersect the current
+listener, and the listener must allow HTTPRoute and its namespace (`All`, or
+`Same` including the default for a same-namespace route). With omitted or empty
+`allowedRoutes.kinds`, only HTTP and HTTPS listeners allow HTTPRoute continuity.
+`Selector` cannot re-prove continuity without a namespace read and therefore
+cannot refresh a receipt.
+Current targets must equal the established targets, or be temporarily absent
+while the established nonempty targets are retained. This changes only the
+receipt annotation, not the hostname intent or its generated RecordSets.
+
+While the matching parent is `Unknown` (including absent or pending status),
+the same listener-only continuity checks retain the hostname and the original
+receipt without updating its digest. This requires the exact receipted route
+UID and generation, not a pending newer route generation. Acceptance of every
+parent for that same route generation subsequently refreshes the digest.
+`Accepted=False` does not authorize this exception and still withdraws a
+listener-digest conflict.
+
+Receipt replay rules otherwise remain unchanged: a route with a replacement UID
+may inherit and rebind a receipt only when all its parent references are
+`Accepted=True` for its current route generation; a replacement under `False`
+or `Unknown` cannot inherit it.
+Same-UID pending-generation replay still requires the exact listener digest.
+Gateway UID and class must match for retention. A dynamic
+`allowedRoutes.namespaces.from: Selector` policy cannot be re-proved without a
+namespace read, so neither unknown observation nor route-level `Accepted=False`
+is retained under that policy. Independent sibling listener bindings are
+evaluated separately. Fresh admission still trusts current route acceptance;
+listener-refresh checks do not introduce a second Gateway admission controller.
 
 The receipt records route namespace and name only so a parent-reference removal,
 change, deletion, or final not-found reconciliation can requeue the previously
